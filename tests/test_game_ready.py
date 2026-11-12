@@ -372,3 +372,45 @@ def test_the_atlas_margin_is_two_texels_at_any_size():
     assert gr.settings([])["uv_margin_px"] == 2
     assert gr.uv_margin(gr.settings(["--atlas", "512"])) == pytest.approx(2 / 512)
     assert gr.uv_margin(gr.settings([])) == pytest.approx(2 / 1024)
+
+
+# --- a missing core bone, glow kept off the head ---------------------------------------------
+
+def test_problems_name_a_missing_core_bone():
+    report = {"materials": 1, "max_influences": 4, "unweighted": 0, "height": 1.8, "min_z": 0.0,
+              "missing_core_bones": ["Neck"]}
+    found = " ".join(gr.problems(report, max_influences=4, height=1.8))
+    assert "Neck" in found
+
+
+def test_missing_core_bones_lists_what_a_humanoid_avatar_lacks():
+    parents, heads, roles = _humanoid()
+    assert gr.missing_core_bones(_unity(parents, heads)) == []
+    names = _unity(parents, heads)
+    names.pop(roles["neck"])
+    assert gr.missing_core_bones(names) == ["Neck"]
+
+
+def test_head_bones_are_the_head_and_everything_below_it():
+    parents, heads, roles = _humanoid()
+    parents, heads = dict(parents), dict(heads)
+    parents["helmet_lamp"] = roles["head"]
+    heads["helmet_lamp"] = np.array((0.0, 0.1, 1.58))  # in front of the face, like a visor lamp
+    found = gr.head_bones(parents, _unity(parents, heads))
+    assert roles["head"] in found and "helmet_lamp" in found
+    assert roles["neck"] not in found and roles["chest"] not in found
+
+
+def test_settings_glow_on_the_head_by_default():
+    assert gr.settings([])["glow_not_on_head"] is False
+    assert gr.settings(["--glow-not-on-head"])["glow_not_on_head"] is True
+
+
+def test_compose_keeps_the_glow_off_an_excluded_area():
+    alb, lit, cov = _atlas()
+    s = gr.settings(["--no-shade", "--glow", "#29e6ff", "--glow-width", "0"])
+    exclude = np.zeros(cov.shape)
+    exclude[4:6, 2:4] = 1.0          # the left half of the cyan strip lies on the head
+    _, emission, _ = gr.compose(alb, lit, cov, s, exclude=exclude)
+    assert emission[5, 2].max() == 0.0
+    assert emission[5, 5].max() > 0.5

@@ -312,7 +312,22 @@ def setup_cycles(scene) -> str:
     return device
 
 
-def bake_atlas(ob, s: dict, work: Path, name: str) -> tuple[dict, bool]:
+def head_mask_attribute(ob, bones: list[str]) -> str | None:
+    """A point colour attribute holding each vertex's skin weight on the head bones (0..1)."""
+    if not bones:
+        return None
+    me = ob.data
+    index = {g.index for g in ob.vertex_groups if g.name in set(bones)}
+    w = np.zeros(len(me.vertices))
+    for v in me.vertices:
+        w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
+    attr = me.color_attributes.new(name="gr_head", type="FLOAT_COLOR", domain="POINT")
+    attr.data.foreach_set("color", np.repeat(w, 4).astype(np.float32))
+    log(f"head mask: {int((w > 0.5).sum())} of {len(w)} vertices on the head")
+    return attr.name
+
+
+def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None) -> tuple[dict, bool]:
     scene = bpy.context.scene
     me = ob.data
     device = setup_cycles(scene)
@@ -378,6 +393,15 @@ def bake_atlas(ob, s: dict, work: Path, name: str) -> tuple[dict, bool]:
         else:
             m["emit"].inputs["Color"].default_value = m["colour"]
     albedo = bake("albedo", 4, "EMIT")
+    head_attr = head_mask_attribute(ob, head or [])
+    head_bake = None
+    if head_attr:  # where the head is, from its skin weights, so the glow can stay off a face
+        for m in mats:
+            node = m["nt"].nodes.new("ShaderNodeAttribute")
+            node.attribute_name = head_attr
+            m["nt"].links.new(node.outputs["Color"], m["emit"].inputs["Color"])
+        head_bake = bake("head mask", 1, "EMIT")
+        me.color_attributes.remove(me.color_attributes[head_attr])
     world = bpy.data.worlds.new("GameReadySky")  # soft light from above, brighter at the zenith
     scene.world = world
     world.use_nodes = True
@@ -400,7 +424,10 @@ def bake_atlas(ob, s: dict, work: Path, name: str) -> tuple[dict, bool]:
     cov = gr.downsample(inside, k)[..., 0]
     alb = gr.downsample(albedo[..., :3] * inside, k) / np.maximum(cov, 1e-6)[..., None]
     lit = gr.downsample(sky[..., :3] * inside, k).mean(-1) / np.maximum(cov, 1e-6)
-    colour, emission, stats = gr.compose(alb, lit, cov, s)
+    exclude = None
+    if head_bake is not None:
+        exclude = gr.downsample(head_bake[..., :1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
+    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude)
     log("colour:", stats)
     p_alb = work / f"{name}_albedo.png"
     gr.write_png(p_alb, colour)
@@ -515,7 +542,7 @@ def main() -> None:
         m.show_viewport = m.show_render = False
     report["cleaning"] = clean_mesh(ob, s)
     report.update(new_uvs(ob, s))
-    report["colour"], glows = bake_atlas(ob, s, work, name)
+    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"))
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
     arm.data.pose_position = "POSE"

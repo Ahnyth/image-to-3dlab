@@ -49,6 +49,11 @@ import numpy as np
 
 SCRIPTS = Path(__file__).resolve().parent
 STYLES = ("unity", "mixamo", "keep")
+CORE_BONES = ("Hips", "Spine", "Chest", "UpperChest", "Neck", "Head",
+              "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+              "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand",
+              "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
+              "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes")
 HEX = re.compile(r"#?([0-9a-fA-F]{6})")
 
 # Values from the hand-made finish this generalises (an 8k figure seen at 100-150 px), each one
@@ -134,6 +139,9 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--glow-max-width", type=_width, default=0,
                         help="texels at 1024: only accents up to this wide glow, so a light line glows and an "
                              "armour plate of the same colour does not (default 0, no limit)")
+    parser.add_argument("--glow-not-on-head", action="store_true",
+                        help="no glow on the head and what hangs from it (paint on a face stays paint; "
+                             "leave it off for a glowing visor)")
     parser.add_argument("--no-shade", action="store_true",
                         help="leave the soft sky light out of the colour (it keeps the normal map's detail)")
     parser.add_argument("--fingers", choices=("keep", "merge"), default="keep",
@@ -148,6 +156,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
     s = dict(FIXED)
     s.update(height=ns.height, atlas=ns.atlas, readability=ns.readability, glow=list(ns.glow),
              glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
+             glow_not_on_head=ns.glow_not_on_head,
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness)
     if not s["shade"]:
@@ -307,16 +316,18 @@ def thin_only(mask, max_width: float):
     return mask * (1.0 - dilate(shrunk, r + 1))
 
 
-def compose(alb_lin, lit, cov, s: dict):
+def compose(alb_lin, lit, cov, s: dict, exclude=None):
     """The atlas colours from the bakes: (albedo sRGB, emission sRGB or None, numbers).
 
     `alb_lin` is the painted colour (linear), `lit` the sky light on the normal-mapped surface,
-    `cov` the share of each texel inside an island, all at atlas size.
+    `cov` the share of each texel inside an island, all at atlas size. `exclude` (optional, 0..1)
+    marks where nothing may glow, e.g. the head baked from its skin weights.
     """
     inside = cov > 0
     a_s = to_srgb(alb_lin)
     scale = s["atlas"] / 1024  # widths are given in texels at 1024
-    masks = [thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * scale) for c in s["glow"]]
+    keep = 1.0 if exclude is None else 1.0 - smoothstep(0.2, 0.5, exclude)
+    masks = [thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * scale) * keep for c in s["glow"]]
     found = np.max(masks, axis=0) if masks else np.zeros(inside.shape)
     grey = inside & (found < 0.1)
     lum = a_s.mean(-1)
@@ -337,8 +348,8 @@ def compose(alb_lin, lit, cov, s: dict):
         grow = int(round(s["glow_grow"] * scale))
         for colour, m in zip(s["glow"], masks):
             col = np.asarray(colour, float)
-            grown = np.clip(np.maximum(box_blur(dilate(m, grow), 1), m), 0.0, 1.0)
-            halo = box_blur(dilate(m, grow + 2), 2) * 0.20
+            grown = np.clip(np.maximum(box_blur(dilate(m, grow), 1), m), 0.0, 1.0) * keep
+            halo = box_blur(dilate(m, grow + 2), 2) * 0.20 * keep  # widening never crosses onto the head
             v = v * (1 - grown[..., None]) + col * grown[..., None]
             v = np.clip(v + col * (halo * (1 - grown))[..., None] * 0.35, 0.0, 1.0)
             emission = np.maximum(emission, col * np.clip(grown + halo * (1 - grown), 0.0, 1.0)[..., None])
@@ -394,6 +405,25 @@ def bone_plan(parents: dict[str, str | None], unity_names: dict[str, str], finge
             plan[bone] = hand
             stack.extend(children[bone])
     return plan
+
+
+def missing_core_bones(unity_names: dict[str, str]) -> list[str]:
+    """Unity Humanoid core slots no bone was found for, in skeleton order."""
+    found = set(unity_names.values())
+    return [b for b in CORE_BONES if b not in found]
+
+
+def head_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> list[str]:
+    """The head bone and every bone below it (a hood, a helmet lamp, hair)."""
+    head = next((b for b, n in unity_names.items() if n == "Head"), None)
+    if head is None:
+        return []
+    out, stack = [], [head]
+    while stack:
+        bone = stack.pop()
+        out.append(bone)
+        stack.extend(b for b, p in parents.items() if p == bone)
+    return out
 
 
 def merge_columns(W, columns: list[str], plan: dict[str, str]):
@@ -497,6 +527,8 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
         out.append(f"height {report['height']:.3f} m, asked for {height:.3f} m")
     if abs(report["min_z"]) > 0.005:
         out.append(f"lowest point {report['min_z']:.3f} m from the floor")
+    for bone in report.get("missing_core_bones", []):
+        out.append(f"no {bone} bone: Unity's Humanoid can do without one, but some importers expect it")
     error = report.get("animation_error_m")
     if error is not None and error > 0.002:
         out.append(f"moves changed by up to {error:.4f} m in the rescale")
@@ -547,13 +579,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     names = {} if s["style"] == "keep" else engine_names(parents, mapping, s["style"])
     names = {b: n for b, n in names.items() if b not in plan}
     hips = next(b for b, n in unity.items() if n == "Hips")
+    heads_off = head_bones(parents, unity) if s["glow_not_on_head"] else []
 
     with tempfile.TemporaryDirectory() as tmp:
         job = Path(tmp) / "job.json"
         raw = Path(tmp) / "raw.glb"
         report_path = Path(tmp) / "report.json"
         job.write_text(json.dumps({"source": str(args.source.resolve()), "output": str(raw), "report": str(report_path),
-                                   "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan,
+                                   "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan, "head_bones": heads_off,
                                    "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():
@@ -568,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     write_derived_sidecar(args.source, args.output, operation="game_ready")
     report["bones_named"] = len(names)
     report["bones_merged"] = len(plan)
+    report["missing_core_bones"] = missing_core_bones(unity)
     report["style"] = s["style"]
     report["problems"] = problems(report, s["max_influences"], s["height"])
     report["settings"] = {k: v for k, v in s.items() if k != "glow"} | {
