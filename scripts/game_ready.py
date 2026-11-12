@@ -12,8 +12,9 @@ the file:
    textures. The normal map's detail goes into the colour as soft light from above
    (`--no-shade` leaves it out), so the model needs no normal map.
 3. Optional, for figures that are small on screen: `--readability` (0 to 1) lifts the darkest
-   tones and spreads the light ones; `--glow COLOUR` (repeatable) finds that colour's accents,
-   widens them a little and makes them glow.
+   tones and spreads the light ones (meant for dark figures: on light skin it washes out);
+   `--glow COLOUR` (repeatable) finds that colour's accents, widens them by `--glow-width`
+   texels and makes them glow.
 4. Real height (`--height`, metres) with the feet on the floor, centred under the hips.
 5. Engine bone names (`--style unity|mixamo|keep`, the names of `unity_humanoid_names.py`);
    `--fingers merge` folds the finger bones into the hands, for figures too small for fingers.
@@ -60,7 +61,6 @@ FIXED = {
     "tiny_faces": 3,          # ... and so are bits of this many faces or fewer
     "shade_lo": 0.78,         # sky light baked into the colour: shadowed parts x0.78 ...
     "shade_hi": 1.12,         # ... parts open to the sky x1.12
-    "glow_grow": 2,           # accents widened by this many texels (at 1024)
     "fill_px": 8,             # colours pushed this far beyond the islands (for mip-maps)
     "smooth_factor": 0.5,     # weight smoothing step
     "rigid_share": 0.145,     # a separate piece smaller than this share of the height moves as one
@@ -99,6 +99,13 @@ def _atlas(text: str) -> int:
     return value
 
 
+def _width(text: str) -> int:
+    value = int(text)
+    if not 0 <= value <= 8:
+        raise argparse.ArgumentTypeError("from 0 to 8 texels")
+    return value
+
+
 def _influences(text: str) -> int:
     value = int(text)
     if not 1 <= value <= 8:
@@ -114,6 +121,9 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--glow", type=parse_colour, action="append", default=[], metavar="COLOUR",
                         help="make this colour's accents glow, e.g. '#29e6ff' (repeatable)")
     parser.add_argument("--glow-strength", type=_positive, default=3.0, help="emission strength (default 3)")
+    parser.add_argument("--glow-width", type=_width, default=2,
+                        help="texels each accent is widened by at 1024, so thin lines still read when small "
+                             "(default 2; 0 keeps them as painted)")
     parser.add_argument("--no-shade", action="store_true",
                         help="leave the soft sky light out of the colour (it keeps the normal map's detail)")
     parser.add_argument("--fingers", choices=("keep", "merge"), default="keep",
@@ -127,7 +137,7 @@ def add_options(parser: argparse.ArgumentParser) -> None:
 def _to_settings(ns: argparse.Namespace) -> dict:
     s = dict(FIXED)
     s.update(height=ns.height, atlas=ns.atlas, readability=ns.readability, glow=list(ns.glow),
-             glow_strength=ns.glow_strength, shade=not ns.no_shade, fingers=ns.fingers, style=ns.style,
+             glow_strength=ns.glow_strength, glow_grow=ns.glow_width, shade=not ns.no_shade, fingers=ns.fingers, style=ns.style,
              max_influences=ns.max_influences, smooth_iters=max(0, ns.smooth), roughness=ns.roughness)
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0

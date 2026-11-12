@@ -45,10 +45,12 @@ def test_settings_read_the_command_line():
     assert s["height"] == 1.95 and s["atlas"] == 512 and s["readability"] == 1.0
     assert s["glow"] == [pytest.approx(gr.parse_colour("#19e6ff")), pytest.approx(gr.parse_colour("#ff3010"))]
     assert s["fingers"] == "merge" and s["style"] == "mixamo"
+    assert s["glow_grow"] == 2  # the widening the hand-made finish used
+    assert gr.settings(["--glow-width", "0"])["glow_grow"] == 0  # thin lines stay as thin as painted
 
 
 @pytest.mark.parametrize("args", [["--readability", "1.5"], ["--height", "0"], ["--atlas", "1000"],
-                                  ["--max-influences", "0"]])
+                                  ["--max-influences", "0"], ["--glow-width", "-1"], ["--glow-width", "9"]])
 def test_settings_out_of_range_are_refused(args):
     with pytest.raises(SystemExit):
         gr.settings(args)
