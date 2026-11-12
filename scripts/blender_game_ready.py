@@ -231,10 +231,10 @@ def new_uvs(ob, s: dict) -> dict:
     bpy.ops.uv.select_all(action="SELECT")
     try:
         bpy.ops.uv.pack_islands(rotate=True, rotate_method="ANY", scale=True, merge_overlap=False,
-                                margin_method="ADD", margin=s["uv_margin"], shape_method="CONCAVE")
+                                margin_method="ADD", margin=gr.uv_margin(s), shape_method="CONCAVE")
     except (TypeError, RuntimeError) as exc:
         log("concave packing unavailable, plain packing:", exc)
-        bpy.ops.uv.pack_islands(rotate=True, margin=s["uv_margin"])
+        bpy.ops.uv.pack_islands(rotate=True, margin=gr.uv_margin(s))
     bpy.ops.object.mode_set(mode="OBJECT")
 
     bm = bmesh.new()

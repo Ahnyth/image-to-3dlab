@@ -310,3 +310,65 @@ def test_blender_runs_headless_and_fails_loudly(tmp_path):
     cmd = gr.blender_command(Path("blender.exe"), tmp_path / "job.json")
     assert cmd[:5] == ["blender.exe", "--background", "--python-exit-code", "1", "--python"]
     assert cmd[5].endswith("blender_game_ready.py") and cmd[6:] == ["--", str(tmp_path / "job.json")]
+
+
+# --- readability chosen from the figure, thin accents, atlas margin --------------------------
+
+def _figure(median, top, n=4000, seed=3):
+    """Grey texels around `median`, 2 % of them at the bright `top` (plates, lit skin)."""
+    rng = np.random.default_rng(seed)
+    v = np.clip(rng.normal(median, 0.04, n), 0, 1)
+    v[: n // 50] = top
+    return np.repeat(v[:, None, None], 3, axis=2), np.ones((n, 1), bool)
+
+
+def test_settings_accept_auto_readability():
+    assert gr.settings(["--readability", "auto"])["readability"] == "auto"
+
+
+def test_auto_readability_brightens_a_dark_figure_fully():
+    srgb, grey = _figure(0.22, 0.39)  # the Phantom: dark suit, darkish plates
+    assert gr.auto_readability(srgb, grey) == 1.0
+
+
+def test_auto_readability_holds_back_where_light_parts_would_wash_out():
+    srgb, grey = _figure(0.24, 0.67)  # the Bruiser: dark clothes, bright lit skin
+    t = gr.auto_readability(srgb, grey)
+    assert 0.0 < t < 1.0
+    out = gr.value_curve(srgb, grey, t)
+    assert np.percentile(out.mean(-1)[grey], 99) <= gr.READABILITY_CEILING + 1e-6
+
+
+def test_auto_readability_leaves_an_already_bright_figure_alone():
+    srgb, grey = _figure(0.45, 0.85)
+    assert gr.auto_readability(srgb, grey) == 0.0
+
+
+def test_compose_reports_the_readability_it_chose():
+    alb, lit, cov = _atlas()
+    _, _, stats = gr.compose(alb, lit, cov, gr.settings(["--readability", "auto", "--no-shade"]))
+    assert 0.0 <= stats["readability"] <= 1.0
+
+
+def test_thin_glow_keeps_a_light_line_and_skips_a_plate_of_the_same_colour():
+    n = 32
+    red = gr.to_linear(np.array((0.85, 0.12, 0.10)))
+    alb = np.zeros((n, n, 3))
+    alb[:] = gr.to_linear(np.array((0.20, 0.20, 0.22)))
+    alb[4, 2:28] = red          # a light line, one texel wide
+    alb[14:26, 8:20] = red      # an armour plate, twelve texels wide
+    cov = np.ones((n, n))
+    lit = np.full((n, n), 0.5)
+    s = gr.settings(["--no-shade", "--glow", "#d91f1a", "--glow-max-width", "4", "--glow-width", "0"])
+    _, emission, _ = gr.compose(alb, lit, cov, s)
+    assert emission[4, 15].max() > 0.5
+    assert emission[20, 14].max() == 0.0
+    s_all = gr.settings(["--no-shade", "--glow", "#d91f1a", "--glow-width", "0"])
+    _, emission_all, _ = gr.compose(alb, lit, cov, s_all)
+    assert emission_all[20, 14].max() > 0.5  # without the limit the plate glows too
+
+
+def test_the_atlas_margin_is_two_texels_at_any_size():
+    assert gr.settings([])["uv_margin_px"] == 2
+    assert gr.uv_margin(gr.settings(["--atlas", "512"])) == pytest.approx(2 / 512)
+    assert gr.uv_margin(gr.settings([])) == pytest.approx(2 / 1024)

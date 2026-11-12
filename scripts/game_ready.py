@@ -11,10 +11,11 @@ the file:
 2. One texture atlas (`--atlas`, 1024 by default): new UVs, the colour baked from the old
    textures. The normal map's detail goes into the colour as soft light from above
    (`--no-shade` leaves it out), so the model needs no normal map.
-3. Optional, for figures that are small on screen: `--readability` (0 to 1) lifts the darkest
-   tones and spreads the light ones (meant for dark figures: on light skin it washes out);
-   `--glow COLOUR` (repeatable) finds that colour's accents, widens them by `--glow-width`
-   texels and makes them glow.
+3. Optional, for figures that are small on screen: `--readability` (0 to 1, or `auto`) lifts the
+   darkest tones and spreads the light ones; `auto` takes as much as the figure allows before
+   lit skin or a light plate washes out. `--glow COLOUR` (repeatable) finds that colour's
+   accents, widens them by `--glow-width` texels and makes them glow; `--glow-max-width` keeps
+   it to thin lines, so a plate of the same colour stays as painted.
 4. Real height (`--height`, metres) with the feet on the floor, centred under the hips.
 5. Engine bone names (`--style unity|mixamo|keep`, the names of `unity_humanoid_names.py`);
    `--fingers merge` folds the finger bones into the hands, for figures too small for fingers.
@@ -26,6 +27,7 @@ licence record travels on as `<output>.provenance.json`.
 
     python scripts/game_ready.py output/animate/<run>/<name>_idle.glb game.glb --height 1.8
     python scripts/game_ready.py rigged.glb game.glb --height 1.8 --readability 1 --glow "#29e6ff" --fingers merge
+    python scripts/game_ready.py rigged.glb game.glb --readability auto --glow "#d91f1a" --glow-max-width 4
 
 Needs Blender 4.2 or newer; `blender_game_ready.py` does the Blender part. Everything here
 except `main` is plain maths that the Blender part imports, so it is tested without Blender.
@@ -54,7 +56,7 @@ HEX = re.compile(r"#?([0-9a-fA-F]{6})")
 FIXED = {
     "bake_scale": 2,          # bake at twice the atlas size, then box-filter down
     "uv_angle": 72.0,         # smart-project angle limit, degrees
-    "uv_margin": 0.004,       # island spacing in UV units, about 4 texels at 1024
+    "uv_margin_px": 2,        # island spacing in texels: enough for close-ups; from afar mip-maps blend anyway
     "sharp_deg": 62.0,        # edges steeper than this are always hard ...
     "sharp_seam_deg": 25.0,   # ... and on a UV seam already above this (the vertex is split there anyway)
     "tiny_area_cm2": 1.5,     # floating bits smaller than this are deleted ...
@@ -99,6 +101,10 @@ def _atlas(text: str) -> int:
     return value
 
 
+def _readability(text: str) -> float | str:
+    return "auto" if text.strip().lower() == "auto" else _fraction(text)
+
+
 def _width(text: str) -> int:
     value = int(text)
     if not 0 <= value <= 8:
@@ -116,14 +122,18 @@ def _influences(text: str) -> int:
 def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--height", type=_positive, default=1.8, help="height in metres (default 1.8)")
     parser.add_argument("--atlas", type=_atlas, default=1024, help="texture size (default 1024)")
-    parser.add_argument("--readability", type=_fraction, default=0.0,
-                        help="0 to 1: lift the darkest tones, spread the light ones (default 0, off)")
+    parser.add_argument("--readability", type=_readability, default=0.0,
+                        help="0 to 1: lift the darkest tones, spread the light ones (default 0, off); auto: as much "
+                             "as the figure takes before its light parts wash out")
     parser.add_argument("--glow", type=parse_colour, action="append", default=[], metavar="COLOUR",
                         help="make this colour's accents glow, e.g. '#29e6ff' (repeatable)")
     parser.add_argument("--glow-strength", type=_positive, default=3.0, help="emission strength (default 3)")
     parser.add_argument("--glow-width", type=_width, default=2,
                         help="texels each accent is widened by at 1024, so thin lines still read when small "
                              "(default 2; 0 keeps them as painted)")
+    parser.add_argument("--glow-max-width", type=_width, default=0,
+                        help="texels at 1024: only accents up to this wide glow, so a light line glows and an "
+                             "armour plate of the same colour does not (default 0, no limit)")
     parser.add_argument("--no-shade", action="store_true",
                         help="leave the soft sky light out of the colour (it keeps the normal map's detail)")
     parser.add_argument("--fingers", choices=("keep", "merge"), default="keep",
@@ -137,11 +147,17 @@ def add_options(parser: argparse.ArgumentParser) -> None:
 def _to_settings(ns: argparse.Namespace) -> dict:
     s = dict(FIXED)
     s.update(height=ns.height, atlas=ns.atlas, readability=ns.readability, glow=list(ns.glow),
-             glow_strength=ns.glow_strength, glow_grow=ns.glow_width, shade=not ns.no_shade, fingers=ns.fingers, style=ns.style,
-             max_influences=ns.max_influences, smooth_iters=max(0, ns.smooth), roughness=ns.roughness)
+             glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
+             shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
+             smooth_iters=max(0, ns.smooth), roughness=ns.roughness)
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0
     return s
+
+
+def uv_margin(s: dict) -> float:
+    """The island spacing in UV units: `uv_margin_px` texels at the chosen atlas size."""
+    return s["uv_margin_px"] / s["atlas"]
 
 
 def settings(argv: list[str]) -> dict:
@@ -182,6 +198,29 @@ def value_curve(srgb, grey, t: float):
     pivot = float(np.median(v.mean(-1)[grey]))
     d = v - pivot
     return np.clip(pivot * gain + np.where(d < 0, d * lo, d * hi), 0.0, 1.0)
+
+
+READABILITY_CEILING = 200 / 255  # "auto" never lifts the brightest 1 % of the figure above this
+
+
+def auto_readability(srgb, grey, ceiling: float = READABILITY_CEILING, step: float = 0.05) -> float:
+    """The strongest readability that keeps the brightest 1 % of `grey` under `ceiling`.
+
+    A dark figure takes all of it; lit skin or a light chest plate would wash out towards white,
+    so a figure with bright parts gets less, and one already brighter than the ceiling none.
+    """
+    values = np.asarray(srgb, float)[np.asarray(grey)]
+    if len(values) == 0:
+        return 0.0
+    if len(values) > 200_000:  # a sample tells the percentile just as well
+        values = values[:: len(values) // 200_000]
+    pixels = values[:, None, :]
+    every = np.ones(pixels.shape[:2], bool)
+    limit = max(ceiling, float(np.percentile(values.mean(-1), 99)))
+    for t in np.round(np.arange(1.0, -step / 2, -step), 4):
+        if np.percentile(value_curve(pixels, every, float(t)).mean(-1), 99) <= limit + 1e-9:
+            return float(t)
+    return 0.0
 
 
 def accent_mask(srgb, colour, lo: float = 0.05, hi: float = 0.20, max_angle: float = 35.0):
@@ -254,6 +293,20 @@ def push_out(rgb, have, iters: int):
     return rgb, have > 0
 
 
+def thin_only(mask, max_width: float):
+    """`mask` without its parts wider than `max_width` texels (0 keeps everything).
+
+    A part that survives shrinking by half the width is wide: a plate, not a line. It is dropped
+    with a texel to spare, so no glowing rim is left round it.
+    """
+    if max_width <= 0:
+        return mask
+    r = max(1, int(round(max_width / 2)))
+    core = (mask > 0.5).astype(float)
+    shrunk = 1.0 - dilate(1.0 - core, r)
+    return mask * (1.0 - dilate(shrunk, r + 1))
+
+
 def compose(alb_lin, lit, cov, s: dict):
     """The atlas colours from the bakes: (albedo sRGB, emission sRGB or None, numbers).
 
@@ -262,14 +315,17 @@ def compose(alb_lin, lit, cov, s: dict):
     """
     inside = cov > 0
     a_s = to_srgb(alb_lin)
-    masks = [accent_mask(a_s, c) * inside for c in s["glow"]]
+    scale = s["atlas"] / 1024  # widths are given in texels at 1024
+    masks = [thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * scale) for c in s["glow"]]
     found = np.max(masks, axis=0) if masks else np.zeros(inside.shape)
     grey = inside & (found < 0.1)
     lum = a_s.mean(-1)
     stats = {"island_share": float(inside.mean()),
              "lightness_before": _percentiles(lum[grey]),
              "accent_share": float((found[inside] > 0.5).mean()) if inside.any() else 0.0}
-    v = value_curve(a_s, grey, s["readability"])
+    t = auto_readability(a_s, grey) if s["readability"] == "auto" else float(s["readability"])
+    stats["readability"] = t
+    v = value_curve(a_s, grey, t)
     if s["shade_lo"] != 1.0 or s["shade_hi"] != 1.0:
         ref = float(np.percentile(lit[inside], 97)) if inside.any() else 1.0
         filled, _ = push_out(lit[..., None], inside, 2)
@@ -278,7 +334,7 @@ def compose(alb_lin, lit, cov, s: dict):
     emission = None
     if masks:
         emission = np.zeros_like(v)
-        grow = s["glow_grow"]
+        grow = int(round(s["glow_grow"] * scale))
         for colour, m in zip(s["glow"], masks):
             col = np.asarray(colour, float)
             grown = np.clip(np.maximum(box_blur(dilate(m, grow), 1), m), 0.0, 1.0)
