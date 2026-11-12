@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   move kept. Optional: brighter for small on-screen figures (or `auto`, as much as the figure
   takes), glowing accents in a chosen colour (thin lines only, if asked), fingers folded into the
   hands. A report says what an engine would still trip over.
+- `scripts/pixal3d_generate.py --right --left`: build from four pictures (front, right side, back,
+  left side) instead of two, so the sides come from your pictures too and Finish paints them.
 
 ### Fixed
 - The Windows installer's anonymous started / stopped / finished count reaches the site.
