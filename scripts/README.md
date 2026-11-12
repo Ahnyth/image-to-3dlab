@@ -214,6 +214,8 @@ tuning checklist. Manual fitting and visual weight/deformation review remain req
 | `rig_check.py` | Say whether a rigged GLB fits the preset moves (a humanoid), read without Blender. |
 | `name_bones.py` | Give a rigged humanoid GLB's bones an engine's names (Unity Humanoid), without Blender. |
 | `unity_humanoid_names.py` | Rename a rigged humanoid GLB's bones to Unity Humanoid or Mixamo names, without Blender. |
+| `game_ready.py` | Make a rigged character game-ready: one clean mesh, one texture, real size, engine bone names. |
+| `blender_game_ready.py` | The Blender half of `game_ready.py`: rescale, clean, new UVs, one baked atlas, weights, export. |
 | `attack_pose.py` | Pose curves for a quadruped slam attack, as pure functions. |
 | `rigify_walk_pose.py` | Pose curves for a quadruped trot on a Rigify-generated rig, as pure functions. |
 | `blender_walk_cycle.py` | Author a looping quadruped gait cycle on the rigged fox in the live Blender scene. |

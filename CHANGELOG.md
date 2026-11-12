@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).
+- `scripts/game_ready.py` makes a rigged character ready for a game engine in one go: a cleaned
+  mesh, one material with one texture atlas (the normal map's detail baked into the colour), the
+  real height with the feet on the floor, engine bone names, at most 4 bones per vertex, every
+  move kept. Optional: brighter for small on-screen figures, glowing accents in a chosen colour,
+  fingers folded into the hands. A report says what an engine would still trip over.
 
 ### Fixed
 - The Windows installer's anonymous started / stopped / finished count reaches the site.
