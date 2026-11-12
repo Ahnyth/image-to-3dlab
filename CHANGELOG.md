@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own; hair, capes and gear keep their names under the nearest body bone. Also for agents
   (`advanced={"bone_names": "unity"}`), and `scripts/name_bones.py` does it for a model rigged
   before. The names live in `image_to_3dlab/bone_names.py`, one table per engine (#237).
+- `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
+  Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
+  on their own (#237).
 
 ### Fixed
 - The Windows installer's anonymous started / stopped / finished count reaches the site.
