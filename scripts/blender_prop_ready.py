@@ -4,9 +4,15 @@ Run (headless): blender --background --factory-startup --python-exit-code 1 --py
 
 The job, written by `prop_ready.py`: `source`, `output`, `yaw` (degrees about the up axis that
 bring the front to +Z), `size` (one of width, height or length in metres, or empty), `node`
-(LOD0's name) and `hull` (output, faces, node) or null. Writes `place.result.json` beside the
-job: the scale, the placed size (width, height, length), its lowest and highest point, and the
-hull's triangles. The maths is `prop_ready.py`'s, imported here.
+(LOD0's name), `hull` (output, faces, node) or null, and `parts`. Writes `place.result.json`
+beside the job: the scale, the placed size (width, height, length), its lowest and highest
+point, the hull's triangles and, with `parts`, each part's name and pivot. The maths is
+`prop_ready.py`'s, imported here.
+
+With `parts` every part stays its own object with its origin (its pivot: a wheel's axle, a
+door's hinge) moved along with it, under a root named `node`; without, everything is baked
+into world space as before. A job with `"mode": "decimate"` (`source`, `output`, `targets`:
+triangles per part) makes a LOD of a parts model by decimating each part, keeping its UVs.
 """
 
 import json
@@ -46,15 +52,51 @@ def transform(objects, matrix):
         obj.data.update()
 
 
+def keep_parts(objects):
+    """Every mesh unparented with its world placement kept, empties gone: the parts' origins stay."""
+    for obj in objects:
+        world = obj.matrix_world.copy()
+        obj.parent = None
+        obj.matrix_world = world
+    for obj in [o for o in bpy.data.objects if o.type != "MESH"]:
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def move_parts(objects, matrix):
+    """Turn, scale or move every part as a whole, its origin with it; the scale goes into the
+    mesh so a part's transform stays a plain position and turn, as an engine expects."""
+    for obj in objects:
+        location, rotation, scale = (matrix @ obj.matrix_world).decompose()
+        obj.data = obj.data.copy()
+        obj.data.transform(Matrix.Diagonal((scale.x, scale.y, scale.z, 1.0)))
+        obj.data.update()
+        obj.matrix_world = Matrix.LocRotScale(location, rotation, None)
+
+
+def world_points(objects):
+    for obj in objects:
+        world = obj.matrix_world
+        for vertex in obj.data.vertices:
+            yield world @ vertex.co
+
+
+def triangles(obj) -> int:
+    return sum(len(polygon.vertices) - 2 for polygon in obj.data.polygons)
+
+
+def gltf_point(vector):
+    """A Blender point in glTF axes: Blender (x, y, z) is glTF (x, z, -y)."""
+    return [vector.x, vector.z, -vector.y]
+
+
 def bounds(objects):
     """Lowest and highest corner, in glTF axes (x, y up, z towards the front)."""
     low = Vector((math.inf,) * 3)
     high = Vector((-math.inf,) * 3)
-    for obj in objects:
-        for vertex in obj.data.vertices:
-            for axis in range(3):
-                low[axis] = min(low[axis], vertex.co[axis])
-                high[axis] = max(high[axis], vertex.co[axis])
+    for point in world_points(objects):
+        for axis in range(3):
+            low[axis] = min(low[axis], point[axis])
+            high[axis] = max(high[axis], point[axis])
     # Blender is Z up with the front at -Y; glTF is Y up with the front at +Z
     return (low.x, low.z, -high.y), (high.x, high.z, -low.y)
 
@@ -62,9 +104,8 @@ def bounds(objects):
 def hull_object(objects, faces: int, name: str):
     """A convex hull of every mesh, cut to at most `faces` triangles."""
     bm = bmesh.new()
-    for obj in objects:
-        for vertex in obj.data.vertices:
-            bm.verts.new(vertex.co)
+    for point in world_points(objects):
+        bm.verts.new(point)
     result = bmesh.ops.convex_hull(bm, input=bm.verts[:])
     bmesh.ops.delete(bm, geom=[g for g in result["geom_interior"] + result["geom_unused"]
                                if isinstance(g, bmesh.types.BMVert)], context="VERTS")
@@ -102,9 +143,31 @@ def export(path: str, objects) -> None:
                               export_yup=True, export_apply=False)
 
 
+def decimate(job) -> None:
+    """A LOD of a parts model: each part decimated to its share, UVs and pivots kept."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.gltf(filepath=job["source"])
+    for obj in meshes():
+        target = job["targets"].get(obj.name)
+        count = triangles(obj)
+        if target is None or count == 0 or target >= count:
+            continue
+        modifier = obj.modifiers.new("lod", "DECIMATE")
+        modifier.ratio = target / count
+        modifier.use_collapse_triangulate = True
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+    export(job["output"], list(bpy.data.objects))
+    print("PROP_READY::decimated " + json.dumps({obj.name: triangles(obj) for obj in meshes()}), flush=True)
+
+
 def main() -> None:
     job_path = Path(sys.argv[sys.argv.index("--") + 1])
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    if job.get("mode") == "decimate":
+        decimate(job)
+        return
+    parts = bool(job.get("parts"))
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=job["source"])
     if any(obj.type == "ARMATURE" for obj in bpy.data.objects):
@@ -112,25 +175,40 @@ def main() -> None:
     objects = meshes()
     if not objects:
         raise SystemExit("no mesh in " + job["source"])
-    bake_transforms(objects)
+    if parts:
+        keep_parts(objects)
+        place = move_parts
+    else:
+        bake_transforms(objects)
+        place = transform
 
     # the same angle turns glTF about +Y and Blender about +Z (see prop_ready.FRONTS)
-    transform(objects, Matrix.Rotation(math.radians(job["yaw"]), 4, "Z"))
+    place(objects, Matrix.Rotation(math.radians(job["yaw"]), 4, "Z"))
     low, high = bounds(objects)
     extent = [h - lo for lo, h in zip(low, high)]
     scale = pr.scale_for(extent, **job["size"])
-    transform(objects, Matrix.Scale(scale, 4))
+    place(objects, Matrix.Scale(scale, 4))
     low, high = bounds(objects)
     x, y, z = pr.floor_translation(low, high)
-    transform(objects, Matrix.Translation((x, -z, y)))   # glTF (x, y, z) is Blender (x, -z, y)
+    place(objects, Matrix.Translation((x, -z, y)))   # glTF (x, y, z) is Blender (x, -z, y)
     low, high = bounds(objects)
-
-    for index, obj in enumerate(objects):
-        obj.name = job["node"] if index == 0 else f"{job['node']}_{index}"
-    export(job["output"], objects)
 
     result = {"scale": scale, "low": list(low), "high": list(high),
               "size": [h - lo for lo, h in zip(low, high)], "hull_triangles": None}
+    if parts:
+        result["parts"] = [{"name": obj.name, "pivot": gltf_point(obj.matrix_world.translation)}
+                           for obj in objects]
+        root = bpy.data.objects.new(job["node"], None)
+        bpy.context.scene.collection.objects.link(root)
+        for obj in objects:
+            world = obj.matrix_world.copy()
+            obj.parent = root
+            obj.matrix_world = world
+        export(job["output"], [root, *objects])
+    else:
+        for index, obj in enumerate(objects):
+            obj.name = job["node"] if index == 0 else f"{job['node']}_{index}"
+        export(job["output"], objects)
     if job.get("hull"):
         hull = hull_object(objects, job["hull"]["faces"], job["hull"]["node"])
         result["hull_triangles"] = len(hull.data.polygons)

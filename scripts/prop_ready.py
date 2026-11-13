@@ -57,6 +57,13 @@ FLOOR_TOLERANCE = 0.005                     # metres; a prop further off the flo
 # No prop or vehicle a game places by hand is this small or this large; a size outside it
 # is a scale left out (Pixal3D's unit cube) or typed wrong.
 PLAUSIBLE_METRES = (0.05, 60.0)
+# --parts: what a model with moving parts calls them, and how they turn once the front is +Z.
+# A wheel's axle runs across the vehicle (X); a door's hinge stands upright (Y). Anything else
+# that moves (a barrier boom, a hatch) is listed with its pivot and no axis: its README says.
+MOVING_PREFIXES = ("wheel", "door", "boom", "hatch", "lid", "gate")
+PART_AXES = {"wheel": [1.0, 0.0, 0.0], "door": [0.0, 1.0, 0.0]}
+# Triangles a part keeps in every LOD, so a 24-segment wheel stays a wheel and a door a door
+PART_FLOOR = 96
 
 
 def yaw_for_front(front: str) -> float:
@@ -155,6 +162,115 @@ def parse_lods(text: str) -> list[int]:
     return lods
 
 
+def part_axis(name: str) -> list[float] | None:
+    """The axis a moving part turns about, in the placed prop's axes; None when unknown."""
+    key = name.strip().lower()
+    for prefix, axis in PART_AXES.items():
+        if key.startswith(prefix):
+            return list(axis)
+    return None
+
+
+def moving_parts(parts: list[dict]) -> list[dict]:
+    """The parts an engine can move (wheels, doors, a boom), each with its pivot and axis.
+
+    `parts` is what the Blender half reports: every part's name and pivot (its origin, in the
+    placed prop's metres). The body and the interior stay where they are, so they are left out.
+    """
+    return [{"name": part["name"], "pivot": part["pivot"], "axis": part_axis(part["name"])}
+            for part in parts if part["name"].strip().lower().startswith(MOVING_PREFIXES)]
+
+
+def part_targets(triangles: dict[str, int], target: int, floor: int = PART_FLOOR) -> dict[str, int]:
+    """Each part's triangle count in a LOD of `target` triangles, decimating every part alike.
+
+    A part the common ratio would take under `floor` keeps `floor` (or all it has), so small
+    round parts stay round; the rest share what is left. When the floors alone exceed the
+    target, the floors win: a LOD a little over its count beats square wheels.
+    """
+    if target >= sum(triangles.values()):
+        return dict(triangles)
+    fixed: dict[str, int] = {}
+    free = dict(triangles)
+    while True:
+        budget = target - sum(fixed.values())
+        pool = sum(free.values())
+        ratio = max(0.0, budget / pool) if pool else 0.0
+        held = {name: count for name, count in free.items() if count * ratio < min(count, floor)}
+        if not held:
+            break
+        for name, count in held.items():
+            fixed[name] = min(count, floor)
+            del free[name]
+    return {**fixed, **{name: max(1, min(count, round(count * ratio))) for name, count in free.items()}}
+
+
+def part_triangles(glb: bytes) -> dict[str, int]:
+    """How many triangles each mesh node of a GLB holds, by node name."""
+    from compress_glb_textures import parse_glb
+
+    document, _binary = parse_glb(glb)
+    accessors = document.get("accessors", [])
+    meshes = document.get("meshes", [])
+    counts: dict[str, int] = {}
+    for node in document.get("nodes", []):
+        if "mesh" not in node:
+            continue
+        total = 0
+        for primitive in meshes[node["mesh"]].get("primitives", []):
+            if primitive.get("mode", 4) != 4:
+                continue
+            source = primitive.get("indices", primitive.get("attributes", {}).get("POSITION"))
+            if source is not None:
+                total += accessors[source]["count"] // 3
+        counts[node.get("name", f"node{len(counts)}")] = total
+    return counts
+
+
+def name_parts_lod(glb: bytes, name: str) -> bytes:
+    """Name a parts model's root node after its LOD; the parts keep their own names.
+
+    `finish_props.name_lod` names every mesh node after the LOD, which would turn four wheels
+    into four nodes called `bus_LOD1` that no script can find.
+    """
+    from compress_glb_textures import build_glb, parse_glb
+
+    document, binary = parse_glb(glb)
+    nodes = document.get("nodes", [])
+    children = {child for node in nodes for child in node.get("children", [])}
+    roots = [index for index in range(len(nodes)) if index not in children]
+    for index in roots:
+        nodes[index]["name"] = name
+    return build_glb(document, binary)
+
+
+def with_painted_atlas(parts_glb: bytes, painted_glb: bytes) -> bytes:
+    """The parts model with the base colour of `painted_glb` (Pixel Match's output on the
+    joined copy, which has the same UVs), everything else unchanged."""
+    import io
+
+    from compress_glb_textures import parse_glb
+    from PIL import Image
+
+    from image_to_3dlab import photo_paint
+
+    document, binary = parse_glb(painted_glb)
+    image = document["images"][photo_paint.base_colour_image_index(document)]
+    view = document["bufferViews"][image["bufferView"]]
+    start = view.get("byteOffset", 0)
+    picture = Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB")
+    png = io.BytesIO()
+    picture.save(png, "PNG")
+    return photo_paint.replace_base_colour(parts_glb, png.getvalue())
+
+
+def place_job(source: Path, output: Path, yaw: float, size: dict, node: str, hull: dict | None,
+              parts: bool = False) -> dict:
+    """The job file `blender_prop_ready.py` places the prop by."""
+    return {"source": str(source.resolve()), "output": str(output.resolve()), "yaw": yaw, "size": size,
+            "node": node, "hull": hull, "parts": parts}
+
+
 def problems(record: dict) -> list[str]:
     """What looks wrong in a finished prop, one plain sentence each; empty when nothing does."""
     found = []
@@ -174,6 +290,11 @@ def problems(record: dict) -> list[str]:
         if earlier and later > earlier:
             found.append(f"LOD{index}'s file is {later / 1e6:.1f} MB, heavier than LOD{index - 1}'s "
                          f"{earlier / 1e6:.1f} MB")
+    for part in record.get("parts", []):
+        if part["name"].lower().startswith("wheel"):
+            for index, count in enumerate(part.get("triangles", [])):
+                if count < PART_FLOOR:
+                    found.append(f"{part['name']} has {count} triangles in LOD{index}: too few to stay round")
     collider = record.get("collider") or {}
     if collider.get("kind") == "hull" and collider.get("triangles", 0) > CONVEX_LIMIT:
         found.append(f"the hull has {collider['triangles']} triangles; a convex mesh collider takes "
@@ -202,6 +323,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--collider", choices=("box", "hull", "none"), default="box")
     parser.add_argument("--hull-faces", type=int, default=CONVEX_LIMIT,
                         help=f"most triangles for --collider hull (default {CONVEX_LIMIT})")
+    parser.add_argument("--parts", action="store_true",
+                        help="a model with moving parts (wheels, doors, a boom): keep each part, its name and "
+                             "its pivot, and make the LODs by decimating each part instead of a new bake")
+    parser.add_argument("--paint-from", type=Path,
+                        help="with --parts: take the base colour from this GLB (Pixel Match's output on the "
+                             "joined copy of the same model, same UVs)")
     parser.add_argument("--blender", type=Path, help="Blender to use (default: I2L_BLENDER, then the usual places)")
     return parser
 
@@ -257,12 +384,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     lod0 = out / f"{args.name}_LOD0.glb"
     placed_glb = logs / "LOD0.placed.glb"
     hull = out / f"{args.name}_COL.glb"
-    atlas = _glb_atlas(args.source.read_bytes()) or 2048
-    job = {"source": str(args.source.resolve()), "output": str(placed_glb.resolve()), "yaw": yaw,
-           "size": {name: getattr(args, name) for name in SIZES if getattr(args, name) is not None},
-           "node": lod_name(args.name, 0),
-           "hull": ({"output": str(hull.resolve()), "faces": args.hull_faces, "node": f"{args.name}_COL"}
-                    if args.collider == "hull" else None)}
+    source = args.source
+    if args.paint_from is not None:
+        if not args.parts:
+            raise SystemExit("--paint-from goes with --parts (a single mesh is painted by Finish itself)")
+        source = logs / "source.painted.glb"
+        source.write_bytes(with_painted_atlas(args.source.read_bytes(), args.paint_from.read_bytes()))
+    atlas = _glb_atlas(source.read_bytes()) or 2048
+    job = place_job(source, placed_glb, yaw,
+                    {name: getattr(args, name) for name in SIZES if getattr(args, name) is not None},
+                    lod_name(args.name, 0),
+                    ({"output": str(hull.resolve()), "faces": args.hull_faces, "node": f"{args.name}_COL"}
+                     if args.collider == "hull" else None),
+                    parts=args.parts)
     job_path = logs / "place.job.json"
     job_path.write_text(json.dumps(job, indent=2), encoding="utf-8")
     log = logs / "place.log"
@@ -275,14 +409,49 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     squeezed, _report = compress(placed_glb.read_bytes(), max_size=atlas, map_size=min(atlas, 1024),
                                  normal_size=atlas)
     placed_glb.write_bytes(squeezed)
-    write_lod(placed_glb, lod0, lod_name(args.name, 0))
+    if args.parts:
+        placed_glb.write_bytes(name_parts_lod(placed_glb.read_bytes(), lod_name(args.name, 0)))
+        placed_glb.replace(lod0)
+    else:
+        write_lod(placed_glb, lod0, lod_name(args.name, 0))
 
     record = {"name": args.name, "source": str(args.source), "front": "+Z", "turned_deg": yaw,
               "scale": placed["scale"], "size_m": placed["size"], "floor_y": placed["low"][1],
               "pivot": "bottom centre", "atlas": atlas,
               "lods": [{"glb": lod0.name, "triangles": glb_triangles(lod0.read_bytes()), "atlas": atlas,
                         "bytes": lod0.stat().st_size}]}
+    if args.paint_from is not None:
+        record["painted_from"] = str(args.paint_from)
+    if args.parts:
+        record["parts"] = moving_parts(placed["parts"])
+        lod0_parts = part_triangles(lod0.read_bytes())
+        for part in record["parts"]:
+            part["triangles"] = [lod0_parts.get(part["name"], 0)]
     for index, faces, lod_atlas in lod_plan(lods, atlas):
+        if args.parts:
+            # a kept mesh has no bake source but itself: decimate each part, keep UVs and pivots
+            print(f"LOD{index}: {faces} triangles by decimation, {lod_atlas} px", flush=True)
+            target = out / f"{args.name}_LOD{index}.glb"
+            decimated = logs / f"LOD{index}.decimated.glb"
+            decimate = {"mode": "decimate", "source": str(lod0.resolve()), "output": str(decimated.resolve()),
+                        "targets": part_targets(part_triangles(lod0.read_bytes()), faces)}
+            decimate_path = logs / f"LOD{index}.job.json"
+            decimate_path.write_text(json.dumps(decimate, indent=2), encoding="utf-8")
+            with (logs / f"LOD{index}.decimate.log").open("w", encoding="utf-8") as handle:
+                done = subprocess.run(blender_command(blender, decimate_path), check=False, stdout=handle,
+                                      stderr=subprocess.STDOUT)
+            if done.returncode != 0:
+                raise SystemExit(f"LOD{index} decimation failed (exit {done.returncode}); see logs/")
+            squeezed, _report = compress(decimated.read_bytes(), max_size=lod_atlas,
+                                         map_size=min(lod_atlas, 1024), normal_size=lod_atlas)
+            decimated.write_bytes(name_parts_lod(squeezed, lod_name(args.name, index)))
+            decimated.replace(target)
+            counts = part_triangles(target.read_bytes())
+            for part in record["parts"]:
+                part["triangles"].append(counts.get(part["name"], 0))
+            record["lods"].append({"glb": target.name, "faces": faces, "atlas": lod_atlas,
+                                   "triangles": glb_triangles(target.read_bytes()), "bytes": target.stat().st_size})
+            continue
         print(f"LOD{index}: {faces} faces, {lod_atlas} px", flush=True)
         retopo = logs / f"LOD{index}.retopo.glb"
         detailed = logs / f"LOD{index}.detail.glb"

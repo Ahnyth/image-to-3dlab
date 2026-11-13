@@ -210,3 +210,161 @@ def test_the_blender_command_runs_headless_with_the_job():
     assert "--factory-startup" in command and "--python-exit-code" in command
     assert command[-2:] == ["--", "job.json"]
     assert any(part.endswith("blender_prop_ready.py") for part in command)
+
+
+# --- parts: models with moving parts (route (b) vehicles and buildings) ---------------------
+# A model built by hand keeps its wheels, doors and booms as separate parts with their pivots
+# where they turn, so the engine can spin a wheel or open a door. Remeshing it into one piece
+# faceted the ambulance's wheels and made it a decoration.
+
+def _glb_with_image(image: bytes, mime: str = "image/png", nodes=None) -> bytes:
+    """A GLB with one material whose base colour is `image`, and the given nodes."""
+    from compress_glb_textures import build_glb
+
+    binary = image + b"\x00" * (-len(image) % 4)
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0,
+        "scenes": [{"nodes": list(range(len(nodes or [])))}],
+        "nodes": nodes or [],
+        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+        "textures": [{"source": 0}],
+        "images": [{"bufferView": 0, "mimeType": mime}],
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(image)}],
+    }
+    return build_glb(document, binary)
+
+
+def _png(colour) -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4), colour).save(out, "PNG")
+    return out.getvalue()
+
+
+def _base_colour(glb: bytes):
+    import io
+
+    from PIL import Image
+
+    document, binary = parse_glb(glb)
+    view = document["bufferViews"][document["images"][0]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    return Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB").getpixel((0, 0))
+
+
+@pytest.mark.parametrize("name, axis", [("wheel_FL", [1.0, 0.0, 0.0]), ("Wheel_RR", [1.0, 0.0, 0.0]),
+                                        ("door_1a", [0.0, 1.0, 0.0]), ("door", [0.0, 1.0, 0.0])])
+def test_wheels_turn_about_the_axle_and_doors_about_an_upright_hinge(name, axis):
+    # once the front is +Z a vehicle's axles run along X and a door's hinge stands along Y
+    assert pr.part_axis(name) == axis
+
+
+def test_a_part_with_no_known_way_of_moving_has_no_axis():
+    assert pr.part_axis("boom") is None
+    assert pr.part_axis("body") is None
+
+
+def test_only_the_parts_that_move_are_listed_with_their_pivots():
+    parts = [{"name": "body", "pivot": [0, 0, 0]}, {"name": "interior", "pivot": [0, 0.5, 0]},
+             {"name": "wheel_FL", "pivot": [1.0, 0.36, 2.5]}, {"name": "door_cab_L", "pivot": [-1.0, 1.0, 1.9]},
+             {"name": "boom", "pivot": [1.5, 1.0, 0.0]}]
+    listed = pr.moving_parts(parts)
+    assert [part["name"] for part in listed] == ["wheel_FL", "door_cab_L", "boom"]
+    assert listed[0] == {"name": "wheel_FL", "pivot": [1.0, 0.36, 2.5], "axis": [1.0, 0.0, 0.0]}
+    assert listed[2]["axis"] is None
+
+
+def test_each_part_gets_its_share_of_a_lod_and_the_shares_add_up():
+    triangles = {"body": 4000, "interior": 600, "wheel_FL": 400, "wheel_FR": 400, "wheel_RL": 400, "wheel_RR": 400}
+    targets = pr.part_targets(triangles, 3100)
+    assert abs(sum(targets.values()) - 3100) <= len(triangles)
+    assert all(targets[name] <= triangles[name] for name in triangles)
+    assert targets["body"] > targets["interior"]
+
+
+def test_a_wheel_keeps_enough_triangles_to_stay_round_even_in_a_small_lod():
+    triangles = {"body": 4000, "wheel_FL": 400, "wheel_FR": 400}
+    targets = pr.part_targets(triangles, 600)
+    assert targets["wheel_FL"] >= pr.PART_FLOOR and targets["wheel_FR"] >= pr.PART_FLOOR
+    assert sum(targets.values()) <= 600 + len(triangles)
+
+
+def test_a_part_already_under_the_floor_keeps_every_triangle():
+    targets = pr.part_targets({"body": 3000, "handle": 40}, 1000)
+    assert targets["handle"] == 40
+
+
+def test_a_lod_as_large_as_the_model_keeps_every_part_whole():
+    triangles = {"body": 3000, "wheel_FL": 300}
+    assert pr.part_targets(triangles, 5000) == triangles
+
+
+def test_the_triangles_of_each_part_are_read_from_the_glb():
+    from compress_glb_textures import build_glb
+
+    binary = b"\x00" * 64
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "bus_LOD0", "children": [1, 2]}, {"name": "body", "mesh": 0},
+                  {"name": "wheel_FL", "mesh": 1}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]},
+                   {"primitives": [{"attributes": {"POSITION": 0}, "indices": 2}]}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                      {"bufferView": 0, "componentType": 5123, "count": 30, "type": "SCALAR"},
+                      {"bufferView": 0, "componentType": 5123, "count": 12, "type": "SCALAR"}],
+        "buffers": [{"byteLength": 64}], "bufferViews": [{"buffer": 0, "byteLength": 64}],
+    }
+    assert pr.part_triangles(build_glb(document, binary)) == {"body": 10, "wheel_FL": 4}
+
+
+def test_a_lod_of_a_parts_model_renames_only_its_root_and_keeps_the_part_names():
+    nodes = [{"name": "bus_LOD0", "children": [1, 2]}, {"name": "body", "mesh": 0}, {"name": "wheel_FL", "mesh": 1}]
+    renamed = pr.name_parts_lod(_glb_with_image(_png((0, 0, 0)), nodes=nodes), "bus_LOD2")
+    document, _binary = parse_glb(renamed)
+    assert [node["name"] for node in document["nodes"]] == ["bus_LOD2", "body", "wheel_FL"]
+
+
+def test_the_painted_atlas_goes_into_the_parts_model_and_nothing_else_changes():
+    nodes = [{"name": "bus_parts", "children": [1]}, {"name": "wheel_FL"}]
+    parts = _glb_with_image(_png((255, 255, 255)), nodes=nodes)
+    painted = _glb_with_image(_png((200, 30, 30)))
+    swapped = pr.with_painted_atlas(parts, painted)
+    assert _base_colour(swapped) == (200, 30, 30)
+    assert parse_glb(swapped)[0]["nodes"] == nodes
+
+
+def test_a_jpeg_atlas_from_finish_is_carried_over_too():
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (30, 200, 30)).save(out, "JPEG", quality=95)
+    painted = _glb_with_image(out.getvalue(), mime="image/jpeg")
+    swapped = pr.with_painted_atlas(_glb_with_image(_png((0, 0, 0)), nodes=[{"name": "body"}]), painted)
+    red, green, blue = _base_colour(swapped)
+    assert green > 180 and red < 60 and blue < 60
+
+
+def test_parts_are_asked_for_on_the_command_line():
+    args = pr.build_parser().parse_args(["bus_parts.glb", "out", "--name", "bus", "--parts",
+                                         "--paint-from", "bus_painted.glb"])
+    assert args.parts is True and args.paint_from == Path("bus_painted.glb")
+    assert pr.build_parser().parse_args(["in.glb", "out", "--name", "bus"]).parts is False
+
+
+def test_the_place_job_tells_blender_to_keep_the_parts():
+    job = pr.place_job(Path("in.glb"), Path("out.glb"), 180.0, {"height": 3.27}, "bus_LOD0", None, parts=True)
+    assert job["parts"] is True and job["node"] == "bus_LOD0" and job["yaw"] == 180.0
+    assert pr.place_job(Path("in.glb"), Path("out.glb"), 0.0, {}, "bus_LOD0", None)["parts"] is False
+
+
+def test_a_parts_model_whose_wheel_lost_its_roundness_is_named():
+    lods = [{"triangles": 5000}, {"triangles": 2500}]
+    record = _record(lods=lods, parts=[{"name": "wheel_FL", "pivot": [1, 0.4, 2], "axis": [1, 0, 0],
+                                        "triangles": [400, 60]}])
+    assert any("wheel_FL" in line for line in pr.problems(record))
