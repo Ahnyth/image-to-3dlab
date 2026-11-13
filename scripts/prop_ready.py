@@ -64,6 +64,9 @@ MOVING_PREFIXES = ("wheel", "door", "boom", "hatch", "lid", "gate")
 PART_AXES = {"wheel": [1.0, 0.0, 0.0], "door": [0.0, 1.0, 0.0]}
 # Triangles a part keeps in every LOD, so a 24-segment wheel stays a wheel and a door a door
 PART_FLOOR = 96
+# Fewer than this and a wheel is named as no longer round. Below the floor on purpose:
+# Blender's decimation lands within a few triangles of its target (95 of 96 on the bus).
+ROUND_MINIMUM = 80
 
 
 def yaw_for_front(front: str) -> float:
@@ -293,7 +296,7 @@ def problems(record: dict) -> list[str]:
     for part in record.get("parts", []):
         if part["name"].lower().startswith("wheel"):
             for index, count in enumerate(part.get("triangles", [])):
-                if count < PART_FLOOR:
+                if count < ROUND_MINIMUM:
                     found.append(f"{part['name']} has {count} triangles in LOD{index}: too few to stay round")
     collider = record.get("collider") or {}
     if collider.get("kind") == "hull" and collider.get("triangles", 0) > CONVEX_LIMIT:

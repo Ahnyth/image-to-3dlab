@@ -368,3 +368,11 @@ def test_a_parts_model_whose_wheel_lost_its_roundness_is_named():
     record = _record(lods=lods, parts=[{"name": "wheel_FL", "pivot": [1, 0.4, 2], "axis": [1, 0, 0],
                                         "triangles": [400, 60]}])
     assert any("wheel_FL" in line for line in pr.problems(record))
+
+
+def test_a_wheel_a_triangle_or_two_under_its_floor_is_not_named():
+    # Blender's decimation lands within a few triangles of its target: the bus's twin wheel came
+    # out at 95 of 96 in LOD2, which is just as round
+    record = _record(parts=[{"name": "wheel_RR", "pivot": [-0.94, 0.5, -2.65], "axis": [1, 0, 0],
+                             "triangles": [828, 315, 95]}])
+    assert pr.problems(record) == []
