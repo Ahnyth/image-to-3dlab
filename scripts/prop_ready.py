@@ -28,7 +28,7 @@ names them), `<name>_COL.glb`, `<name>.prop.json` (size, pivot, front, LODs, col
 what looks wrong) and carries the licence record on as `<name>.provenance.json`.
 
     python scripts/prop_ready.py bus_5k.glb out/bus --name bus --height 3.27
-    python scripts/prop_ready.py tent_5k.glb out/tent --name tent --front -x --length 10.3 --collider hull
+    python scripts/prop_ready.py tent_5k.glb out/tent --name tent --front=-x --length 10.3 --collider hull
 
 Needs Blender 4.2 or newer; `blender_prop_ready.py` places the prop and makes the hull.
 Everything here except `main` is plain maths, tested without Blender.
@@ -192,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("source", type=Path, help="the finished prop (Finish's GLB): becomes LOD0")
     parser.add_argument("out_dir", type=Path, help="folder for the LODs, the collider and the record")
     parser.add_argument("--name", required=True, help="the prop's name: files and nodes are named after it")
-    parser.add_argument("--front", default="+z", help="where the prop's front points now: +x, -x, +z or -z")
+    parser.add_argument("--front", default="+z", help="where the prop's front points now: +x, -x, +z or -z (write a minus as --front=-z)")
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--length", type=float, help="real length along the front, metres")
     size.add_argument("--width", type=float, help="real width, metres")

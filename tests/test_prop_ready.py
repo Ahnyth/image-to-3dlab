@@ -188,6 +188,13 @@ def test_lods_are_read_as_face_counts_after_lod0():
     assert args.front == "+z" and args.collider == "box" and args.hull_faces == 255
 
 
+def test_a_minus_front_is_given_with_an_equals_sign_as_the_help_says():
+    # argparse reads "--front -z" as two options; "--front=-z" is the way, and the help says so
+    args = pr.build_parser().parse_args(["in.glb", "out", "--name", "amb", "--front=-z"])
+    assert pr.yaw_for_front(args.front) == 180.0
+    assert "--front=-z" in pr.build_parser().format_help() and "--front=-x" in pr.__doc__
+
+
 def test_lods_must_get_lighter():
     with pytest.raises(SystemExit):
         pr.parse_lods("1000,2500")
