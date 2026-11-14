@@ -274,8 +274,31 @@ def test_only_the_parts_that_move_are_listed_with_their_pivots():
              {"name": "boom", "pivot": [1.5, 1.0, 0.0]}]
     listed = pr.moving_parts(parts)
     assert [part["name"] for part in listed] == ["wheel_FL", "door_cab_L", "boom"]
-    assert listed[0] == {"name": "wheel_FL", "pivot": [1.0, 0.36, 2.5], "axis": [1.0, 0.0, 0.0]}
-    assert listed[2]["axis"] is None
+    assert listed[0] == {"name": "wheel_FL", "pivot": [1.0, 0.36, 2.5], "motion": "turn", "axis": [1.0, 0.0, 0.0]}
+    assert listed[2]["axis"] is None and "motion" not in listed[2]
+
+
+def test_a_vector_turns_with_the_prop_and_grows_with_its_scale():
+    # the same turn as the front's: counter-clockwise seen from above, +X towards -Z
+    assert pr.turn_vector([1.0, 0.0, 0.0], 90.0, 1.0) == pytest.approx([0.0, 0.0, -1.0])
+    assert pr.turn_vector([0.0, 0.5, -0.7], 180.0, 2.0) == pytest.approx([0.0, 1.0, 1.4])
+
+
+def test_a_part_that_says_how_it_moves_keeps_that_turned_with_the_prop():
+    # a metro car's plug door (the kit writes it into the model as glTF extras): out of the skin, then forward.
+    # The kit's front is -Z, so prop_ready turns it 180 degrees; the leaf's way out and its slide turn along
+    parts = [{"name": "door_1a", "pivot": [-1.33, 1.1, 6.68], "motion": "slide",
+              "out": [0.10, 0.0, 0.0], "slide": [0.0, 0.0, -0.70]}]
+    listed = pr.moving_parts(parts, yaw=180.0, scale=1.0)
+    assert listed[0]["motion"] == "slide" and "axis" not in listed[0]
+    assert listed[0]["out"] == pytest.approx([-0.10, 0.0, 0.0])
+    assert listed[0]["slide"] == pytest.approx([0.0, 0.0, 0.70])
+
+
+def test_a_model_that_says_a_part_turns_overrides_the_name():
+    parts = [{"name": "hatch_roof", "pivot": [0.0, 3.0, 1.0], "motion": "turn", "axis": [1.0, 0.0, 0.0]}]
+    listed = pr.moving_parts(parts, yaw=90.0, scale=1.0)
+    assert listed[0]["motion"] == "turn" and listed[0]["axis"] == pytest.approx([0.0, 0.0, -1.0])
 
 
 def test_each_part_gets_its_share_of_a_lod_and_the_shares_add_up():
@@ -301,6 +324,73 @@ def test_a_part_already_under_the_floor_keeps_every_triangle():
 def test_a_lod_as_large_as_the_model_keeps_every_part_whole():
     triangles = {"body": 3000, "wheel_FL": 300}
     assert pr.part_targets(triangles, 5000) == triangles
+
+
+# A metro car's parts as the kit builds it (LOD0 8,016 triangles): 16 door leaves of 44, eight
+# 0.84 m wheels of 572 on an 18 m car, body and interior. With one floor of 96 for every part
+# its 1,000-triangle LOD2 came out at 1,663 and left the body 96 triangles.
+METRO = {"body": 2036, "interior": 700, **{f"wheel_{n}": 572 for n in range(8)},
+         **{f"door_{n}": 44 for n in range(16)}}
+METRO_SHARES = {"body": 1.0, "interior": 0.95, **{f"wheel_{n}": 0.84 / 18 for n in range(8)},
+                **{f"door_{n}": 1.95 / 18 for n in range(16)}}
+
+
+def test_a_part_keeps_the_full_floor_at_a_bus_wheels_size_and_less_when_smaller():
+    # a 1 m wheel on a 12 m bus is the size the floor of 96 was set on
+    assert pr.part_floor(1.0 / 12) == pr.PART_FLOOR
+    assert pr.part_floor(1.0) == pr.PART_FLOOR
+    assert pr.part_floor(0.84 / 18) == round(pr.PART_FLOOR * 0.84 / 18 * 12)
+    assert pr.part_floor(0.001) == pr.LEAST_FLOOR
+
+
+def test_small_parts_of_a_long_vehicle_leave_the_body_its_share_of_a_small_lod():
+    targets = pr.part_targets(METRO, 1000, shares=METRO_SHARES)
+    assert abs(sum(targets.values()) - 1000) <= len(METRO)
+    assert targets["body"] > 1000 / 4
+    assert all(targets[f"wheel_{n}"] >= pr.LEAST_FLOOR for n in range(8))
+    assert all(targets[f"door_{n}"] >= pr.LEAST_FLOOR for n in range(16))
+
+
+def test_the_floors_together_take_at_most_their_share_and_the_lod_keeps_its_count():
+    # without sizes every part starts at the full floor; the floors shrink alike to fit
+    floors = pr.part_floors(METRO, 1000)
+    assert sum(floors.values()) <= 1000 * pr.FLOOR_BUDGET + len(METRO)
+    assert abs(sum(pr.part_targets(METRO, 1000).values()) - 1000) <= len(METRO)
+
+
+def test_floors_that_fit_are_not_shrunk():
+    floors = pr.part_floors({"body": 4000, "wheel_FL": 400, "wheel_FR": 400}, 600)
+    assert floors == {"body": pr.PART_FLOOR, "wheel_FL": pr.PART_FLOOR, "wheel_FR": pr.PART_FLOOR}
+
+
+def test_a_small_part_is_thinned_more_than_the_body():
+    targets = pr.part_targets(METRO, 2500, shares=METRO_SHARES)
+    assert targets["wheel_0"] / METRO["wheel_0"] < targets["body"] / METRO["body"]
+
+
+def test_the_floors_of_each_part_follow_its_size():
+    floors = pr.part_floors(METRO, 2500, shares=METRO_SHARES)
+    assert floors["door_0"] <= METRO["door_0"]          # never more than a part has
+    assert pr.LEAST_FLOOR <= floors["wheel_0"] < floors["body"]
+
+
+def test_the_size_of_each_part_is_read_from_the_glb():
+    from compress_glb_textures import build_glb
+
+    binary = b"\x00" * 64
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "metro_LOD0", "children": [1, 2]}, {"name": "body", "mesh": 0},
+                  {"name": "wheel_FL", "mesh": 1}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}, {"primitives": [{"attributes": {"POSITION": 1}}]}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [-1.4, 0.0, -9.0], "max": [1.4, 3.94, 9.0]},
+                      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [-0.07, -0.42, -0.42], "max": [0.07, 0.42, 0.42]}],
+        "buffers": [{"byteLength": 64}], "bufferViews": [{"buffer": 0, "byteLength": 64}],
+    }
+    sizes = pr.part_sizes(build_glb(document, binary))
+    assert sizes == pytest.approx({"body": 18.0, "wheel_FL": 0.84})
 
 
 def test_the_triangles_of_each_part_are_read_from_the_glb():
@@ -376,3 +466,16 @@ def test_a_wheel_a_triangle_or_two_under_its_floor_is_not_named():
     record = _record(parts=[{"name": "wheel_RR", "pivot": [-0.94, 0.5, -2.65], "axis": [1, 0, 0],
                              "triangles": [828, 315, 95]}])
     assert pr.problems(record) == []
+
+
+def test_a_small_wheel_at_its_own_smaller_floor_is_not_named():
+    # a metro car's 0.84 m wheel is thinned to its size's floor in LOD2: as round as that distance needs
+    record = _record(parts=[{"name": "wheel_F1L", "pivot": [-0.8, 0.42, 6.0], "motion": "turn", "axis": [1, 0, 0],
+                             "triangles": [572, 140, 30], "floors": [0, 54, 31]}])
+    assert pr.problems(record) == []
+
+
+def test_a_wheel_well_under_its_own_floor_is_named():
+    record = _record(parts=[{"name": "wheel_F1L", "pivot": [-0.8, 0.42, 6.0], "motion": "turn", "axis": [1, 0, 0],
+                             "triangles": [572, 140, 12], "floors": [0, 54, 31]}])
+    assert any("wheel_F1L" in line for line in pr.problems(record))

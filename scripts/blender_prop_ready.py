@@ -6,7 +6,8 @@ The job, written by `prop_ready.py`: `source`, `output`, `yaw` (degrees about th
 bring the front to +Z), `size` (one of width, height or length in metres, or empty), `node`
 (LOD0's name), `hull` (output, faces, node) or null, and `parts`. Writes `place.result.json`
 beside the job: the scale, the placed size (width, height, length), its lowest and highest
-point, the hull's triangles and, with `parts`, each part's name and pivot. The maths is
+point, the hull's triangles and, with `parts`, each part's name and pivot (and how it moves, when
+the model says so in glTF extras: `motion`, `axis`, `out`, `slide`). The maths is
 `prop_ready.py`'s, imported here.
 
 With `parts` every part stays its own object with its origin (its pivot: a wheel's axle, a
@@ -82,6 +83,19 @@ def world_points(objects):
 
 def triangles(obj) -> int:
     return sum(len(polygon.vertices) - 2 for polygon in obj.data.polygons)
+
+
+def motion(obj) -> dict:
+    """How a part says it moves (glTF extras, which Blender's importer keeps as custom
+    properties): `motion` and its `axis`, `out` and `slide`, still in the model's own axes;
+    `prop_ready.moving_parts` turns them with the prop."""
+    found = {}
+    if isinstance(obj.get("motion"), str):
+        found["motion"] = obj["motion"]
+        for key in ("axis", "out", "slide"):
+            if key in obj:
+                found[key] = [float(value) for value in obj[key]]
+    return found
 
 
 def gltf_point(vector):
@@ -196,7 +210,7 @@ def main() -> None:
     result = {"scale": scale, "low": list(low), "high": list(high),
               "size": [h - lo for lo, h in zip(low, high)], "hull_triangles": None}
     if parts:
-        result["parts"] = [{"name": obj.name, "pivot": gltf_point(obj.matrix_world.translation)}
+        result["parts"] = [{"name": obj.name, "pivot": gltf_point(obj.matrix_world.translation), **motion(obj)}
                            for obj in objects]
         root = bpy.data.objects.new(job["node"], None)
         bpy.context.scene.collection.objects.link(root)

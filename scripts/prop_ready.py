@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import struct
 import sys
@@ -64,6 +65,15 @@ MOVING_PREFIXES = ("wheel", "door", "boom", "hatch", "lid", "gate")
 PART_AXES = {"wheel": [1.0, 0.0, 0.0], "door": [0.0, 1.0, 0.0]}
 # Triangles a part keeps in every LOD, so a 24-segment wheel stays a wheel and a door a door
 PART_FLOOR = 96
+# The floor follows a part's size (its longest side against the model's): an engine shows a LOD
+# by how large the whole model is on screen, so a small part of a long vehicle covers fewer
+# pixels there and needs fewer triangles. A 1 m wheel on a 12 m bus, the case the floor of 96
+# was set on, keeps all of it; a much smaller part keeps at least LEAST_FLOOR (a box).
+FULL_FLOOR_SHARE = 1.0 / 12.0
+LEAST_FLOOR = 12
+# The floors together take at most this share of a LOD, so 24 small parts (a metro car's door
+# leaves and wheels) cannot leave the body, the part that is seen from afar, with nothing.
+FLOOR_BUDGET = 0.5
 # Fewer than this and a wheel is named as no longer round. Below the floor on purpose:
 # Blender's decimation lands within a few triangles of its target (95 of 96 on the bus).
 ROUND_MINIMUM = 80
@@ -174,38 +184,114 @@ def part_axis(name: str) -> list[float] | None:
     return None
 
 
-def moving_parts(parts: list[dict]) -> list[dict]:
-    """The parts an engine can move (wheels, doors, a boom), each with its pivot and axis.
+def turn_vector(vector: list[float], yaw: float, scale: float) -> list[float]:
+    """A direction or distance in glTF axes, turned about the up axis by `yaw` degrees (as the
+    front is turned: counter-clockwise seen from above, +X towards -Z) and grown by `scale`."""
+    a = math.radians(yaw)
+    x, y, z = vector
+    turned = [scale * (x * math.cos(a) + z * math.sin(a)), scale * y, scale * (-x * math.sin(a) + z * math.cos(a))]
+    return [round(value, 6) + 0.0 for value in turned]      # + 0.0: no -0.0 in the record
+
+
+def moving_parts(parts: list[dict], yaw: float = 0.0, scale: float = 1.0) -> list[dict]:
+    """The parts an engine can move (wheels, doors, a boom), each with its pivot and how it moves.
 
     `parts` is what the Blender half reports: every part's name and pivot (its origin, in the
-    placed prop's metres). The body and the interior stay where they are, so they are left out.
+    placed prop's metres) and, when the model says how a part moves (glTF extras, as the
+    shape-guide kit writes them), its `motion`: "turn" about `axis`, or "slide": first by `out`,
+    then by `slide` (a plug door). Those come in the model's own axes and are turned and scaled
+    here as the model was (`yaw`, `scale`). A part without them moves as its name says (a wheel
+    turns on its axle, a door on an upright hinge). The body and the interior are left out.
     """
-    return [{"name": part["name"], "pivot": part["pivot"], "axis": part_axis(part["name"])}
-            for part in parts if part["name"].strip().lower().startswith(MOVING_PREFIXES)]
+    listed = []
+    for part in parts:
+        entry = {"name": part["name"], "pivot": part["pivot"]}
+        if part.get("motion"):
+            entry["motion"] = part["motion"]
+            for key in ("axis", "out", "slide"):
+                if key in part:
+                    entry[key] = turn_vector(part[key], yaw, 1.0 if key == "axis" else scale)
+        elif part["name"].strip().lower().startswith(MOVING_PREFIXES):
+            axis = part_axis(part["name"])
+            if axis is not None:
+                entry["motion"] = "turn"
+            entry["axis"] = axis
+        else:
+            continue
+        listed.append(entry)
+    return listed
 
 
-def part_targets(triangles: dict[str, int], target: int, floor: int = PART_FLOOR) -> dict[str, int]:
-    """Each part's triangle count in a LOD of `target` triangles, decimating every part alike.
+def part_floor(share: float | None, floor: int = PART_FLOOR) -> int:
+    """The triangles a part keeps in every LOD, by its size: `share` is its longest side against
+    the model's (None: unknown, the full floor)."""
+    if share is None:
+        return floor
+    return max(LEAST_FLOOR, min(floor, round(floor * share / FULL_FLOOR_SHARE)))
 
-    A part the common ratio would take under `floor` keeps `floor` (or all it has), so small
-    round parts stay round; the rest share what is left. When the floors alone exceed the
-    target, the floors win: a LOD a little over its count beats square wheels.
+
+def part_floors(triangles: dict[str, int], target: int, floor: int = PART_FLOOR,
+                shares: dict[str, float] | None = None) -> dict[str, int]:
+    """Each part's floor in a LOD of `target` triangles: its size's floor (`part_floor`, never
+    more than it has), all of them shrunk alike when together they would take more than
+    FLOOR_BUDGET of the LOD, down to LEAST_FLOOR."""
+    shares = shares or {}
+    floors = {name: min(count, part_floor(shares.get(name), floor)) for name, count in triangles.items()}
+    total = sum(floors.values())
+    squeeze = min(1.0, FLOOR_BUDGET * target / total) if total else 1.0
+    return {name: min(triangles[name], max(LEAST_FLOOR, round(value * squeeze))) for name, value in floors.items()}
+
+
+def part_targets(triangles: dict[str, int], target: int, floor: int = PART_FLOOR,
+                 shares: dict[str, float] | None = None) -> dict[str, int]:
+    """Each part's triangle count in a LOD of `target` triangles.
+
+    Every part is thinned by one common ratio, a small part more: its weight is its size
+    (`shares`, its longest side against the model's, up to a bus wheel's), as it covers fewer
+    pixels when the LOD is shown. No part goes under its floor (`part_floors`: round parts stay
+    round, and the floors together leave the body at least half the LOD) or over what it has.
+    The ratio is found by halving the search until the parts add up to `target`; when the floors
+    alone exceed it, the floors win: a LOD a little over its count beats square wheels.
     """
     if target >= sum(triangles.values()):
         return dict(triangles)
-    fixed: dict[str, int] = {}
-    free = dict(triangles)
-    while True:
-        budget = target - sum(fixed.values())
-        pool = sum(free.values())
-        ratio = max(0.0, budget / pool) if pool else 0.0
-        held = {name: count for name, count in free.items() if count * ratio < min(count, floor)}
-        if not held:
-            break
-        for name, count in held.items():
-            fixed[name] = min(count, floor)
-            del free[name]
-    return {**fixed, **{name: max(1, min(count, round(count * ratio))) for name, count in free.items()}}
+    shares = shares or {}
+    weight = {name: min(1.0, shares[name] / FULL_FLOOR_SHARE) if name in shares else 1.0 for name in triangles}
+    floors = part_floors(triangles, target, floor, shares)
+
+    def share(name: str, ratio: float) -> float:
+        return min(triangles[name], max(floors[name], weight[name] * triangles[name] * ratio))
+
+    low, high = 0.0, 1.0 / min(max(w, 1e-6) for w in weight.values())
+    for _ in range(60):
+        middle = (low + high) / 2
+        if sum(share(name, middle) for name in triangles) > target:
+            high = middle
+        else:
+            low = middle
+    return {name: max(1, round(share(name, low))) for name in triangles}
+
+
+def part_sizes(glb: bytes) -> dict[str, float]:
+    """The longest side of each mesh node's box, by node name (glTF keeps every POSITION's
+    min and max; a node's own scale counts)."""
+    from compress_glb_textures import parse_glb
+
+    document, _binary = parse_glb(glb)
+    accessors = document.get("accessors", [])
+    meshes = document.get("meshes", [])
+    sizes: dict[str, float] = {}
+    for node in document.get("nodes", []):
+        if "mesh" not in node:
+            continue
+        low, high = [math.inf] * 3, [-math.inf] * 3
+        for primitive in meshes[node["mesh"]].get("primitives", []):
+            position = accessors[primitive["attributes"]["POSITION"]]
+            low = [min(a, b) for a, b in zip(low, position["min"])]
+            high = [max(a, b) for a, b in zip(high, position["max"])]
+        scale = node.get("scale", [1.0, 1.0, 1.0])
+        sizes[node.get("name", f"node{len(sizes)}")] = max(abs(k) * (h - lo) for k, lo, h in zip(scale, low, high))
+    return sizes
 
 
 def part_triangles(glb: bytes) -> dict[str, int]:
@@ -295,8 +381,12 @@ def problems(record: dict) -> list[str]:
                          f"{earlier / 1e6:.1f} MB")
     for part in record.get("parts", []):
         if part["name"].lower().startswith("wheel"):
+            floors = part.get("floors") or []
             for index, count in enumerate(part.get("triangles", [])):
-                if count < ROUND_MINIMUM:
+                # against the wheel's own floor (by its size) when the record has one; Blender's
+                # decimation lands a few triangles short of its target, hence the slack
+                floor = floors[index] if index < len(floors) and floors[index] else PART_FLOOR
+                if count < floor * ROUND_MINIMUM / PART_FLOOR:
                     found.append(f"{part['name']} has {count} triangles in LOD{index}: too few to stay round")
     collider = record.get("collider") or {}
     if collider.get("kind") == "hull" and collider.get("triangles", 0) > CONVEX_LIMIT:
@@ -426,10 +516,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     if args.paint_from is not None:
         record["painted_from"] = str(args.paint_from)
     if args.parts:
-        record["parts"] = moving_parts(placed["parts"])
+        record["parts"] = moving_parts(placed["parts"], yaw=yaw, scale=placed["scale"])
         lod0_parts = part_triangles(lod0.read_bytes())
+        longest = max(placed["size"]) or 1.0
+        shares = {name: size / longest for name, size in part_sizes(lod0.read_bytes()).items()}
         for part in record["parts"]:
             part["triangles"] = [lod0_parts.get(part["name"], 0)]
+            part["floors"] = [0]
     for index, faces, lod_atlas in lod_plan(lods, atlas):
         if args.parts:
             # a kept mesh has no bake source but itself: decimate each part, keep UVs and pivots
@@ -437,7 +530,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
             target = out / f"{args.name}_LOD{index}.glb"
             decimated = logs / f"LOD{index}.decimated.glb"
             decimate = {"mode": "decimate", "source": str(lod0.resolve()), "output": str(decimated.resolve()),
-                        "targets": part_targets(part_triangles(lod0.read_bytes()), faces)}
+                        "targets": part_targets(lod0_parts, faces, shares=shares)}
+            floors = part_floors(lod0_parts, faces, shares=shares)
             decimate_path = logs / f"LOD{index}.job.json"
             decimate_path.write_text(json.dumps(decimate, indent=2), encoding="utf-8")
             with (logs / f"LOD{index}.decimate.log").open("w", encoding="utf-8") as handle:
@@ -452,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
             counts = part_triangles(target.read_bytes())
             for part in record["parts"]:
                 part["triangles"].append(counts.get(part["name"], 0))
+                part["floors"].append(floors.get(part["name"], 0))
             record["lods"].append({"glb": target.name, "faces": faces, "atlas": lod_atlas,
                                    "triangles": glb_triangles(target.read_bytes()), "bytes": target.stat().st_size})
             continue

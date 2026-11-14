@@ -64,7 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.
-  A record says the size, the LODs and what looks wrong.
+  A record says the size, the LODs and what looks wrong. With `--parts` a vehicle keeps its wheels
+  and doors as parts on their pivots and the record says how each moves (a wheel turns, a plug
+  door steps out and slides, as the model says); each LOD thins small parts more and gives every
+  part a floor by its size, so a long car's 24 small parts no longer starve its body.
 - `scripts/pixal3d_generate.py --right --left`: build from four pictures (front, right side, back,
   left side) instead of two, so the sides come from your pictures too and Finish paints them.
 
