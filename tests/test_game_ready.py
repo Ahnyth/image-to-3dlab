@@ -414,3 +414,71 @@ def test_compose_keeps_the_glow_off_an_excluded_area():
     _, emission, _ = gr.compose(alb, lit, cov, s, exclude=exclude)
     assert emission[5, 2].max() == 0.0
     assert emission[5, 5].max() > 0.5
+
+
+# --- the face: thin with the head kept, a sharper head, colour from a finer paint ----------------
+
+def test_the_head_switches_are_off_by_default():
+    s = gr.settings([])
+    assert s["decimate_to"] == 0 and s["head_protect"] == 0.0 and s["head_texel"] == 1.0
+    assert s["colour_from"] is None
+
+
+def test_settings_read_the_head_switches(tmp_path):
+    paint = tmp_path / "painted.glb"
+    s = gr.settings(["--decimate-to", "8000", "--head-protect", "1", "--head-texel", "2",
+                     "--colour-from", str(paint)])
+    assert s["decimate_to"] == 8000 and s["head_protect"] == 1.0 and s["head_texel"] == 2.0
+    assert s["colour_from"] == str(paint)
+
+
+@pytest.mark.parametrize("args", [["--decimate-to", "500"], ["--decimate-to", "-1"], ["--head-protect", "1.5"],
+                                  ["--head-texel", "0.5"], ["--head-texel", "5"]])
+def test_head_switches_out_of_range_are_refused(args):
+    with pytest.raises(SystemExit):
+        gr.settings(args)
+
+
+def test_the_decimate_ratio_never_adds_triangles():
+    assert gr.decimate_ratio(40000, 8000) == pytest.approx(0.2)
+    assert gr.decimate_ratio(8000, 8000) == 1.0
+    assert gr.decimate_ratio(6000, 8000) == 1.0      # already lighter: keep it
+    assert gr.decimate_ratio(40000, 0) == 1.0        # 0 = do not thin
+
+
+def test_head_share_sums_the_head_bones_and_caps_at_one():
+    W = np.array([[1.0, 0.0, 0.0],      # all on the chest
+                  [0.0, 0.6, 0.4],      # neck and head share ...
+                  [0.0, 0.0, 1.0],      # all on the head
+                  [0.0, 0.7, 0.7]])     # unnormalised weights still count once
+    share = gr.head_share(W, ["chest", "neck", "head"], ["head", "neck"])
+    assert share == pytest.approx([0.0, 1.0, 1.0, 1.0])
+    assert gr.head_share(W, ["chest", "neck", "head"], ["head"]) == pytest.approx([0.0, 0.4, 1.0, 0.7])
+    assert gr.head_share(W, ["chest", "neck", "head"], []) == pytest.approx([0.0] * 4)
+
+
+def test_scale_islands_grows_the_chosen_islands_around_their_own_centres():
+    # two unit squares as four loops each; island 1 is on the head
+    uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [3, 0], [3, 1], [2, 1]], float)
+    island = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    out = gr.scale_islands(uv, island, {1}, 2.0)
+    assert out[:4] == pytest.approx(uv[:4])                       # the body's island is left alone
+    assert out[4:] == pytest.approx(np.array([[1.5, -0.5], [3.5, -0.5], [3.5, 1.5], [1.5, 1.5]]))
+    assert gr.scale_islands(uv, island, {1}, 1.0) == pytest.approx(uv)
+
+
+def test_head_islands_are_the_islands_mostly_on_the_head():
+    island = np.array([0, 0, 0, 1, 1, 1, 2, 2])
+    share = np.array([0.0, 0.1, 0.0, 1.0, 1.0, 0.4, 0.6, 0.5])    # per loop, from its vertex
+    assert gr.head_islands(island, share) == {1, 2}
+
+
+def test_blend_transfer_takes_the_finer_paint_where_it_hit_and_keeps_the_own_elsewhere():
+    own = np.full((2, 2, 3), 0.2)
+    transfer = np.full((2, 2, 3), 0.8)
+    hit = np.array([[1.0, 0.0], [0.5, 1.0]])
+    out = gr.blend_transfer(own, transfer, hit)
+    assert out[0, 0] == pytest.approx([0.8] * 3)       # the finer paint
+    assert out[0, 1] == pytest.approx([0.2] * 3)       # a missed ray keeps the model's own paint
+    assert out[1, 0] == pytest.approx([0.5] * 3)       # half covered texels blend
+    assert gr.blend_transfer(own, transfer, None) == pytest.approx(own)

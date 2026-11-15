@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   move kept. Optional: brighter for small on-screen figures (or `auto`, as much as the figure
   takes), glowing accents in a chosen colour (thin lines only, if asked), fingers folded into the
   hands. A report says what an engine would still trip over.
+- `game_ready.py` keeps faces: a figure Finished at 8,000 triangles loses its nose, chin and eye
+  sockets, because a face is a small share of the surface. Rig a finer Finish (40,000) and let
+  `--decimate-to 8000 --head-protect 1` thin it here: the body gives up the triangles, the head
+  keeps them. `--colour-from` paints the result from a finer model of the same figure, such as
+  the raw model after Pixel Match (`photo_paint.py`), whose face keeps the picture's eyes;
+  `--head-texel 2` gives the head twice the texture.
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.

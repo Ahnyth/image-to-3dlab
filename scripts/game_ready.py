@@ -71,6 +71,8 @@ FIXED = {
     "fill_px": 8,             # colours pushed this far beyond the islands (for mip-maps)
     "smooth_factor": 0.5,     # weight smoothing step
     "rigid_share": 0.145,     # a separate piece smaller than this share of the height moves as one
+    "transfer_cage_m": 0.012,  # --colour-from: rays start this far outside the surface (metres, after the rescale) ...
+    "transfer_reach_m": 0.03,  # ... and look this far for the finer model; a miss keeps the model's own paint
 }
 
 
@@ -124,6 +126,20 @@ def _influences(text: str) -> int:
     return value
 
 
+def _triangles(text: str) -> int:
+    value = int(text)
+    if value != 0 and not 1000 <= value <= 200000:
+        raise argparse.ArgumentTypeError("0 (keep) or from 1000 to 200000")
+    return value
+
+
+def _texel(text: str) -> float:
+    value = float(text)
+    if not 1.0 <= value <= 4.0:
+        raise argparse.ArgumentTypeError("from 1 to 4")
+    return value
+
+
 def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--height", type=_positive, default=1.8, help="height in metres (default 1.8)")
     parser.add_argument("--atlas", type=_atlas, default=1024, help="texture size (default 1024)")
@@ -150,6 +166,19 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-influences", type=_influences, default=4, help="bones per vertex (default 4)")
     parser.add_argument("--smooth", type=int, default=2, help="weight smoothing passes (default 2)")
     parser.add_argument("--roughness", type=_fraction, default=0.8, help="material roughness (default 0.8)")
+    parser.add_argument("--decimate-to", type=_triangles, default=0, metavar="N",
+                        help="thin the mesh to about N triangles first (default 0, keep); rig a finer Finish "
+                             "(say 40k) and thin it here, so --head-protect can keep the face")
+    parser.add_argument("--head-protect", type=_fraction, default=0.0,
+                        help="0 to 1: how strongly the head resists --decimate-to (1 = the body gives up the "
+                             "triangles, the face keeps its nose, chin and eyes; default 0)")
+    parser.add_argument("--head-texel", type=_texel, default=1.0,
+                        help="1 to 4: the head's share of the atlas, times this (2 = a face twice as sharp, "
+                             "the body a little softer; default 1)")
+    parser.add_argument("--colour-from", type=Path, default=None, metavar="GLB",
+                        help="bake the colour from this model of the same figure where it lies on the surface, "
+                             "e.g. the raw model painted by Pixel Match, whose face keeps the picture's eyes; "
+                             "same coordinates as the source (Finish and Rig keep them)")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -158,7 +187,9 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
              glow_not_on_head=ns.glow_not_on_head,
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
-             smooth_iters=max(0, ns.smooth), roughness=ns.roughness)
+             smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
+             decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
+             colour_from=str(ns.colour_from) if ns.colour_from else None)
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0
     return s
@@ -426,6 +457,57 @@ def head_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> l
     return out
 
 
+# --- the face ---------------------------------------------------------------------------------
+# A whole figure thinned to 8k triangles gives each part a share by its size, and a face is small:
+# its nose, chin and eye sockets melt into one rounded shape (Finish's 8k is where faces go flat).
+# Rigging a finer Finish and thinning it here, with the head's vertices protected, keeps the face.
+
+def decimate_ratio(before: int, target: int) -> float:
+    """The collapse ratio that thins `before` triangles to `target`; never above 1 (nothing is added)."""
+    if target <= 0 or before <= target:
+        return 1.0
+    return target / before
+
+
+def head_share(W, columns: list[str], head: list[str]):
+    """Per vertex, how much of it moves with the head (its weights on the head bones, at most 1)."""
+    pick = [j for j, c in enumerate(columns) if c in set(head)]
+    if not pick:
+        return np.zeros(len(W))
+    return np.minimum(np.asarray(W, float)[:, pick].sum(1), 1.0)
+
+
+def head_islands(island, share, at_least: float = 0.5) -> set[int]:
+    """The UV islands whose loops lie mostly on the head (mean head share at or above `at_least`)."""
+    island = np.asarray(island)
+    share = np.asarray(share, float)
+    total = np.bincount(island, weights=share)
+    count = np.bincount(island)
+    return {int(i) for i in np.nonzero(count)[0] if total[i] / count[i] >= at_least}
+
+
+def scale_islands(uv, island, chosen: set[int], factor: float):
+    """Loop UVs with the `chosen` islands grown by `factor` around their own centres, before packing:
+    the packer then gives them `factor` times the texels per metre of the rest."""
+    out = np.array(uv, float)
+    if factor == 1.0 or not chosen:
+        return out
+    island = np.asarray(island)
+    for i in chosen:
+        sel = island == i
+        centre = out[sel].mean(0)
+        out[sel] = centre + (out[sel] - centre) * factor
+    return out
+
+
+def blend_transfer(own, transfer, hit):
+    """The colour from a finer model where its rays hit (`hit` 0..1 per texel), the model's own elsewhere."""
+    if transfer is None or hit is None:
+        return np.asarray(own, float)
+    h = np.clip(np.asarray(hit, float), 0.0, 1.0)[..., None]
+    return np.asarray(own, float) * (1.0 - h) + np.asarray(transfer, float) * h
+
+
 def merge_columns(W, columns: list[str], plan: dict[str, str]):
     """Weights of merged bones added into the bone they merge into; (weights, column names)."""
     keep = [c for c in columns if c not in plan]
@@ -580,6 +662,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     names = {b: n for b, n in names.items() if b not in plan}
     hips = next(b for b, n in unity.items() if n == "Hips")
     heads_off = head_bones(parents, unity) if s["glow_not_on_head"] else []
+    if s["colour_from"] and not Path(s["colour_from"]).is_file():
+        parser.error(f"--colour-from: not found: {s['colour_from']}")
+    if (s["head_protect"] > 0 or s["head_texel"] > 1) and "Head" not in unity.values():
+        print("note: no head bone found, so --head-protect and --head-texel change nothing")
 
     with tempfile.TemporaryDirectory() as tmp:
         job = Path(tmp) / "job.json"
@@ -587,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         report_path = Path(tmp) / "report.json"
         job.write_text(json.dumps({"source": str(args.source.resolve()), "output": str(raw), "report": str(report_path),
                                    "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan, "head_bones": heads_off,
-                                   "settings": s}, indent=1))
+                                   "all_head_bones": head_bones(parents, unity), "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():
             print(run.stdout[-4000:])

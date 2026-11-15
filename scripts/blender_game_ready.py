@@ -199,6 +199,99 @@ def clean_mesh(ob, s: dict) -> dict:
     return stats
 
 
+def head_weights(ob, head: list[str]) -> np.ndarray:
+    """Per vertex, its skin weight on the head bones (0..1), through `game_ready.head_share`."""
+    me = ob.data
+    columns = [g.name for g in ob.vertex_groups]
+    W = np.zeros((len(me.vertices), max(len(columns), 1)))
+    for v in me.vertices:
+        for g in v.groups:
+            W[v.index, g.group] = g.weight
+    return gr.head_share(W, columns, head or [])
+
+
+def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
+    """Collapse-thin to `decimate_to` triangles; the head's vertices resist by `head_protect`."""
+    me = ob.data
+    me.calc_loop_triangles()
+    before = len(me.loop_triangles)
+    ratio = gr.decimate_ratio(before, s["decimate_to"])
+    if ratio >= 1.0:
+        return {"decimated": [before, before]}
+    share = head_weights(ob, head)
+    mod = ob.modifiers.new("gr_decimate", "DECIMATE")
+    mod.decimate_type = "COLLAPSE"
+    mod.ratio = ratio
+    mod.use_collapse_triangulate = True
+    if s["head_protect"] > 0 and share.any():
+        group = ob.vertex_groups.new(name="gr_head_protect")
+        for i in np.nonzero(share)[0]:
+            group.add([int(i)], float(share[i]), "REPLACE")
+        mod.vertex_group = group.name
+        mod.vertex_group_factor = s["head_protect"]
+        mod.invert_vertex_group = True   # Blender thins where a group weighs; inverted, the head weighs nothing
+    bpy.ops.object.select_all(action="DESELECT")
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    stale = ob.vertex_groups.get("gr_head_protect")   # the old handle is stale after the apply
+    if stale is not None:
+        ob.vertex_groups.remove(stale)
+    me.calc_loop_triangles()
+    after = len(me.loop_triangles)
+    log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g})")
+    return {"decimated": [before, after]}
+
+
+def scale_head_islands(ob, factor: float, head: list[str]):
+    """In edit mode, after unwrapping and before packing: the head's islands grow by `factor`.
+    Returns the head's share of the UV area afterwards, or None when nothing changed."""
+    if factor <= 1.0 or not head:
+        return None
+    me = ob.data
+    share_v = head_weights(ob, head)
+    bm = bmesh.from_edit_mesh(me)
+    uvl = bm.loops.layers.uv.active
+    bm.faces.ensure_lookup_table()
+
+    def same(a, b):
+        return (a[uvl].uv - b.link_loop_next[uvl].uv).length < 1e-6 and (a.link_loop_next[uvl].uv - b[uvl].uv).length < 1e-6
+
+    loops, island, done, n = [], [], set(), 0
+    for start in bm.faces:
+        if start.index in done:
+            continue
+        stack = [start]
+        done.add(start.index)
+        while stack:
+            f = stack.pop()
+            for loop in f.loops:
+                loops.append(loop)
+                island.append(n)
+                for other in loop.link_loops:
+                    if other.face.index not in done and same(loop, other):
+                        done.add(other.face.index)
+                        stack.append(other.face)
+        n += 1
+    uv = np.array([lp[uvl].uv[:] for lp in loops])
+    share = np.array([share_v[lp.vert.index] for lp in loops])
+    chosen = gr.head_islands(island, share)
+    out = gr.scale_islands(uv, island, chosen, factor)
+    for lp, (u, v) in zip(loops, out):
+        lp[uvl].uv = (u, v)
+    bmesh.update_edit_mesh(me)
+    area = {}
+    for f in bm.faces:
+        pts = [lp[uvl].uv for lp in f.loops]
+        a = sum(abs((pts[k] - pts[0]).cross(pts[k + 1] - pts[0])) for k in range(1, len(pts) - 1)) / 2
+        head_face = np.mean([share_v[v.index] for v in f.verts]) >= 0.5
+        area[head_face] = area.get(head_face, 0.0) + a
+    total = sum(area.values()) or 1.0
+    log(f"head islands: {len(chosen)} grown x{factor:g}, the head now takes {area.get(True, 0.0) / total * 100:.1f} % of the texels")
+    return round(area.get(True, 0.0) / total, 4)
+
+
 def pin_source_uvs(me) -> None:
     """Make every texture read the old UVs by name, before the new layout becomes the active one."""
     me.uv_layers[0].name = "src"
@@ -215,7 +308,7 @@ def pin_source_uvs(me) -> None:
                 n.uv_map = "src"
 
 
-def new_uvs(ob, s: dict) -> dict:
+def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     me = ob.data
     pin_source_uvs(me)
     layer = me.uv_layers.new(name="UVMap")
@@ -228,6 +321,7 @@ def new_uvs(ob, s: dict) -> dict:
     bpy.ops.mesh.select_all(action="SELECT")
     bpy.ops.uv.smart_project(angle_limit=math.radians(s["uv_angle"]), island_margin=0.0, area_weight=0.0,
                              correct_aspect=True, scale_to_bounds=False)
+    head_uv_share = scale_head_islands(ob, s.get("head_texel", 1.0), head or [])
     bpy.ops.uv.select_all(action="SELECT")
     try:
         bpy.ops.uv.pack_islands(rotate=True, rotate_method="ANY", scale=True, merge_overlap=False,
@@ -279,7 +373,10 @@ def new_uvs(ob, s: dict) -> dict:
                      for p in me.polygons for k in range(1, p.loop_total - 1)])
     used = gr.uv_area(uv.reshape(-1, 2), tris)
     log(f"new UVs: {islands} islands, {used * 100:.1f} % of the atlas, {hard} hard edges, {seams} seam edges")
-    return {"uv_islands": islands, "atlas_used": round(used, 4), "hard_edges": hard}
+    out = {"uv_islands": islands, "atlas_used": round(used, 4), "hard_edges": hard}
+    if head_uv_share is not None:
+        out["head_uv_share"] = head_uv_share
+    return out
 
 
 def setup_cycles(scene) -> str:
@@ -327,7 +424,58 @@ def head_mask_attribute(ob, bones: list[str]) -> str | None:
     return attr.name
 
 
-def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None) -> tuple[dict, bool]:
+def import_colour_model(path: str, T):
+    """The finer painted model, moved by the same rescale as the figure (it shares the figure's coordinates)."""
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.import_scene.gltf(filepath=path, disable_bone_shape=True)
+    except TypeError:
+        bpy.ops.import_scene.gltf(filepath=path)
+    meshes = [o for o in set(bpy.data.objects) - before if o.type == "MESH" and o.data.materials]
+    for o in set(bpy.data.objects) - before:
+        if o not in meshes:
+            bpy.data.objects.remove(o, do_unlink=True)
+    if not meshes:
+        raise SystemExit(f"--colour-from: no painted mesh in {path}")
+    for o in meshes:
+        mw = o.matrix_world.copy()
+        o.parent = None
+        o.matrix_world = Matrix.Identity(4)
+        o.data.transform(T @ mw)
+        for mod in list(o.modifiers):
+            o.modifiers.remove(mod)
+    log(f"colour from {Path(path).name}: {sum(len(o.data.polygons) for o in meshes)} faces")
+    return meshes
+
+
+def emit_base_colour(objs, white: bool = False) -> None:
+    """Make the objects' materials glow their base colour (or plain white, for the hit mask)."""
+    for o in objs:
+        for mat in o.data.materials:
+            if mat is None:
+                continue
+            mat.use_nodes = True
+            nt = mat.node_tree
+            out = next((n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"), None) or nt.nodes.new("ShaderNodeOutputMaterial")
+            emit = next((n for n in nt.nodes if n.name == "gr_emit"), None)
+            if emit is None:
+                emit = nt.nodes.new("ShaderNodeEmission")
+                emit.name = "gr_emit"
+            for link in list(emit.inputs["Color"].links):
+                nt.links.remove(link)
+            bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            sock = bsdf.inputs["Base Color"] if bsdf else None
+            if white:
+                emit.inputs["Color"].default_value = (1, 1, 1, 1)
+            elif sock is not None and sock.is_linked:
+                nt.links.new(sock.links[0].from_socket, emit.inputs["Color"])
+            elif sock is not None:
+                emit.inputs["Color"].default_value = tuple(sock.default_value)
+            nt.links.new(emit.outputs[0], out.inputs["Surface"])
+
+
+def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None,
+               colour_objs: list | None = None) -> tuple[dict, bool]:
     scene = bpy.context.scene
     me = ob.data
     device = setup_cycles(scene)
@@ -393,6 +541,30 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         else:
             m["emit"].inputs["Color"].default_value = m["colour"]
     albedo = bake("albedo", 4, "EMIT")
+    transfer_share = None
+    if colour_objs:  # the finer model's paint wherever a short ray from this surface meets it
+        for o in colour_objs:
+            o.select_set(True)
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        reach = {"use_selected_to_active": True, "cage_extrusion": s["transfer_cage_m"],
+                 "max_ray_distance": s["transfer_reach_m"]}
+        emit_base_colour(colour_objs)
+        transfer = bake("colour transfer", 4, "EMIT", **reach)
+        emit_base_colour(colour_objs, white=True)
+        hit = bake("transfer hits", 1, "EMIT", **reach)[..., 0]
+        inside_now = mask[..., 0] > 0.5
+        transfer_share = float(np.clip(hit[inside_now], 0, 1).mean()) if inside_now.any() else 0.0
+        albedo = albedo.copy()
+        albedo[..., :3] = gr.blend_transfer(albedo[..., :3], transfer[..., :3], hit)
+        for o in colour_objs:  # gone before the sky bake, so it casts no shadow on the figure
+            me_c = o.data
+            bpy.data.objects.remove(o, do_unlink=True)
+            if me_c.users == 0:
+                bpy.data.meshes.remove(me_c)
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        log(f"colour transfer: {transfer_share * 100:.1f} % of the atlas from the finer model")
     head_attr = head_mask_attribute(ob, head or [])
     head_bake = None
     if head_attr:  # where the head is, from its skin weights, so the glow can stay off a face
@@ -465,6 +637,8 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     mat.use_backface_culling = True
     me.materials.append(mat)
     stats["bake_device"] = device
+    if transfer_share is not None:
+        stats["colour_transfer_share"] = round(transfer_share, 4)
     return stats, p_emi is not None
 
 
@@ -541,8 +715,12 @@ def main() -> None:
     for m in ob.modifiers:
         m.show_viewport = m.show_render = False
     report["cleaning"] = clean_mesh(ob, s)
-    report.update(new_uvs(ob, s))
-    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"))
+    head = job.get("all_head_bones") or []
+    if s.get("decimate_to"):
+        report.update(decimate_with_head(ob, s, head))
+    report.update(new_uvs(ob, s, head))
+    colour_objs = import_colour_model(s["colour_from"], T) if s.get("colour_from") else None
+    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs)
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
     arm.data.pose_position = "POSE"
