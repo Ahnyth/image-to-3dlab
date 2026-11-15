@@ -179,6 +179,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                         help="bake the colour from this model of the same figure where it lies on the surface, "
                              "e.g. the raw model painted by Pixel Match, whose face keeps the picture's eyes; "
                              "same coordinates as the source (Finish and Rig keep them)")
+    parser.add_argument("--mesh-from", type=Path, default=None, metavar="GLB",
+                        help="use this finer Finish of the same figure as the mesh, its skin weights carried over "
+                             "from the source's rig (so a figure rigged at 8k can keep a 40k face through "
+                             "--decimate-to and --head-protect without rigging again)")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -189,7 +193,8 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
-             colour_from=str(ns.colour_from) if ns.colour_from else None)
+             colour_from=str(ns.colour_from) if ns.colour_from else None,
+             mesh_from=str(ns.mesh_from) if ns.mesh_from else None)
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0
     return s
@@ -664,6 +669,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     heads_off = head_bones(parents, unity) if s["glow_not_on_head"] else []
     if s["colour_from"] and not Path(s["colour_from"]).is_file():
         parser.error(f"--colour-from: not found: {s['colour_from']}")
+    if s["mesh_from"] and not Path(s["mesh_from"]).is_file():
+        parser.error(f"--mesh-from: not found: {s['mesh_from']}")
     if (s["head_protect"] > 0 or s["head_texel"] > 1) and "Head" not in unity.values():
         print("note: no head bone found, so --head-protect and --head-texel change nothing")
 

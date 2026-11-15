@@ -72,6 +72,61 @@ def import_source(path: str):
     return arm, skinned[0]
 
 
+def swap_in_finer_mesh(arm, ob, path: str):
+    """`--mesh-from`: a finer Finish of the same figure becomes the mesh, its skin weights carried over from the
+    rigged mesh (nearest face, interpolated; both share the Finish's coordinates). Returns the new mesh object."""
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.import_scene.gltf(filepath=path, disable_bone_shape=True)
+    except TypeError:
+        bpy.ops.import_scene.gltf(filepath=path)
+    added = set(bpy.data.objects) - before
+    meshes = [o for o in added if o.type == "MESH" and o.data.materials]
+    for o in added:
+        if o not in meshes:
+            bpy.data.objects.remove(o, do_unlink=True)
+    if not meshes:
+        raise SystemExit(f"--mesh-from: no mesh in {path}")
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in meshes:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+    fine = bpy.context.view_layer.objects.active
+    mw = fine.matrix_world.copy()
+    fine.parent = None
+    fine.matrix_world = Matrix.Identity(4)
+    fine.data.transform(mw)
+    arm.data.pose_position = "REST"            # the weights are read off the figure as it stands
+    bpy.context.view_layer.update()
+    for name in [g.name for g in ob.vertex_groups]:
+        fine.vertex_groups.new(name=name)
+    mod = fine.modifiers.new("gr_weights", "DATA_TRANSFER")
+    mod.object = ob
+    mod.use_object_transform = True
+    mod.use_vert_data = True
+    mod.data_types_verts = {"VGROUP_WEIGHTS"}
+    mod.vert_mapping = "POLYINTERP_NEAREST"
+    mod.layers_vgroup_select_src = "ALL"
+    mod.layers_vgroup_select_dst = "NAME"
+    bpy.ops.object.select_all(action="DESELECT")
+    fine.select_set(True)
+    bpy.context.view_layer.objects.active = fine
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    skin = fine.modifiers.new("Armature", "ARMATURE")
+    skin.object = arm
+    fine.parent = arm
+    fine.matrix_parent_inverse = arm.matrix_world.inverted()
+    old_mesh = ob.data
+    bpy.data.objects.remove(ob, do_unlink=True)
+    if old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+    log(f"mesh from {Path(path).name}: {len(fine.data.polygons)} faces, "
+        f"{len(fine.vertex_groups)} weight groups carried over from the rig")
+    return fine
+
+
 def sample_heads(arm, frames, bones):
     """{frame: (n, 3)} world positions of `bones`' heads, posed."""
     out = {}
@@ -702,6 +757,9 @@ def main() -> None:
     work, name = Path(job["work"]), job["name"]
     arm, ob = import_source(job["source"])
     report = {}
+    if s.get("mesh_from"):
+        ob = swap_in_finer_mesh(arm, ob, s["mesh_from"])
+        arm.data.pose_position = "POSE"
     action = arm.animation_data.action if arm.animation_data else None
     frames = []
     if action:

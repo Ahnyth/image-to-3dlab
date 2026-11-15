@@ -421,7 +421,13 @@ def test_compose_keeps_the_glow_off_an_excluded_area():
 def test_the_head_switches_are_off_by_default():
     s = gr.settings([])
     assert s["decimate_to"] == 0 and s["head_protect"] == 0.0 and s["head_texel"] == 1.0
-    assert s["colour_from"] is None
+    assert s["colour_from"] is None and s["mesh_from"] is None
+
+
+def test_settings_read_a_finer_mesh_to_carry_the_rig(tmp_path):
+    finer = tmp_path / "finish_40k.glb"
+    s = gr.settings(["--mesh-from", str(finer), "--decimate-to", "8000", "--head-protect", "1"])
+    assert s["mesh_from"] == str(finer)
 
 
 def test_settings_read_the_head_switches(tmp_path):

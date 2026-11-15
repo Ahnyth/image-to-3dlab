@@ -67,6 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps them. `--colour-from` paints the result from a finer model of the same figure, such as
   the raw model after Pixel Match (`photo_paint.py`), whose face keeps the picture's eyes;
   `--head-texel 2` gives the head twice the texture.
+  `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
+  the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
+  misses the legs or the spine).
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.
