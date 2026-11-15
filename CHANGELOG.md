@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
   the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
   misses the legs or the spine).
+- `game_ready.py --normal-from <raw model>` gives a close-up version of a figure (a menu, a hero
+  stage) a normal map baked from the fine raw model, so the engine lights its nose, lips and folds
+  on the coarse mesh, and `--soft-edges` keeps the triangles from showing up close (only edges
+  steeper than 62 degrees stay hard). Costs a second texture of the atlas's size.
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.

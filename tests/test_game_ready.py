@@ -479,6 +479,34 @@ def test_head_islands_are_the_islands_mostly_on_the_head():
     assert gr.head_islands(island, share) == {1, 2}
 
 
+# --- close-up versions: a normal map from the finer model, soft edges ---------------------------
+
+def test_the_close_up_switches_are_off_by_default():
+    s = gr.settings([])
+    assert s["normal_from"] is None
+    assert s["sharp_seam_deg"] == 25.0
+
+
+def test_settings_read_the_close_up_switches(tmp_path):
+    raw = tmp_path / "raw.glb"
+    s = gr.settings(["--normal-from", str(raw), "--soft-edges"])
+    assert s["normal_from"] == str(raw)
+    assert s["sharp_seam_deg"] == s["sharp_deg"]   # a UV seam alone no longer makes an edge hard
+
+
+def test_normal_texels_are_flat_where_the_finer_model_was_missed_and_unit_length_elsewhere():
+    baked = np.array([[[0.5, 0.5, 1.0], [0.9, 0.5, 0.6]],
+                      [[0.25, 0.75, 0.8], [0.6, 0.55, 0.7]]])     # box-filtered: no longer unit length
+    hit = np.array([[1.0, 0.0], [1.0, 0.5]])
+    out = gr.normal_texels(baked, hit)
+    assert out[0, 0] == pytest.approx([0.5, 0.5, 1.0])         # straight up stays straight up
+    assert out[0, 1] == pytest.approx([0.5, 0.5, 1.0])         # a missed ray: the coarse surface as it is
+    n = out * 2.0 - 1.0
+    assert np.linalg.norm(n, axis=-1) == pytest.approx(np.ones((2, 2)), abs=1e-6)
+    assert out[1, 0, 0] < 0.5 and out[1, 0, 1] > 0.5           # the direction survives the renormalising
+    assert out[1, 1, 0] < gr.normal_texels(baked[1:, 1:], np.ones((1, 1)))[0, 0, 0]   # half a hit: half the tilt
+
+
 def test_blend_transfer_takes_the_finer_paint_where_it_hit_and_keeps_the_own_elsewhere():
     own = np.full((2, 2, 3), 0.2)
     transfer = np.full((2, 2, 3), 0.8)

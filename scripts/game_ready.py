@@ -10,7 +10,9 @@ the file:
    right way, mark hard edges by angle.
 2. One texture atlas (`--atlas`, 1024 by default): new UVs, the colour baked from the old
    textures. The normal map's detail goes into the colour as soft light from above
-   (`--no-shade` leaves it out), so the model needs no normal map.
+   (`--no-shade` leaves it out), so the model needs no normal map. A close-up version (a menu, a
+   hero stage) can have one anyway: `--normal-from` bakes it from the finer raw model, and
+   `--soft-edges` keeps the triangles from showing.
 3. Optional, for figures that are small on screen: `--readability` (0 to 1, or `auto`) lifts the
    darkest tones and spreads the light ones; `auto` takes as much as the figure allows before
    lit skin or a light plate washes out. `--glow COLOUR` (repeatable) finds that colour's
@@ -183,6 +185,13 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                         help="use this finer Finish of the same figure as the mesh, its skin weights carried over "
                              "from the source's rig (so a figure rigged at 8k can keep a 40k face through "
                              "--decimate-to and --head-protect without rigging again)")
+    parser.add_argument("--normal-from", type=Path, default=None, metavar="GLB",
+                        help="bake a normal map from this finer model of the same figure (e.g. the raw model) onto "
+                             "the atlas, so the engine lights the fine shape (nose, lips, folds) on the coarse mesh; "
+                             "for close-up versions (a menu, a hero stage), costs a second texture")
+    parser.add_argument("--soft-edges", action="store_true",
+                        help="only edges steeper than 62 degrees are hard (by default a UV seam above 25 degrees is "
+                             "hard too, which shows the triangles up close); goes with --normal-from")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -194,7 +203,10 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
              colour_from=str(ns.colour_from) if ns.colour_from else None,
-             mesh_from=str(ns.mesh_from) if ns.mesh_from else None)
+             mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
+             normal_from=str(ns.normal_from) if ns.normal_from else None)
+    if ns.soft_edges:
+        s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0
     return s
@@ -511,6 +523,17 @@ def blend_transfer(own, transfer, hit):
         return np.asarray(own, float)
     h = np.clip(np.asarray(hit, float), 0.0, 1.0)[..., None]
     return np.asarray(own, float) * (1.0 - h) + np.asarray(transfer, float) * h
+
+
+def normal_texels(baked, hit):
+    """Tangent-space normal texels (0..1, blue up) from a box-filtered bake: the finer model's normal where
+    its rays hit (`hit` 0..1 per texel), the coarse surface as it is (straight up) where they missed, blended
+    in between, and of unit length again after the filtering."""
+    b = np.asarray(baked, float)[..., :3] * 2.0 - 1.0
+    h = np.clip(np.asarray(hit, float), 0.0, 1.0)[..., None]
+    n = b * h + np.array([0.0, 0.0, 1.0]) * (1.0 - h)
+    n = n / np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-8)
+    return n * 0.5 + 0.5
 
 
 def merge_columns(W, columns: list[str], plan: dict[str, str]):

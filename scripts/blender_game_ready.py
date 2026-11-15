@@ -530,7 +530,7 @@ def emit_base_colour(objs, white: bool = False) -> None:
 
 
 def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None,
-               colour_objs: list | None = None) -> tuple[dict, bool]:
+               colour_objs: list | None = None, normal_objs: list | None = None) -> tuple[dict, bool]:
     scene = bpy.context.scene
     me = ob.data
     device = setup_cycles(scene)
@@ -596,14 +596,39 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         else:
             m["emit"].inputs["Color"].default_value = m["colour"]
     albedo = bake("albedo", 4, "EMIT")
-    transfer_share = None
-    if colour_objs:  # the finer model's paint wherever a short ray from this surface meets it
-        for o in colour_objs:
+    reach = {"use_selected_to_active": True, "cage_extrusion": s["transfer_cage_m"],
+             "max_ray_distance": s["transfer_reach_m"]}
+
+    def select_finer(objs):
+        bpy.ops.object.select_all(action="DESELECT")
+        for o in objs:
             o.select_set(True)
         ob.select_set(True)
         bpy.context.view_layer.objects.active = ob
-        reach = {"use_selected_to_active": True, "cage_extrusion": s["transfer_cage_m"],
-                 "max_ray_distance": s["transfer_reach_m"]}
+
+    def drop_finer(objs):  # gone before the sky bake, so it casts no shadow on the figure
+        for o in objs:
+            me_c = o.data
+            bpy.data.objects.remove(o, do_unlink=True)
+            if me_c.users == 0:
+                bpy.data.meshes.remove(me_c)
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+
+    def bake_normals(objs, hit=None):
+        """The finer model's shape in this surface's tangent space, and where its rays hit."""
+        select_finer(objs)
+        scene.render.bake.normal_space = "TANGENT"
+        nrm = bake("normal map", 4, "NORMAL", **reach)
+        if hit is None:
+            emit_base_colour(objs, white=True)
+            hit = bake("normal hits", 1, "EMIT", **reach)[..., 0]
+        return nrm, hit
+
+    transfer_share = None
+    normal_bake = None
+    if colour_objs:  # the finer model's paint wherever a short ray from this surface meets it
+        select_finer(colour_objs)
         emit_base_colour(colour_objs)
         transfer = bake("colour transfer", 4, "EMIT", **reach)
         emit_base_colour(colour_objs, white=True)
@@ -612,14 +637,13 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         transfer_share = float(np.clip(hit[inside_now], 0, 1).mean()) if inside_now.any() else 0.0
         albedo = albedo.copy()
         albedo[..., :3] = gr.blend_transfer(albedo[..., :3], transfer[..., :3], hit)
-        for o in colour_objs:  # gone before the sky bake, so it casts no shadow on the figure
-            me_c = o.data
-            bpy.data.objects.remove(o, do_unlink=True)
-            if me_c.users == 0:
-                bpy.data.meshes.remove(me_c)
-        ob.select_set(True)
-        bpy.context.view_layer.objects.active = ob
+        if normal_objs is colour_objs:
+            normal_bake = bake_normals(colour_objs, hit)
+        drop_finer(colour_objs)
         log(f"colour transfer: {transfer_share * 100:.1f} % of the atlas from the finer model")
+    if normal_objs and normal_bake is None:
+        normal_bake = bake_normals(normal_objs)
+        drop_finer(normal_objs)
     head_attr = head_mask_attribute(ob, head or [])
     head_bake = None
     if head_attr:  # where the head is, from its skin weights, so the glow can stay off a face
@@ -662,6 +686,19 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     if emission is not None:
         p_emi = work / f"{name}_emission.png"
         gr.write_png(p_emi, emission)
+    p_nrm = None
+    if normal_bake is not None:
+        nrm, nhit = normal_bake
+        inside_n = mask[..., 0] > 0.5
+        nrm = gr.downsample(nrm[..., :3] * inside_n[..., None], k) / np.maximum(cov, 1e-6)[..., None]
+        nhit = gr.downsample((np.clip(nhit, 0, 1) * inside_n)[..., None], k)[..., 0] / np.maximum(cov, 1e-6)
+        texels = gr.normal_texels(nrm, nhit)
+        texels, have = gr.push_out(texels, cov > 0, s["fill_px"])
+        texels[~have] = (0.5, 0.5, 1.0)
+        p_nrm = work / f"{name}_normal.png"
+        gr.write_png(p_nrm, texels)
+        stats["normal_map_hit_share"] = round(float(nhit[cov > 0].mean()) if (cov > 0).any() else 0.0, 4)
+        log(f"normal map: {stats['normal_map_hit_share'] * 100:.1f} % of the atlas from the finer model")
 
     old_images = {n.image for m in mats for n in m["nt"].nodes if n.type == "TEX_IMAGE" and n.image}
     old_mats = [mat for mat in me.materials if mat]
@@ -687,6 +724,15 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         t_emi.image.name = p_emi.stem
         nt.links.new(t_emi.outputs["Color"], bsdf.inputs["Emission Color"])
         bsdf.inputs["Emission Strength"].default_value = s["glow_strength"]
+    if p_nrm is not None:
+        t_nrm = nt.nodes.new("ShaderNodeTexImage")
+        t_nrm.image = bpy.data.images.load(str(p_nrm))
+        t_nrm.image.name = p_nrm.stem
+        t_nrm.image.colorspace_settings.name = "Non-Color"
+        nmap = nt.nodes.new("ShaderNodeNormalMap")
+        nmap.space = "TANGENT"
+        nt.links.new(t_nrm.outputs["Color"], nmap.inputs["Color"])
+        nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
     bsdf.inputs["Roughness"].default_value = s["roughness"]
     bsdf.inputs["Metallic"].default_value = 0.0
     mat.use_backface_culling = True
@@ -778,7 +824,11 @@ def main() -> None:
         report.update(decimate_with_head(ob, s, head))
     report.update(new_uvs(ob, s, head))
     colour_objs = import_colour_model(s["colour_from"], T) if s.get("colour_from") else None
-    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs)
+    normal_objs = None
+    if s.get("normal_from"):
+        same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
+        normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T)
+    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs)
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
     arm.data.pose_position = "POSE"
