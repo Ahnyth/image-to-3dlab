@@ -192,6 +192,12 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--soft-edges", action="store_true",
                         help="only edges steeper than 62 degrees are hard (by default a UV seam above 25 degrees is "
                              "hard too, which shows the triangles up close); goes with --normal-from")
+    parser.add_argument("--transfer-cage", type=float, default=FIXED["transfer_cage_m"], metavar="M",
+                        help="--colour-from / --normal-from: rays start this far outside the surface, in metres "
+                             f"(default {FIXED['transfer_cage_m']}); raise it when thinning sank a part (spiky hair) "
+                             "deeper than that into the finer model and the rays pick up what lies beneath")
+    parser.add_argument("--transfer-reach", type=float, default=FIXED["transfer_reach_m"], metavar="M",
+                        help=f"... and look this far for the finer model (default {FIXED['transfer_reach_m']})")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -204,7 +210,8 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
-             normal_from=str(ns.normal_from) if ns.normal_from else None)
+             normal_from=str(ns.normal_from) if ns.normal_from else None,
+             transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach)
     if ns.soft_edges:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:

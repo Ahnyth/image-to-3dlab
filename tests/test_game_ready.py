@@ -516,3 +516,10 @@ def test_blend_transfer_takes_the_finer_paint_where_it_hit_and_keeps_the_own_els
     assert out[0, 1] == pytest.approx([0.2] * 3)       # a missed ray keeps the model's own paint
     assert out[1, 0] == pytest.approx([0.5] * 3)       # half covered texels blend
     assert gr.blend_transfer(own, transfer, None) == pytest.approx(own)
+
+
+def test_the_colour_transfer_reach_can_be_set():
+    s = gr.settings([])
+    assert (s["transfer_cage_m"], s["transfer_reach_m"]) == (0.012, 0.03)
+    s = gr.settings(["--transfer-cage", "0.03", "--transfer-reach", "0.06"])
+    assert (s["transfer_cage_m"], s["transfer_reach_m"]) == (0.03, 0.06)
