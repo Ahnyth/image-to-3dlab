@@ -391,6 +391,41 @@ def test_missing_core_bones_lists_what_a_humanoid_avatar_lacks():
     assert gr.missing_core_bones(names) == ["Neck"]
 
 
+def test_the_required_bones_are_the_ones_the_rig_step_names_required():
+    from image_to_3dlab.bone_names import REQUIRED
+    assert set(gr.REQUIRED_BONES) == set(REQUIRED["unity"])
+
+
+def test_a_rig_without_a_required_bone_is_refused_by_name():
+    # a broken auto-rig (no spine, no shins) bends wrongly in every move: stop before baking
+    message = gr.rig_refusal(["Spine", "Chest", "LeftLowerLeg", "RightLowerLeg"])
+    assert "Spine" in message and "LeftLowerLeg" in message and "RightLowerLeg" in message
+    assert "Chest" not in message
+    assert "--allow-missing-bones" in message
+
+
+@pytest.mark.parametrize("missing", [[], ["Neck"], ["Chest", "UpperChest", "LeftToes", "LeftShoulder"]])
+def test_a_rig_missing_only_optional_bones_goes_ahead(missing):
+    assert gr.rig_refusal(missing) is None
+
+
+def test_allow_missing_bones_is_an_option():
+    import argparse
+    parser = argparse.ArgumentParser()
+    gr.add_options(parser)
+    assert parser.parse_args([]).allow_missing_bones is False
+    assert parser.parse_args(["--allow-missing-bones"]).allow_missing_bones is True
+
+
+def test_problems_say_a_missing_required_bone_breaks_the_avatar():
+    report = {"materials": 1, "max_influences": 4, "unweighted": 0, "height": 1.8, "min_z": 0.0,
+              "missing_core_bones": ["Spine", "Neck"]}
+    found = gr.problems(report, max_influences=4, height=1.8)
+    spine = next(p for p in found if "Spine" in p)
+    neck = next(p for p in found if "Neck" in p)
+    assert "needs" in spine and "can do without" in neck
+
+
 def test_head_bones_are_the_head_and_everything_below_it():
     parents, heads, roles = _humanoid()
     parents, heads = dict(parents), dict(heads)

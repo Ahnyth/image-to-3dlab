@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach deeper: where thinning sank spiky hair more than the default 12 mm into the finer model,
   the rays started inside it and painted skin-coloured patches into the hair; 30 mm / 60 mm
   cleared them on the faces tested.
+- `game_ready.py` stops on a broken rig: when the auto-rig found no bone for a slot Unity's
+  Humanoid needs (spine, shins, ...), it says which and writes nothing, since such a figure bends
+  wrongly in every move; `--allow-missing-bones` bakes it anyway. In one game's records, 20 of 190
+  rig tries lacked the spine or the spine and both shins. Missing optional bones (neck, chests,
+  toes) stay a note in the report.
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.

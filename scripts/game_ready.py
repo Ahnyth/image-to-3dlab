@@ -56,7 +56,12 @@ CORE_BONES = ("Hips", "Spine", "Chest", "UpperChest", "Neck", "Head",
               "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand",
               "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
               "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes")
-HEX = re.compile(r"#?([0-9a-fA-F]{6})")
+# The slots Unity's Humanoid avatar cannot map without (the Rig step's `bone_names.REQUIRED`); a rig missing one
+# bends wrongly in every move, so the step stops instead of baking it. Neck, chests, shoulders, toes are optional.
+REQUIRED_BONES = ("Hips", "Spine", "Head",
+                  "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand",
+                  "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot")
+HEX =re.compile(r"#?([0-9a-fA-F]{6})")
 
 # Values from the hand-made finish this generalises (an 8k figure seen at 100-150 px), each one
 # a setting, none tied to a figure.
@@ -199,6 +204,9 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                         help="--colour-from / --normal-from: rays start this far outside the surface, in metres "
                              f"(default {FIXED['transfer_cage_m']}); raise it when thinning sank a part (spiky hair) "
                              "deeper than that into the finer model and the rays pick up what lies beneath")
+    parser.add_argument("--allow-missing-bones", action="store_true",
+                        help="bake a rig that lacks a bone Unity's Humanoid needs (spine, shins, ...) instead of "
+                             "stopping; the report still names it")
     parser.add_argument("--transfer-reach", type=float, default=FIXED["transfer_reach_m"], metavar="M",
                         help=f"... and look this far for the finer model (default {FIXED['transfer_reach_m']})")
 
@@ -471,6 +479,16 @@ def missing_core_bones(unity_names: dict[str, str]) -> list[str]:
     return [b for b in CORE_BONES if b not in found]
 
 
+def rig_refusal(missing: list[str]) -> str | None:
+    """Why this rig is not baked, or None. Only a missing required bone stops it; optional ones are a note."""
+    required = [b for b in missing if b in REQUIRED_BONES]
+    if not required:
+        return None
+    return (f"the rig has no {', '.join(required)} bone: Unity's Humanoid cannot map it and the figure bends "
+            "wrongly in every move. Rig it again (another try usually finds them), or pass --allow-missing-bones "
+            "to bake it anyway")
+
+
 def head_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> list[str]:
     """The head bone and every bone below it (a hood, a helmet lamp, hair)."""
     head = next((b for b, n in unity_names.items() if n == "Head"), None)
@@ -648,7 +666,10 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
     if abs(report["min_z"]) > 0.005:
         out.append(f"lowest point {report['min_z']:.3f} m from the floor")
     for bone in report.get("missing_core_bones", []):
-        out.append(f"no {bone} bone: Unity's Humanoid can do without one, but some importers expect it")
+        if bone in REQUIRED_BONES:
+            out.append(f"no {bone} bone: Unity's Humanoid needs one, so the avatar will not map")
+        else:
+            out.append(f"no {bone} bone: Unity's Humanoid can do without one, but some importers expect it")
     error = report.get("animation_error_m")
     if error is not None and error > 0.002:
         out.append(f"moves changed by up to {error:.4f} m in the rescale")
@@ -694,6 +715,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     unity = engine_names(parents, mapping, "unity")
     if "Hips" not in unity.values():
         print("no humanoid hips found: this needs a rigged humanoid from the auto-rig")
+        return 1
+    refusal = rig_refusal(missing_core_bones(unity))
+    if refusal and not args.allow_missing_bones:
+        print(f"{refusal}; nothing written")
         return 1
     plan = bone_plan(parents, unity, s["fingers"])
     names = {} if s["style"] == "keep" else engine_names(parents, mapping, s["style"])
