@@ -24,6 +24,8 @@ ALPHA_CUT = 128
 COLOUR_JUMP = 150      # a pixel whose R+G+B changed by more than this between the pictures was part of the effect
 MIN_AREA = 0.002       # an effect covers at least this share of the subject (smaller differences are drawing noise)
 WORK = 160             # the side of the small masks the alignment searches on
+MIN_VIVID = 0.3        # an effect (a flame, a glow) is bright and coloured: its mean value x saturation at least
+                       # this; a redrawn shadow, crack or foot is dark or grey (the Flammenwolf's redrawn feet fell below)
 
 
 def _bbox(mask: np.ndarray) -> tuple[int, int, int, int]:
@@ -108,6 +110,11 @@ def effect_regions(orig_rgba: np.ndarray, clean_rgba: np.ndarray) -> list[dict]:
     for i in range(1, n + 1):
         yy, xx = np.nonzero(labels == i)
         if len(yy) < min_area:
+            continue
+        rgb = o[yy, xx, :3].astype(float) / 255.0
+        value, low = rgb.max(axis=1), rgb.min(axis=1)
+        vivid = float(np.mean(value * np.where(value > 0, (value - low) / np.maximum(value, 1e-6), 0.0)))
+        if vivid < MIN_VIVID:
             continue
         cx, cy = float(xx.mean()), float(yy.mean())
         d = dist[yy, xx]

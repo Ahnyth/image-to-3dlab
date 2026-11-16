@@ -93,3 +93,11 @@ def test_pictures_framed_differently_are_lined_up_first():
     assert len(found) == 1
     ax, ay = found[0]["anchor"]                          # in the clean picture's own pixels
     assert 175 <= ax <= 195 and 82 <= ay <= 98           # its top right corner
+
+
+def test_a_dark_change_is_no_effect():
+    # an editor redrew a dark detail on the body (a shadow, a crack): dark and grey, not a flame or a glow
+    orig = pictures(True)
+    orig[110:140, 100:140] = (0, 0, 0, 255)
+    found = fx_markers.effect_regions(orig, pictures(False))
+    assert len(found) == 1 and found[0]["centre"][1] < 60     # only the orange blob at the top
