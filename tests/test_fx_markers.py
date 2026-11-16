@@ -101,3 +101,40 @@ def test_a_dark_change_is_no_effect():
     orig[110:140, 100:140] = (0, 0, 0, 255)
     found = fx_markers.effect_regions(orig, pictures(False))
     assert len(found) == 1 and found[0]["centre"][1] < 60     # only the orange blob at the top
+
+
+def side_pictures(with_effect: bool, where: str = "back_top") -> np.ndarray:
+    """A 200 x 200 RGBA right side view of the same box (the subject faces right: picture x runs back to front)."""
+    rgba = np.zeros((200, 200, 4), dtype=np.uint8)
+    rgba[50:150, 50:150] = (60, 60, 60, 255)
+    if with_effect and where == "back_top":
+        rgba[30:50, 52:72] = (255, 170, 40, 255)   # above the back top corner, touching it
+    if with_effect and where == "bottom":
+        rgba[150:170, 90:110] = (255, 170, 40, 255)
+    return rgba
+
+
+def test_a_side_picture_moves_the_marker_to_where_the_effect_sits_in_depth():
+    # the front alone puts it on the front surface; the side shows the flame sits at the back
+    out = fx_markers.add_markers(box_glb(), pictures(True), pictures(False), name="flame",
+                                 side=(side_pictures(True), side_pictures(False)))
+    doc, _ = parse_glb(out)
+    x, y, z = next(n for n in doc["nodes"] if n.get("name") == "fx_flame_1")["translation"]
+    assert abs(x - 0.5) < 0.08 and abs(y - 1.0) < 0.08
+    assert z < -0.15                                       # at the back, as the side shows
+    assert next(n for n in doc["nodes"] if n.get("name") == "fx_flame_1")["extras"]["depth_from"] == "side"
+
+
+def test_a_side_effect_at_another_height_leaves_the_front_marker_on_the_front():
+    out = fx_markers.add_markers(box_glb(), pictures(True), pictures(False), name="flame",
+                                 side=(side_pictures(True, "bottom"), side_pictures(False)))
+    doc, _ = parse_glb(out)
+    mark = next(n for n in doc["nodes"] if n.get("name") == "fx_flame_1")
+    assert mark["translation"][2] > 0.2 and mark["extras"]["depth_from"] == "front"
+
+
+def test_pairing_goes_by_height():
+    front = [{"y": 0.95}, {"y": 0.2}]
+    side = [{"y": 0.25, "z": -0.1}, {"y": 0.9, "z": 0.3}]
+    assert fx_markers.pair_by_height(front, side, tolerance=0.15) == [1, 0]
+    assert fx_markers.pair_by_height([{"y": 0.5}], side, tolerance=0.15) == [None]

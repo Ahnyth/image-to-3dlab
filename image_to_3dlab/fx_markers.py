@@ -125,8 +125,21 @@ def effect_regions(orig_rgba: np.ndarray, clean_rgba: np.ndarray) -> list[dict]:
     return sorted(found, key=lambda r: -r["pixels"])
 
 
-def add_markers(glb: bytes, orig_rgba: np.ndarray, clean_rgba: np.ndarray, name: str = "flame") -> bytes:
-    """The GLB with one empty root node per effect region, on the model's front surface at the anchor."""
+def pair_by_height(front: list[dict], side: list[dict], tolerance: float) -> list[int | None]:
+    """For each front effect, the side effect nearest in height (model units, "y"), or None when none is within
+    `tolerance`. Several front effects may share one side effect (a mane seen as three tongues from the front)."""
+    out: list[int | None] = []
+    for f in front:
+        best = min(range(len(side)), key=lambda i: abs(side[i]["y"] - f["y"]), default=None)
+        out.append(best if best is not None and abs(side[best]["y"] - f["y"]) <= tolerance else None)
+    return out
+
+
+def add_markers(glb: bytes, orig_rgba: np.ndarray, clean_rgba: np.ndarray, name: str = "flame",
+                side: tuple[np.ndarray, np.ndarray] | None = None) -> bytes:
+    """The GLB with one empty root node per effect region at its anchor: on the model's front surface, or, with
+    `side` (the right side view with and without the effect, the subject facing right), at the depth where the
+    side view shows the effect touching the subject."""
     import trimesh
 
     regions = effect_regions(orig_rgba, clean_rgba)
@@ -140,15 +153,31 @@ def add_markers(glb: bytes, orig_rgba: np.ndarray, clean_rgba: np.ndarray, name:
     per_px = (hi[0] - lo[0]) / (x1 - x0 + 1)
     near_r = 0.03 * float(max(hi - lo))
     root = doc["scenes"][doc.get("scene", 0)]["nodes"]
-    for n, r in enumerate(regions, 1):
+    fronts = []
+    for r in regions:
         ax, ay = r["anchor"]
-        x = lo[0] + (ax - x0 + 0.5) / (x1 - x0 + 1) * (hi[0] - lo[0])
-        y = hi[1] - (ay - y0 + 0.5) / (y1 - y0 + 1) * (hi[1] - lo[1])
-        d = np.hypot(verts[:, 0] - x, verts[:, 1] - y)
-        close = d <= near_r
-        z = float(verts[close, 2].max()) if close.any() else float(verts[np.argmin(d), 2])
-        doc["nodes"].append({"name": f"fx_{name}_{n}", "translation": [float(x), float(y), z],
+        fronts.append({"x": lo[0] + (ax - x0 + 0.5) / (x1 - x0 + 1) * (hi[0] - lo[0]),
+                       "y": hi[1] - (ay - y0 + 0.5) / (y1 - y0 + 1) * (hi[1] - lo[1])})
+    sides: list[dict] = []
+    if side is not None:
+        s_orig, s_clean = side
+        sx0, sy0, sx1, sy1 = _bbox(s_clean[..., 3] > ALPHA_CUT)
+        for r in effect_regions(s_orig, s_clean):
+            ax, ay = r["anchor"]
+            sides.append({"z": lo[2] + (ax - sx0 + 0.5) / (sx1 - sx0 + 1) * (hi[2] - lo[2]),
+                          "y": hi[1] - (ay - sy0 + 0.5) / (sy1 - sy0 + 1) * (hi[1] - lo[1])})
+    pairs = pair_by_height(fronts, sides, tolerance=0.15 * float(hi[1] - lo[1])) if sides else [None] * len(fronts)
+    for n, (r, f, k) in enumerate(zip(regions, fronts, pairs), 1):
+        x, y = float(f["x"]), float(f["y"])
+        if k is not None:
+            z, depth = float(sides[k]["z"]), "side"
+        else:
+            d = np.hypot(verts[:, 0] - x, verts[:, 1] - y)
+            close = d <= near_r
+            z = float(verts[close, 2].max()) if close.any() else float(verts[np.argmin(d), 2])
+            depth = "front"
+        doc["nodes"].append({"name": f"fx_{name}_{n}", "translation": [x, y, z],
                              "extras": {"fx": name, "radius": round(float(r["radius"] * per_px), 4),
-                                        "made_by": "AssetFurnace fx_markers"}})
+                                        "depth_from": depth, "made_by": "AssetFurnace fx_markers"}})
         root.append(len(doc["nodes"]) - 1)
     return build_glb(doc, binary)

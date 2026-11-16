@@ -117,7 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as geometry looks like a sheet of paper from the side; take it out of the front picture with the
   studio's picture editor, build from that, and this lines the two pictures up, finds where the
   effect sat and writes an empty node there (`fx_flame_1`, with its size), where a game attaches
-  its own moving effect. The mesh and textures stay as they are.
+  its own moving effect. The mesh and textures stay as they are. With `--side` (the right side view
+  with and without the effect) each node sits at the depth the side shows, so a mane of flames on the
+  back of the neck is marked there and not on the face.
 
 ### Fixed
 - The Windows installer's anonymous started / stopped / finished count reaches the site.
