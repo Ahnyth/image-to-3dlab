@@ -65,7 +65,8 @@ FIXED = {
     "uv_angle": 72.0,         # smart-project angle limit, degrees
     "uv_margin_px": 2,        # island spacing in texels: enough for close-ups; from afar mip-maps blend anyway
     "sharp_deg": 62.0,        # edges steeper than this are always hard ...
-    "sharp_seam_deg": 25.0,   # ... and on a UV seam already above this (the vertex is split there anyway)
+    "sharp_seam_deg": 25.0,   # ... and on a UV seam above this with --hard-seams (soft by default: D145, a seam above
+                              # 25 degrees made every triangle of a thinned face show)
     "tiny_area_cm2": 1.5,     # floating bits smaller than this are deleted ...
     "tiny_faces": 3,          # ... and so are bits of this many faces or fewer
     "shade_lo": 0.78,         # sky light baked into the colour: shadowed parts x0.78 ...
@@ -190,8 +191,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "the atlas, so the engine lights the fine shape (nose, lips, folds) on the coarse mesh; "
                              "for close-up versions (a menu, a hero stage), costs a second texture")
     parser.add_argument("--soft-edges", action="store_true",
-                        help="only edges steeper than 62 degrees are hard (by default a UV seam above 25 degrees is "
-                             "hard too, which shows the triangles up close); goes with --normal-from")
+                        help="the default now (only edges steeper than 62 degrees are hard); kept for old command lines")
+    parser.add_argument("--hard-seams", action="store_true",
+                        help="the old shading: a UV seam above 25 degrees is hard too (crisper on blocky armour, but "
+                             "every triangle of a thinned face shows up close)")
     parser.add_argument("--transfer-cage", type=float, default=FIXED["transfer_cage_m"], metavar="M",
                         help="--colour-from / --normal-from: rays start this far outside the surface, in metres "
                              f"(default {FIXED['transfer_cage_m']}); raise it when thinning sank a part (spiky hair) "
@@ -212,7 +215,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
              transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach)
-    if ns.soft_edges:
+    if not ns.hard_seams:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
         s["shade_lo"] = s["shade_hi"] = 1.0

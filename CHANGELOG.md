@@ -72,8 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   misses the legs or the spine).
 - `game_ready.py --normal-from <raw model>` gives a close-up version of a figure (a menu, a hero
   stage) a normal map baked from the fine raw model, so the engine lights its nose, lips and folds
-  on the coarse mesh, and `--soft-edges` keeps the triangles from showing up close (only edges
-  steeper than 62 degrees stay hard). Costs a second texture of the atlas's size.
+  on the coarse mesh. Costs a second texture of the atlas's size.
+- `game_ready.py` shades a character softly by default: only edges steeper than 62 degrees stay
+  hard. Before, every UV seam above 25 degrees was hard too, and on a figure thinned to a few
+  thousand triangles that showed each triangle of the face ("made by hand"). Soft edges cost
+  nothing (the seams split the vertices either way); `--hard-seams` brings the old shading back.
+- `game_ready.py --transfer-cage` / `--transfer-reach` let `--colour-from` and `--normal-from`
+  reach deeper: where thinning sank spiky hair more than the default 12 mm into the finer model,
+  the rays started inside it and painted skin-coloured patches into the hair; 30 mm / 60 mm
+  cleared them on the faces tested.
 - `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
   +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
   `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.

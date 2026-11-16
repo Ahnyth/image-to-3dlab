@@ -484,7 +484,13 @@ def test_head_islands_are_the_islands_mostly_on_the_head():
 def test_the_close_up_switches_are_off_by_default():
     s = gr.settings([])
     assert s["normal_from"] is None
-    assert s["sharp_seam_deg"] == 25.0
+
+
+def test_soft_edges_are_the_default_and_hard_seams_can_be_asked_for():
+    # a seam above 25 degrees made every face triangle show on a thinned figure (D145): soft by default now
+    assert gr.settings([])["sharp_seam_deg"] == gr.settings([])["sharp_deg"]
+    assert gr.settings(["--soft-edges"])["sharp_seam_deg"] == gr.settings([])["sharp_deg"]   # old command lines
+    assert gr.settings(["--hard-seams"])["sharp_seam_deg"] == 25.0
 
 
 def test_settings_read_the_close_up_switches(tmp_path):
