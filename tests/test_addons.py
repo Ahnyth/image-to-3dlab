@@ -386,6 +386,27 @@ class TestBuildCommand:
         )
         assert "--length" not in argv and "length" not in argv
 
+    def test_an_optional_input_left_blank_drops_its_placeholder(self):
+        data = manifest()
+        data["tools"][0]["run"] = [*data["tools"][0]["run"], "{length}"]
+        tool = addons.tool_from_dict(data["tools"][0])
+        argv = addons.build_command(tool, {"preset": "bus_12m"}, out_dir="/tmp/out", blender="/b")
+        assert argv[-2:] == ["--preset", "bus_12m"]
+
+    def test_an_optional_input_left_blank_drops_its_flag_too(self):
+        data = manifest()
+        data["tools"][0]["run"] = [*data["tools"][0]["run"], "--length", "{length}"]
+        tool = addons.tool_from_dict(data["tools"][0])
+        argv = addons.build_command(tool, {"preset": "bus_12m"}, out_dir="/tmp/out", blender="/b")
+        assert "--length" not in argv and argv[-2:] == ["--preset", "bus_12m"]
+        given = addons.build_command(tool, {"preset": "bus_12m", "length": 12}, out_dir="/tmp/out", blender="/b")
+        assert given[-2:] == ["--length", "12"]
+
+    def test_a_required_input_left_out_still_stops(self):
+        tool = addons.tool_from_dict(manifest()["tools"][0])
+        with pytest.raises(ValueError, match="preset"):
+            addons.build_command(tool, {}, out_dir="/tmp/out", blender="/b")
+
     def test_never_returns_shell_string(self):
         tool = addons.tool_from_dict(manifest()["tools"][0])
         argv = addons.build_command(

@@ -361,7 +361,9 @@ def build_command(tool: Tool, inputs: dict[str, Any], *, out_dir: str | Path,
         elif not spec.optional:
             raise ValueError(f"missing required input: {spec.id}")
 
-    def fill(arg: str) -> str:
+    optional = {spec.id for spec in tool.inputs if spec.optional}
+
+    def fill(arg: str) -> str | None:
         if arg == "{out}":
             return str(out_dir)
         if arg == "{blender}":
@@ -370,11 +372,21 @@ def build_command(tool: Tool, inputs: dict[str, Any], *, out_dir: str | Path,
         if match:
             key = match.group(1)
             if key not in inputs:
+                if key in optional:
+                    return None   # left blank: the argument goes, and its flag with it
                 raise ValueError(f"missing required input: {key}")
             return str(inputs[key])
         return arg
 
-    return [fill(arg) for arg in tool.run]
+    argv: list[str] = []
+    for arg in tool.run:
+        value = fill(arg)
+        if value is None:
+            if argv and argv[-1].startswith("-") and argv[-1] in tool.run and not re.fullmatch(r"\{.*\}", argv[-1]):
+                argv.pop()
+            continue
+        argv.append(value)
+    return argv
 
 
 def output_dir(addon_id: str, run_stem: str) -> Path:

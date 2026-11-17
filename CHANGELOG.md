@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+- An add-on input marked optional can be left blank again when its `{placeholder}` is in `run`: the argument is left out, and so is a `--flag` right before it, instead of stopping with "missing required input".
 
 ## [0.5.11] - 2026-11-17
 

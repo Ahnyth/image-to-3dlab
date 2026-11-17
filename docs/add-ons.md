@@ -131,7 +131,7 @@ Each input has:
 - `id`: the placeholder name used in `run`.
 - `type`: one of `text`, `number`, `choice`, `toggle`, `picture`, `model`.
 - `label`: the label shown beside the field.
-- `optional`: set to `true` if the user can leave it blank.
+- `optional`: set to `true` if the user can leave it blank. Left blank, its `{placeholder}` argument is left out of `run`, together with a `--flag` right before it.
 
 Type-specific fields:
 
