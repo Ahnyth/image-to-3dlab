@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+- An add-on with a toggle input runs from the studio's Add-ons page again: the page sends the toggle as true or false, which the input check only took as text, so every run stopped and the page said "Failed to fetch".
 
 ## [0.5.11] - 2026-11-17
 

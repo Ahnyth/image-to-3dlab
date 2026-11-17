@@ -307,6 +307,21 @@ class TestParseInputs:
         assert addons.parse_inputs({"flag": "true"}, tool)["flag"] is True
         assert addons.parse_inputs({"flag": "no"}, tool)["flag"] is False
 
+    def test_toggle_and_number_take_the_json_values_the_studio_page_sends(self):
+        # The Add-ons page posts its form as JSON: a toggle arrives as true/false, a number as a
+        # number, not as the strings the command line passes.
+        data = manifest()
+        data["tools"][0]["inputs"].append({"id": "flag", "type": "toggle", "label": "Flag"})
+        tool = addons.tool_from_dict(data["tools"][0])
+        parsed = addons.parse_inputs({"preset": "bus_12m", "length": 12, "flag": True}, tool)
+        assert parsed["flag"] is True and parsed["length"] == 12
+        assert addons.parse_inputs({"preset": "bus_12m", "flag": False}, tool)["flag"] is False
+
+    def test_a_json_true_is_not_a_number(self):
+        tool = addons.tool_from_dict(manifest()["tools"][0])
+        with pytest.raises(ValueError, match="length"):
+            addons.parse_inputs({"preset": "bus_12m", "length": True}, tool)
+
     def test_picture_resolves_and_checks_exists(self, tmp_path):
         picture = tmp_path / "photo.png"
         picture.write_text("png", encoding="utf-8")

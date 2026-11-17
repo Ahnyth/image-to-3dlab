@@ -300,8 +300,19 @@ def _validate_input(value: Any, spec: Input) -> None:
             raise ValueError(f"input '{spec.id}' must be text")
 
 
-def _coerce_input(value: str, spec: Input, cwd: Path | None) -> Any:
-    """Turn one raw --input string into the type the manifest declares."""
+def _coerce_input(value: Any, spec: Input, cwd: Path | None) -> Any:
+    """Turn one raw input into the type the manifest declares.
+
+    The command line passes strings; the studio's Add-ons page posts JSON, so a toggle arrives
+    as true/false and a number as a number. A JSON boolean is a toggle's value only.
+    """
+    if isinstance(value, bool):
+        if spec.type == "toggle":
+            return value
+        raise ValueError(f"input '{spec.id}' must be a {'number' if spec.type == 'number' else 'text'}")
+    if spec.type == "number" and isinstance(value, (int, float)):
+        return value
+    value = str(value)
     if spec.type == "text":
         return value
     if spec.type == "number":
@@ -334,7 +345,7 @@ def _coerce_input(value: str, spec: Input, cwd: Path | None) -> Any:
 
 
 def parse_inputs(
-    raw: dict[str, str],
+    raw: dict[str, Any],
     tool: Tool,
     cwd: Path | str | None = None,
 ) -> dict[str, Any]:
