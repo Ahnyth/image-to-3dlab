@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+- An add-on installed with `--unlisted` shows as Unknown on the Add-ons page, not as "No longer listed", which is kept for one installed from the list that has since left it.
 
 ## [0.5.11] - 2026-11-17
 

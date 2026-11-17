@@ -66,14 +66,26 @@ def test_addons_payload_includes_links_and_rating(tmp_path, monkeypatch):
 
 
 def test_addons_payload_marks_no_longer_listed(tmp_path, monkeypatch):
+    # Installed from the list, then taken off it.
     _set_paths(tmp_path, monkeypatch)
     registry = tmp_path / "index.json"
     registry.write_text(json.dumps([]), encoding="utf-8")
     monkeypatch.setattr(viewer, "INDEX_FILE", str(registry))
-    make_installed_addon(tmp_path, manifest())
+    make_installed_addon(tmp_path, manifest(), install={"tier": "listed"})
     payload = viewer.addons_payload()
     assert payload["addons"][0]["listed"] is False
     assert payload["addons"][0].get("no_longer_listed") is True
+
+
+def test_an_add_on_installed_unlisted_is_unknown_not_no_longer_listed(tmp_path, monkeypatch):
+    # `--unlisted` installs were never on the list: the page shows Unknown, not "No longer listed".
+    _set_paths(tmp_path, monkeypatch)
+    registry = tmp_path / "index.json"
+    registry.write_text(json.dumps([]), encoding="utf-8")
+    monkeypatch.setattr(viewer, "INDEX_FILE", str(registry))
+    make_installed_addon(tmp_path, manifest(), install={"tier": "unknown"})
+    addon = viewer.addons_payload()["addons"][0]
+    assert addon["tier"] == "unknown" and not addon.get("no_longer_listed")
 
 
 def test_install_payload_returns_plan(tmp_path, monkeypatch):

@@ -119,7 +119,8 @@ def addons_payload() -> dict[str, Any]:
         for addon_id in sorted(installed_ids - listed_ids):
             installed = _installed_addon_payload(addon_id)
             if installed is not None:
-                installed["no_longer_listed"] = True
+                # Only one installed from the list has left it; an `--unlisted` install never was on it.
+                installed["no_longer_listed"] = installed["tier"] != "unknown"
                 addons.append(installed)
     except Exception as exc:
         online = False
