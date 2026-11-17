@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
   add-ons can do, how to test locally, and the rules for being listed.
 - **`scripts/strand_score.py`** counts the hair strands a Pixal3D figure has in front of its face (a sheet floating a few millimetres before the skin where the front picture shows the face, painted unlike the picture), so the cleanest of a few tries of one character can be kept; `image_to_3dlab/strands.py` holds the rule. Reports only.
+- **Tries in Create**: for a Pixal3D character, Create's Advanced: 3D model can build the model up to five times and keep the try with the fewest hair strands in front of the face; the others stay in the Library, and Activity says which try was kept and why. Agents ask for it with `advanced={"tries": 3}`.
 
 ### Fixed
 

@@ -388,6 +388,11 @@ ADVANCED: dict[str, dict[str, Any]] = {
     "keep_everything": {
         "step": "model", "type": "bool", "default": False,
         "what": "The 3D step keeps its in-between textures, meshes and caches (several GB) for inspection."},
+    "tries": {
+        "step": "model", "type": "int", "min": 1, "max": 5, "default": 1,
+        "what": "Pixal3D characters: build the 3D model this many times and keep the try with the fewest hair "
+                "strands in front of the face (scripts/strand_score.py's count). Each try is a whole 3D build; "
+                "the others stay in the Library."},
 }
 
 
@@ -755,6 +760,8 @@ def create(studio: Studio, *, want: str, description: str = "", image_path: str 
         form["first_move"] = move
     if adv["keep_everything"] and "model" in steps:
         form["keep_everything"] = "1"
+    if adv["tries"] > 1 and "model" in steps:
+        form["model_tries"] = str(int(adv["tries"]))
     choices, move_settings = plan_extras(adv, finish_detail, pixel_match)
     if adv["height_m"] is not None or want == "character":
         choices["height_m"] = adv["height_m"] if adv["height_m"] is not None else 1.8

@@ -335,6 +335,15 @@ def test_every_3d_try_gets_a_fresh_seed():
 
 
 @needs_node
+def test_tries_reach_the_plan_only_when_there_is_more_than_one():
+    out = _run("create.js", """
+      const three = m.planForm({ steps: ['model'], description: 'x', modelTries: 3 }).get('model_tries');
+      const one = m.planForm({ steps: ['model'], description: 'x', modelTries: 1 }).get('model_tries');
+      console.log(JSON.stringify([three, one]));""")
+    assert out == ["3", None]
+
+
+@needs_node
 def test_one_prop_and_nine_props_are_told_apart_by_name():
     out = _run("plan.js", "console.log(JSON.stringify([m.WANTS.prop.label, m.WANTS.set.label]));")
     assert out == ["One prop", "Nine props"]

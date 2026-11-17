@@ -3,7 +3,8 @@
 Pixal3D often builds a strand of hair hanging a little in front of the forehead or the eyes where the front picture
 shows bare skin. Pixel Match then paints the strand with the picture's skin, and from every side but the front it
 reads as a crack across the face. A new seed of the same picture often has fewer such strands, so counting them
-lets a run keep the cleanest of a few tries (`scripts/strand_score.py`).
+lets a run keep the cleanest of a few tries (`scripts/strand_score.py`, and Create's "Tries" in the
+studio, which builds a few and keeps the one with the fewest).
 
 A triangle counts as a strand when all of these hold:
 
@@ -26,6 +27,7 @@ in renders from eight sides (ArcherSoul's Purpur-Samurai and Assassine): the cou
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy import ndimage
@@ -245,3 +247,20 @@ def count_strands(positions: np.ndarray, uvs: np.ndarray, faces: np.ndarray, tex
     report.pieces = int(go.sum())
     report.triangles = cand[sel[go[inv]]]
     return report
+
+
+def score_model(glb: Path, views: Path | None = None, *, colour_gap: float = 30.0) -> dict:
+    """One try's strand count, as `scripts/strand_score.py` prints it and Create's tries keep the cleanest by.
+
+    `views` defaults to the stored views a Pixal3D run writes beside its model (`<model>.svviews`). A model
+    without them (another engine), or whose front picture shows no face, comes back with `face_found` false.
+    """
+    views = views or glb.with_suffix(".svviews")
+    result = {"model": str(glb), "strand_triangles": None, "pieces": 0, "faces": 0, "face_found": False}
+    if not (views / "transforms.json").is_file():
+        return {**result, "error": f"no stored views beside it ({views.name})"}
+    positions, uvs, faces, texture = pp.read_glb(glb)
+    loaded, mesh_scale = pp.load_views(views)
+    report = count_strands(positions, uvs, faces, texture, loaded, mesh_scale, colour_gap=colour_gap)
+    return {**result, "strand_triangles": report.count, "pieces": report.pieces, "faces": report.faces,
+            "face_found": report.face_box is not None}

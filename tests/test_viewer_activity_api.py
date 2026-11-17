@@ -662,3 +662,116 @@ def test_the_plan_form_carries_only_known_rig_settings():
             "made": {"value": '{"finished": "finish/k/k_8k.glb"}'},
             "rig_settings": {"value": '{"bone_names": "unity", "colour": "red"}'}}
     assert aa.chain_from_form(form).rig_settings == {"bone_names": "unity"}
+
+
+# --- several 3D tries, the cleanest kept ------------------------------------------------------
+
+
+class TriesJobs(FakeJobs):
+    """Each 3D job makes its own model (pixal3d/m<n>/model.glb) and remembers the seed it was sent."""
+
+    def __init__(self, output: Path, **kwargs):
+        super().__init__(output, **kwargs)
+        self.seeds: list[int | None] = []
+
+    def __call__(self, method, path, body, content_type):
+        if method == "POST" and path == "/api/generate":
+            settings = body.split(b'name="settings"\r\n\r\n', 1)[1].split(b"\r\n", 1)[0]
+            self.seeds.append(json.loads(settings).get("seed"))
+        status, payload = super().__call__(method, path, body, content_type)
+        if payload.get("model"):
+            model = f"pixal3d/m{len(self.seeds)}/model.glb"
+            (self.output / model).parent.mkdir(parents=True, exist_ok=True)
+            (self.output / model).write_bytes(b"x")
+            payload = {**payload, "model": model}
+        return status, payload
+
+
+def _tries_runner(tmp_path, counts, **fake):
+    """A runner whose strand scorer reads the count for each try's model from `counts`."""
+    jobs = TriesJobs(tmp_path, **fake)
+    scored: list[str] = []
+
+    def score(output, model):
+        scored.append(model)
+        count = counts.get(model)
+        return {"model": model, "strand_triangles": count, "face_found": count is not None}
+
+    runner = aa.ChainRunner(tmp_path, jobs, poll=0, sleep=lambda s: None, score=score)
+    return runner, jobs, scored
+
+
+def test_three_tries_keep_the_one_with_the_fewest_strands(tmp_path):
+    counts = {"pixal3d/m1/model.glb": 1940, "pixal3d/m2/model.glb": 854, "pixal3d/m3/model.glb": 1483}
+    runner, jobs, scored = _tries_runner(tmp_path, counts)
+    chain = aa.Chain(title="samurai", steps=["model", "finished"], engine="pixal3d", model_seed=100,
+                     model_tries=3, upload=("samurai.png", b"png"))
+    runner.submit(chain, background=False)
+    assert chain.status == "done" and chain.done == ["model", "finished"]
+    assert jobs.seeds == [100, 101, 102]                       # a fresh seed for every try
+    assert scored == list(counts)
+    assert chain.made["model"] == "pixal3d/m2/model.glb"       # the cleanest goes on
+    finish = next(b for m, p, b in jobs.calls if p == "/api/finish")
+    assert b'filename="model.glb"' in finish
+    assert [t["strand_triangles"] for t in chain.to_dict()["tries"]] == [1940, 854, 1483]
+    pick = next(h for h in aa.read_history(tmp_path) if h["step"] == "model")
+    assert "854" in pick["note"] and "try 2 of 3" in pick["note"]
+
+
+def test_tries_without_a_seed_still_get_different_seeds(tmp_path):
+    counts = {f"pixal3d/m{i}/model.glb": 10 * i for i in (1, 2)}
+    runner, jobs, _ = _tries_runner(tmp_path, counts)
+    chain = aa.Chain(title="x", steps=["model"], engine="pixal3d", model_tries=2, upload=("x.png", b"png"))
+    runner.submit(chain, background=False)
+    assert None not in jobs.seeds and len(set(jobs.seeds)) == 2
+
+
+def test_when_no_try_shows_a_face_the_first_is_kept_and_said(tmp_path):
+    runner, _, _ = _tries_runner(tmp_path, {})
+    chain = aa.Chain(title="crate", steps=["model"], engine="pixal3d", model_tries=3, upload=("crate.png", b"png"))
+    runner.submit(chain, background=False)
+    assert chain.status == "done" and chain.made["model"] == "pixal3d/m1/model.glb"
+    assert "no face" in next(h for h in aa.read_history(tmp_path) if h["step"] == "model")["note"]
+
+
+def test_a_try_that_cannot_be_judged_stops_further_tries(tmp_path):
+    # The first try has no face to judge (a crate, or an engine that stores no views): more
+    # tries could not be told apart, so none are made.
+    runner, jobs, scored = _tries_runner(tmp_path, {})
+    chain = aa.Chain(title="crate", steps=["model"], engine="pixal3d", model_tries=4, upload=("c.png", b"png"))
+    runner.submit(chain, background=False)
+    assert len(jobs.seeds) == 1 and len(scored) == 1
+
+
+def test_one_try_is_the_plain_3d_step(tmp_path):
+    runner, jobs, scored = _tries_runner(tmp_path, {"pixal3d/m1/model.glb": 5})
+    chain = aa.Chain(title="x", steps=["model"], engine="pixal3d", upload=("x.png", b"png"))
+    runner.submit(chain, background=False)
+    assert len(jobs.seeds) == 1 and scored == []
+
+
+def test_cancelling_between_tries_keeps_what_was_made(tmp_path):
+    counts = {f"pixal3d/m{i}/model.glb": 100 - i for i in (1, 2, 3)}
+    runner, jobs, _ = _tries_runner(tmp_path, counts)
+    chain = aa.Chain(title="x", steps=["model", "finished"], engine="pixal3d", model_tries=3,
+                     upload=("x.png", b"png"))
+    original = runner.score
+
+    def score_then_cancel(output, model):
+        chain.cancel_requested = True
+        return original(output, model)
+
+    runner.score = score_then_cancel
+    runner.submit(chain, background=False)
+    assert chain.status == "cancelled" and len(jobs.seeds) == 1
+    assert chain.made["model"] == "pixal3d/m1/model.glb"
+
+
+def test_the_plan_form_carries_the_number_of_tries():
+    from viewer.generate_api import parse_multipart
+    for sent, kept in (("3", 3), ("9", aa.MAX_TRIES), ("0", 1), ("many", 1), (None, 1)):
+        fields = {"title": "x", "steps": json.dumps(["model"]), "engine": "pixal3d"}
+        if sent is not None:
+            fields["model_tries"] = sent
+        body, ctype = aa.multipart(fields, {})
+        assert aa.chain_from_form(parse_multipart(ctype, body)).model_tries == kept

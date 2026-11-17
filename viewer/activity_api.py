@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -43,6 +44,9 @@ PICTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 # the largest back picture taken (image_api.MAX_PICTURE_SIDE): decoding a crafted file is the risk
 MAX_BACK_SIDE = 4096
 KEEP_CHAINS = 20   # finished runs remembered for the activity list
+# Create's "Tries": the 3D step run this many times at most, each try's hair strands in front of
+# the face counted (image_to_3dlab/strands.py) and the cleanest kept. Each try is a whole 3D build.
+MAX_TRIES = 5
 # Steps that run headless Blender; a plan with one is checked for Blender before anything runs.
 NEEDS_BLENDER = {"finished", "split"}
 NOISE = re.compile(r"\[(VERBOSE|DEBUG)\]|ggml_|kernel_|compile_pipeline|th_max|^\s*[|\-=]*\s*$|^\s*0x[0-9a-f]+", re.IGNORECASE)
@@ -105,6 +109,7 @@ class Chain:
     picture_engine: str | None = None                                # "flux" / "flux-light" / "qwen"; None = the default
     back_settings: dict[str, Any] = field(default_factory=dict)      # a back redraw: seed, what to change
     model_seed: int | None = None                                    # a fresh 3D try each time; None = engine default
+    model_tries: int = 1                                             # 3D tries; >1 keeps the one with the fewest strands
     keep_everything: bool = False                                    # the 3D step keeps its textures, meshes, caches
     finish_settings: dict[str, Any] = field(default_factory=dict)    # detail and Pixel Match (the finish job checks them)
     move_settings: dict[str, Any] = field(default_factory=dict)      # speed, arm_spread, in_place (the animate job checks them)
@@ -130,6 +135,8 @@ class Chain:
     cancel_sent: tuple[str, str] | None = None                       # child whose cancel is sent/in flight
     note: str = ""                                                   # why a run ended early, calmly
     step_seconds: dict[str, float] = field(default_factory=dict)      # how long each finished step took
+    tries: list[dict[str, Any]] = field(default_factory=list)       # each 3D try: model, seed, strand count
+    prefix: str = ""                                                 # "Try 2 of 3: " before a try's progress
 
     def to_dict(self, now: float | None = None) -> dict[str, Any]:
         now = time.time() if now is None else now
@@ -138,7 +145,7 @@ class Chain:
             "current": self.current, "done": self.done, "percent": self.percent, "message": self.message,
             "log": self.log, "full_log": self.full_log[-4000:], "error": self.error,
             "made": {k: v for k, v in self.made.items() if v}, "first_move": self.first_move, "note": self.note,
-            "step_seconds": dict(self.step_seconds),
+            "step_seconds": dict(self.step_seconds), "tries": [dict(t) for t in self.tries],
             "elapsed": round(now - self.started, 1), "step_elapsed": round(now - self.step_started, 1),
             "stalled": self.status == "running" and now - self.last_change > STALL_SECONDS,
         }
@@ -148,9 +155,11 @@ class ChainRunner:
     """One plan at a time (the jobs underneath refuse to overlap anyway)."""
 
     def __init__(self, output: Path, request: Request | None = None, *, poll: float = 1.2,
-                 now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
+                 now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
+                 score: Callable[[Path, str], dict[str, Any]] | None = None):
         self.output = output
         self.request = request
+        self.score = score or score_strands
         self.poll, self.now, self.sleep = poll, now, sleep
         self.chains: dict[str, Chain] = {}
         self.lock = threading.Lock()
@@ -241,7 +250,10 @@ class ChainRunner:
                 break
             chain.current, chain.percent, chain.message, chain.log = step, None, "Starting…", ""
             chain.step_started = chain.last_change = self.now()
-            ok = self._run_step(chain, step)
+            if step == "model" and chain.model_tries > 1:
+                ok = self._run_tries(chain)
+            else:
+                ok = self._run_step(chain, step)
             if not ok:
                 break
             chain.done.append(step)
@@ -276,7 +288,7 @@ class ChainRunner:
             if key != last_key:
                 last_key, chain.last_change = key, self.now()
             chain.percent = _percent(event)
-            chain.message = event.get("message") or event.get("phase") or "Working…"
+            chain.message = chain.prefix + (event.get("message") or event.get("phase") or "Working…")
             chain.full_log = payload.get("log_tail") or ""
             chain.log = readable_log(chain.full_log)
             if payload.get("status") in TERMINAL:
@@ -297,6 +309,47 @@ class ChainRunner:
         self._record(chain, step, payload)
         chain.step_seconds[step] = round(self.now() - started, 1)
         self._history(chain, step, "done", started, chain.message, chain.full_log)
+        return True
+
+    def _run_tries(self, chain: Chain) -> bool:
+        """Create's "Tries": the 3D step a few times with fresh seeds, each try's hair strands in
+        front of the face counted, and the cleanest kept as the model the next steps use. Every
+        try stays in the Library as its own run. A try that cannot be judged (no face in the
+        front picture, or no stored views) ends the tries: more could not be told apart."""
+        count = min(max(chain.model_tries, 1), MAX_TRIES)
+        base = chain.model_seed if chain.model_seed is not None else int.from_bytes(os.urandom(3), "big")
+        started = self.now()
+        try:
+            for index in range(count):
+                if index and chain.cancel_requested:
+                    break
+                chain.model_seed, chain.prefix = base + index, f"Try {index + 1} of {count}: "
+                if index:
+                    chain.percent, chain.message, chain.log = None, chain.prefix + "Starting…", ""
+                    chain.step_started = chain.last_change = self.now()
+                if not self._run_step(chain, "model"):
+                    return False
+                model = chain.made.get("model")
+                chain.message = chain.prefix + "counting hair strands in front of the face…"
+                result = {**self.score(self.output, model), "model": model, "seed": base + index}
+                chain.tries.append(result)
+                if not result.get("face_found"):
+                    break
+        finally:
+            chain.model_seed, chain.prefix = base, ""
+        judged = [t for t in chain.tries if t.get("face_found")]
+        if judged:
+            best = min(judged, key=lambda t: t["strand_triangles"])
+            chain.made["model"] = best["model"]
+            others = ", ".join(f"{t['strand_triangles']:,}" for t in judged if t is not best)
+            note = (f"Kept try {chain.tries.index(best) + 1} of {len(chain.tries)}: "
+                    f"{best['strand_triangles']:,} strand triangles in front of the face"
+                    + (f" (the others {others})." if others else "."))
+        else:
+            chain.made["model"] = chain.tries[0]["model"]
+            note = "The front picture shows no face to judge, so the first try is kept and no more were made."
+        chain.message = note
+        self._history(chain, "model", "done", started, note, "")
         return True
 
     def _fail(self, chain: Chain, step: str, why: str, log: str, started: float, status: str = "error") -> bool:
@@ -472,6 +525,16 @@ def _percent(event: dict[str, Any]) -> float | None:
     return None
 
 
+def score_strands(output: Path, model: str) -> dict[str, Any]:
+    """The strand count of one 3D try (image_to_3dlab/strands.py); `face_found` false when it cannot
+    be judged. Never raises: a try that cannot be scored must not stop the run."""
+    try:
+        from image_to_3dlab import strands
+        return strands.score_model(output / model)
+    except Exception as exc:  # a broken model or a missing library: judged as "cannot tell"
+        return {"strand_triangles": None, "face_found": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def append_history(output: Path, record: dict[str, Any]) -> None:
     try:
         output.mkdir(parents=True, exist_ok=True)
@@ -558,6 +621,7 @@ def chain_from_form(form: dict[str, dict[str, Any]]) -> Chain:
         picture_settings={k: picture[k] for k in ("width", "height", "steps", "seed") if k in picture}
         if isinstance(picture, dict) else {},
         model_seed=int(text("model_seed")) if (text("model_seed") or "").isdigit() else None,
+        model_tries=min(max(int(text("model_tries")), 1), MAX_TRIES) if (text("model_tries") or "").isdigit() else 1,
         keep_everything=text("keep_everything") in ("1", "true"),
         finish_settings={k: finish[k] for k in FINISH_KEYS if k in finish} if isinstance(finish, dict) else {},
         move_settings={k: move[k] for k in MOVE_KEYS if k in move} if isinstance(move, dict) else {},

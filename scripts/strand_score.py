@@ -21,7 +21,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from image_to_3dlab import photo_paint as pp
 from image_to_3dlab import strands
 
 
@@ -51,14 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for run in args.runs:
         glb, views_dir = model_and_views(run, args.views)
-        positions, uvs, faces, texture = pp.read_glb(glb)
-        views, mesh_scale = pp.load_views(views_dir)
-        report = strands.count_strands(positions, uvs, faces, texture, views, mesh_scale, colour_gap=args.colour_gap)
-        results.append({"model": str(glb), "strand_triangles": report.count, "pieces": report.pieces,
-                        "faces": report.faces, "face_found": report.face_box is not None})
+        result = strands.score_model(glb, views_dir, colour_gap=args.colour_gap)
+        results.append(result)
         if not args.json:
-            note = "" if report.face_box else "  (no face found in the front picture)"
-            print(f"{report.count:7d} strand triangles in {report.pieces} pieces  {glb.name}{note}", flush=True)
+            note = "" if result["face_found"] else "  (no face found in the front picture)"
+            print(f"{result['strand_triangles']:7d} strand triangles in {result['pieces']} pieces  {glb.name}{note}",
+                  flush=True)
     scored = [r for r in results if r["face_found"]]
     best = min(scored, key=lambda r: r["strand_triangles"]) if scored else None
     if args.json:
