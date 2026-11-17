@@ -143,8 +143,9 @@ def skin_depth(pix: np.ndarray, z: np.ndarray, n_pix: int, scale: float) -> tupl
         d0 = layers[rows, np.minimum(idx, LAYERS - 1)]
         d1 = layers[rows, np.minimum(idx + 1, LAYERS - 1)]
         d2 = layers[rows, np.minimum(idx + 2, LAYERS - 1)]
-        sheet = (active & (idx + 2 < LAYERS) & np.isfinite(d2) & (d1 - d0 < THIN * scale)
-                 & (d2 - d1 > GAP_MIN * scale) & (d2 - d1 < GAP_MAX * scale))
+        with np.errstate(invalid="ignore"):   # inf - inf where a pixel has fewer layers: False either way
+            sheet = (active & (idx + 2 < LAYERS) & np.isfinite(d2) & (d1 - d0 < THIN * scale)
+                     & (d2 - d1 > GAP_MIN * scale) & (d2 - d1 < GAP_MAX * scale))
         if not sheet.any():
             break
         idx = np.where(sheet, idx + 2, idx)
