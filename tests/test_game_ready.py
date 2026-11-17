@@ -564,3 +564,52 @@ def test_the_colour_transfer_reach_can_be_set():
     assert (s["transfer_cage_m"], s["transfer_reach_m"]) == (0.012, 0.03)
     s = gr.settings(["--transfer-cage", "0.03", "--transfer-reach", "0.06"])
     assert (s["transfer_cage_m"], s["transfer_reach_m"]) == (0.03, 0.06)
+
+
+# --- the hidden inner wall (--drop-hidden) --------------------------------------------------------
+
+def test_drop_hidden_is_an_option_and_needs_a_budget():
+    assert gr.settings([])["drop_hidden"] is False
+    s = gr.settings(["--drop-hidden", "--decimate-to", "14000"])
+    assert s["drop_hidden"] is True and gr.drop_hidden_refusal(s) is None
+    assert "--decimate-to" in gr.drop_hidden_refusal(gr.settings(["--drop-hidden"]))
+
+
+def test_the_first_thinning_aims_above_the_budget():
+    # The Wachter: thinned to 22,000, the drop left 15,275 (D190); the first try starts there.
+    assert gr.first_target(14000) == 22000
+    assert gr.first_target(8000) == round(8000 * 22000 / 14000)
+
+
+def test_the_next_try_scales_by_what_the_drop_left():
+    assert gr.next_first_target(22000, 15275, 14000) == round(22000 * 14000 / 15275)
+
+
+def test_a_figure_without_an_inner_wall_ends_at_the_budget():
+    assert gr.next_first_target(22000, 22000, 14000) == 14000
+
+
+def test_the_next_try_never_aims_below_the_budget_or_without_limit():
+    assert gr.next_first_target(22000, 30000, 14000) == 14000   # never thinner than the budget itself
+    assert gr.next_first_target(22000, 100, 14000) == 4 * 14000
+    assert gr.next_first_target(22000, 0, 14000) == 4 * 14000
+
+
+def test_a_drop_is_settled_within_three_percent_of_the_budget():
+    assert gr.drop_settled(14300, 14000) and gr.drop_settled(13600, 14000)
+    assert not gr.drop_settled(14500, 14000) and not gr.drop_settled(13000, 14000)
+
+
+def test_the_check_poses_name_the_rigs_own_bones():
+    unity = {"thigh_l": "LeftUpperLeg", "shin_l": "LeftLowerLeg", "thigh_r": "RightUpperLeg", "spine_1": "Spine"}
+    poses = gr.veto_poses(unity)
+    assert [name for name, _ in poses] == list(gr.VETO_POSES)
+    stride = dict(poses)["stride"]
+    assert ("thigh_l", (1.0, 0.0, 0.0), -60.0) in stride
+    assert all(bone in unity for _, moves in poses for bone, _, _ in moves)   # bones the rig lacks are skipped
+
+
+def test_the_drop_settings_are_fixed_values():
+    s = gr.settings(["--drop-hidden", "--decimate-to", "14000"])
+    assert (s["hidden_rays"], s["hidden_cells"], s["hidden_close"], s["hidden_corner_reach"]) == (16, 400, 2, 0.66)
+    assert (s["drop_tries"], s["drop_slack"]) == (3, 0.03)

@@ -77,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hard. Before, every UV seam above 25 degrees was hard too, and on a figure thinned to a few
   thousand triangles that showed each triangle of the face ("made by hand"). Soft edges cost
   nothing (the seams split the vertices either way); `--hard-seams` brings the old shading back.
+- `game_ready.py --drop-hidden` spends the triangle budget on what can be seen: a generated figure carries
+  a hidden inner wall inside its body, about half its triangles after the thinning. After the thinning
+  it drops the triangles no ray from outside reaches and that face a sealed hollow, keeping any that a
+  stride, a crouch, a straddle, arms up or a twist shows; the thinning aims higher first and adjusts per
+  figure, so it still lands on `--decimate-to`. On a 14,000-triangle knight 63 % of the triangles are
+  seen instead of 44 %.
 - `game_ready.py --transfer-cage` / `--transfer-reach` let `--colour-from` and `--normal-from`
   reach deeper: where thinning sank spiky hair more than the default 12 mm into the finer model,
   the rays started inside it and painted skin-coloured patches into the hair; 30 mm / 60 mm

@@ -21,9 +21,19 @@ import bmesh
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
+from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import game_ready as gr
+from visibility_cull import (
+    dense_surface,
+    face_samples,
+    fibonacci_directions,
+    first_air_sealed,
+    hidden_from_rays,
+    hollows_only,
+    sealed_air,
+)
 
 T0 = time.time()
 
@@ -297,6 +307,148 @@ def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
     after = len(me.loop_triangles)
     log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g})")
     return {"decimated": [before, after]}
+
+
+def _cast_with(tree, eps: float):
+    """A ray test for `hidden_from_rays`: whether a ray from a face meets the mesh (its own face skipped)."""
+    def cast(origin, direction, face):
+        location, _n, index, _d = tree.ray_cast(origin, direction)
+        if index == face:
+            location, _n, index, _d = tree.ray_cast(location + direction * eps, direction)
+        return location is not None
+    return cast
+
+
+def _hidden_at_samples(bm, which: np.ndarray, directions, cast, eps: float, reach: float) -> np.ndarray:
+    """Of the faces `which` of `bm`, those from which no ray reaches the outside at any of four points
+    (`face_samples`: the centre, then three points toward the corners; a face seen at one stops there)."""
+    tris = np.array([[tuple(v.co) for v in bm.faces[int(i)].verts][:3] for i in which]).reshape(-1, 3, 3)
+    samples = face_samples(tris, reach)
+    hidden = np.ones(len(which), dtype=bool)
+    for k in range(samples.shape[1]):
+        ask = np.flatnonzero(hidden)
+        if not len(ask):
+            break
+        hidden[ask] = hidden_from_rays([Vector(p) for p in samples[ask, k]], directions,
+                                       lambda o, d, j, ask=ask: cast(o, d, int(which[ask[j]])), eps)
+    return hidden
+
+
+def _world_bmesh(mesh, matrix):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.transform(matrix)
+    bm.faces.ensure_lookup_table()
+    return bm
+
+
+def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
+    """Delete the triangles nobody can see: no ray from them reaches the outside, the air beside them is a
+    sealed, compact hollow (the body's inside, not the pocket behind a cape), and they stay hidden in every
+    pose of `poses` ([name, [(bone, axis, degrees), ...]]: the figure posed by its own bones)."""
+    bm = _world_bmesh(ob.data, ob.matrix_world)
+    total = len(bm.faces)
+    size = max(max(v.co[k] for v in bm.verts) - min(v.co[k] for v in bm.verts) for k in range(3))
+    eps = size * 1e-5
+    directions = [Vector(d) for d in fibonacci_directions(s["hidden_rays"])]
+    reach = s["hidden_corner_reach"]
+    hidden = _hidden_at_samples(bm, np.arange(total), directions, _cast_with(BVHTree.FromBMesh(bm), eps), eps, reach)
+    enclosed = int(hidden.sum())
+    if enclosed:
+        tris = np.array([[tuple(loop.vert.co) for loop in f.loops][:3] for f in bm.faces])
+        grid = hollows_only(sealed_air(dense_surface(tris, 0.5 * size / s["hidden_cells"]),
+                                       size / s["hidden_cells"], close=s["hidden_close"]))
+        which = np.flatnonzero(hidden)
+        at = np.array([tuple(bm.faces[int(i)].calc_center_median()) for i in which])
+        normal = np.array([tuple(bm.faces[i].normal) for i in which])
+        hidden[which] = first_air_sealed(grid, at, normal) | first_air_sealed(grid, at, -normal)
+    bm.free()
+
+    vetoed = 0
+    if hidden.any() and poses:
+        skins = [m for m in ob.modifiers if m.type == "ARMATURE"]
+        shown = [(m, m.show_viewport) for m in skins]
+        for m in skins:
+            m.show_viewport = True
+        arm.data.pose_position = "POSE"
+
+        def rotate(name, axis, degrees):
+            if name not in arm.pose.bones:
+                return
+            bpy.context.view_layer.update()
+            pb = arm.pose.bones[name]
+            head = arm.matrix_world @ pb.head
+            turn = Matrix.Translation(head) @ Matrix.Rotation(math.radians(degrees), 4, Vector(axis)) \
+                @ Matrix.Translation(-head)
+            pb.matrix = arm.matrix_world.inverted() @ turn @ arm.matrix_world @ pb.matrix
+            bpy.context.view_layer.update()
+
+        for _name, moves in poses:
+            for pb in arm.pose.bones:
+                pb.matrix_basis = Matrix.Identity(4)
+            bpy.context.view_layer.update()
+            for bone, axis, degrees in moves:
+                rotate(bone, axis, degrees)
+            evaluated = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            posed = _world_bmesh(evaluated.to_mesh(), ob.matrix_world)
+            evaluated.to_mesh_clear()
+            if len(posed.faces) != total:   # a modifier changed the topology: this pose cannot vouch for anything
+                posed.free()
+                continue
+            which = np.flatnonzero(hidden)
+            still = _hidden_at_samples(posed, which, directions, _cast_with(BVHTree.FromBMesh(posed), eps), eps, reach)
+            vetoed += int((~still).sum())
+            hidden[which[~still]] = False
+            posed.free()
+        for pb in arm.pose.bones:
+            pb.matrix_basis = Matrix.Identity(4)
+        arm.data.pose_position = "REST"
+        for m, was in shown:
+            m.show_viewport = was
+        bpy.context.view_layer.update()
+
+    doomed = np.flatnonzero(hidden)
+    if len(doomed):
+        local = bmesh.new()
+        local.from_mesh(ob.data)
+        local.faces.ensure_lookup_table()
+        bmesh.ops.delete(local, geom=[local.faces[int(i)] for i in doomed], context="FACES")
+        bmesh.ops.delete(local, geom=[v for v in local.verts if not v.link_faces], context="VERTS")
+        local.to_mesh(ob.data)
+        local.free()
+        ob.data.update()
+    return {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "dropped": int(len(doomed)),
+            "left": total - int(len(doomed))}
+
+
+def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
+    """--drop-hidden: thin to a first target above the budget, drop the hidden inner wall, and aim the next try
+    by what the drop left, until the figure lands within `drop_slack` of `decimate_to` (at most `drop_tries`).
+    Each try starts again from the cleaned, unthinned mesh: thinning what a drop left would spend triangles on
+    the drop's open rims."""
+    target = s["decimate_to"]
+    original = ob.data.copy()
+    me = ob.data
+    me.calc_loop_triangles()
+    before = len(me.loop_triangles)
+    first = gr.first_target(target)
+    tries = []
+    for attempt in range(s["drop_tries"]):
+        if attempt:
+            spent = ob.data
+            ob.data = original.copy()
+            bpy.data.meshes.remove(spent)
+        thinned = decimate_with_head(ob, dict(s, decimate_to=first), head)["decimated"][1]
+        drop = drop_hidden_wall(ob, arm, s, poses)
+        tries.append({"first": first, "thinned": thinned, **drop})
+        log(f"hidden wall, try {attempt + 1}: thinned to {thinned}, {drop['enclosed']} enclosed, "
+            f"{drop['vetoed']} kept for the poses, {drop['dropped']} dropped, {drop['left']} left")
+        if gr.drop_settled(drop["left"], target, s["drop_slack"]):
+            break
+        first = gr.next_first_target(first, drop["left"], target)
+    bpy.data.meshes.remove(original)
+    ob.data.calc_loop_triangles()
+    return {"decimated": [before, len(ob.data.loop_triangles)], "hidden_wall": tries}
 
 
 def scale_head_islands(ob, factor: float, head: list[str]):
@@ -820,7 +972,9 @@ def main() -> None:
         m.show_viewport = m.show_render = False
     report["cleaning"] = clean_mesh(ob, s)
     head = job.get("all_head_bones") or []
-    if s.get("decimate_to"):
+    if s.get("decimate_to") and s.get("drop_hidden"):
+        report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or []))
+    elif s.get("decimate_to"):
         report.update(decimate_with_head(ob, s, head))
     report.update(new_uvs(ob, s, head))
     colour_objs = import_colour_model(s["colour_from"], T) if s.get("colour_from") else None

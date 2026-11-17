@@ -81,7 +81,31 @@ FIXED = {
     "rigid_share": 0.145,     # a separate piece smaller than this share of the height moves as one
     "transfer_cage_m": 0.012,  # --colour-from: rays start this far outside the surface (metres, after the rescale) ...
     "transfer_reach_m": 0.03,  # ... and look this far for the finer model; a miss keeps the model's own paint
+    "hidden_rays": 16,        # --drop-hidden: a triangle no ray of these reaches the outside from is hidden ...
+    "hidden_cells": 400,      # ... and goes if the air beside it is a sealed hollow, on a grid this many cells across
+    "hidden_close": 2,        # ... closed this many cells, so a slit in the wall does not open the hollow
+    "hidden_corner_reach": 0.66,  # a face is asked at its centre and this far toward each corner
+    "drop_tries": 3,          # thin-and-drop tries per figure, each aiming the thinning by what the last drop left ...
+    "drop_slack": 0.03,       # ... until the figure lands within this share of --decimate-to
 }
+
+# --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
+# drop (D190 of the AssetFurnace Support notes); each figure's next try is aimed by what its own drop left.
+FIRST_GROWTH = 22000 / 14000
+# A triangle the A-pose hides can show in motion (an inner thigh in a stride, a cape's lining in a crouch), so it
+# goes only if it stays hidden in each of these poses too: (Unity bone, world axis, degrees).
+VETO_POSES = {
+    "stride": [("Spine", "X", 10), ("LeftUpperLeg", "X", -60), ("LeftLowerLeg", "X", 60), ("RightUpperLeg", "X", 45),
+               ("RightLowerLeg", "X", 30)],
+    "crouch": [("Spine", "X", 30), ("LeftUpperLeg", "X", -100), ("RightUpperLeg", "X", -100),
+               ("LeftLowerLeg", "X", 125), ("RightLowerLeg", "X", 125)],
+    "straddle": [("LeftUpperLeg", "Y", -40), ("RightUpperLeg", "Y", 40), ("LeftUpperArm", "X", -40),
+                 ("RightUpperArm", "X", 40)],
+    "arms_up": [("LeftUpperArm", "Y", -130), ("RightUpperArm", "Y", 130), ("Spine", "X", -15)],
+    "twist": [("UpperChest", "Z", -40), ("Spine", "Z", -15), ("LeftUpperLeg", "X", 35), ("RightUpperLeg", "X", -40),
+              ("RightLowerLeg", "X", 50)],
+}
+AXES = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
 
 
 # --- settings -------------------------------------------------------------------------------
@@ -209,6 +233,11 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "stopping; the report still names it")
     parser.add_argument("--transfer-reach", type=float, default=FIXED["transfer_reach_m"], metavar="M",
                         help=f"... and look this far for the finer model (default {FIXED['transfer_reach_m']})")
+    parser.add_argument("--drop-hidden", action="store_true",
+                        help="drop the triangles nobody can see (the hidden inner wall a generated figure carries "
+                             "inside its body), after the thinning and only those that stay hidden in a stride, a "
+                             "crouch, a straddle, arms up and a twist too; the thinning aims higher first, so the "
+                             "figure still lands on --decimate-to with more of it seen (needs --decimate-to)")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -222,7 +251,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
-             transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach)
+             transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach, drop_hidden=ns.drop_hidden)
     if not ns.hard_seams:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
@@ -514,6 +543,38 @@ def decimate_ratio(before: int, target: int) -> float:
     return target / before
 
 
+def drop_hidden_refusal(s: dict) -> str | None:
+    """Why --drop-hidden cannot run with these settings, or None."""
+    if s.get("drop_hidden") and not s.get("decimate_to"):
+        return "--drop-hidden needs --decimate-to: it aims the thinning so the figure lands on that budget"
+    return None
+
+
+def first_target(target: int) -> int:
+    """What --drop-hidden thins to before its first drop: above the budget, by what a figure's drop usually takes."""
+    return round(target * FIRST_GROWTH)
+
+
+def next_first_target(first: int, left: int, target: int) -> int:
+    """The next try's thinning, aimed by what the last drop left: scaled so the drop lands on `target`, never
+    below the budget itself (a figure with no inner wall) and at most four times it."""
+    if left <= 0:
+        return 4 * target
+    return int(min(max(round(first * target / left), target), 4 * target))
+
+
+def drop_settled(left: int, target: int, slack: float = FIXED["drop_slack"]) -> bool:
+    """Whether a drop left the figure close enough to its budget."""
+    return abs(left - target) <= slack * target
+
+
+def veto_poses(unity_names: dict[str, str]) -> list[tuple[str, list[tuple[str, tuple[float, float, float], float]]]]:
+    """VETO_POSES with the rig's own bone names (`unity_names`: rig bone -> Unity name); bones it lacks are left out."""
+    bone_of = {unity: bone for bone, unity in unity_names.items()}
+    return [(name, [(bone_of[unity], AXES[axis], float(degrees)) for unity, axis, degrees in moves if unity in bone_of])
+            for name, moves in VETO_POSES.items()]
+
+
 def head_share(W, columns: list[str], head: list[str]):
     """Per vertex, how much of it moves with the head (its weights on the head bones, at most 1)."""
     pick = [j for j, c in enumerate(columns) if c in set(head)]
@@ -725,6 +786,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     names = {b: n for b, n in names.items() if b not in plan}
     hips = next(b for b, n in unity.items() if n == "Hips")
     heads_off = head_bones(parents, unity) if s["glow_not_on_head"] else []
+    if drop_hidden_refusal(s):
+        parser.error(drop_hidden_refusal(s))
     if s["colour_from"] and not Path(s["colour_from"]).is_file():
         parser.error(f"--colour-from: not found: {s['colour_from']}")
     if s["mesh_from"] and not Path(s["mesh_from"]).is_file():
@@ -738,7 +801,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         report_path = Path(tmp) / "report.json"
         job.write_text(json.dumps({"source": str(args.source.resolve()), "output": str(raw), "report": str(report_path),
                                    "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan, "head_bones": heads_off,
-                                   "all_head_bones": head_bones(parents, unity), "settings": s}, indent=1))
+                                   "all_head_bones": head_bones(parents, unity), "veto_poses": veto_poses(unity),
+                                   "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():
             print(run.stdout[-4000:])
