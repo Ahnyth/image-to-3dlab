@@ -85,6 +85,8 @@ FIXED = {
     "hidden_cells": 400,      # ... and goes if the air beside it is a sealed hollow, on a grid this many cells across
     "hidden_close": 2,        # ... closed this many cells, so a slit in the wall does not open the hollow
     "hidden_corner_reach": 0.66,  # a face is asked at its centre and this far toward each corner
+    "poke_rays": 128,         # --drop-hidden also drops inner wall poking past the outer surface: seen from behind ...
+    "poke_near": 0.02,        # ... (rays of these), its front facing another face's front within this share of the size
     "drop_tries": 3,          # thin-and-drop tries per figure, each aiming the thinning by what the last drop left ...
     "drop_slack": 0.03,       # ... until the figure lands within this share of --decimate-to
 }
@@ -700,11 +702,44 @@ def rigid_shells(W, shells, co, max_diag: float, max_share: float = 0.5):
 
 # --- measuring ------------------------------------------------------------------------------
 
-def uv_area(uv, tris) -> float:
-    """Share of the unit UV square the triangles cover (overlaps count twice)."""
-    a, b, c = (np.asarray(uv)[np.asarray(tris)[:, i]] for i in range(3))
-    cross = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
-    return float(np.abs(cross).sum() / 2)
+def atlas_density(co, uv, vert_tris, uv_tris, atlas: int, grid_max: int = 2048) -> dict:
+    """How well the atlas is spent, measured honestly.
+
+    `texels_per_cm`: the atlas's texels per centimetre of surface, over the whole figure (positions `co` in metres,
+    triangles `vert_tris`; UVs `uv` per corner, triangles `uv_tris`). `atlas_covered`: the share of the atlas's
+    texels some triangle paints, and `texels_twice`: the share of those that two or more triangles paint, both on a
+    grid of the atlas's size (at most `grid_max`). A summed UV area would count a folded island twice: the Wachter's
+    atlas looked 55 % and then 68 % used while 1.2 % of its texels were painted twice (#146).
+    """
+    co, uv = np.asarray(co, float), np.asarray(uv, float)
+    vert_tris, uv_tris = np.asarray(vert_tris, int).reshape(-1, 3), np.asarray(uv_tris, int).reshape(-1, 3)
+    if not len(vert_tris):
+        return {"texels_per_cm": 0.0, "atlas_covered": 0.0, "texels_twice": 0.0}
+    p = co[vert_tris]
+    surface_cm2 = float(np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1).sum() / 2) * 1e4
+    t = uv[uv_tris]
+    cross = (t[:, 1, 0] - t[:, 0, 0]) * (t[:, 2, 1] - t[:, 0, 1]) - (t[:, 1, 1] - t[:, 0, 1]) * (t[:, 2, 0] - t[:, 0, 0])
+    uv_texels = float(np.abs(cross).sum() / 2) * atlas * atlas
+    n = min(int(atlas), grid_max)
+    count = np.zeros(n * n, np.int32)
+    px = t * n
+    for (ax, ay), (bx, by), (cx, cy) in px:
+        area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
+        if abs(area) < 1e-12:
+            continue
+        x0, x1 = max(0, int(np.floor(min(ax, bx, cx)))), min(n, int(np.ceil(max(ax, bx, cx))))
+        y0, y1 = max(0, int(np.floor(min(ay, by, cy)))), min(n, int(np.ceil(max(ay, by, cy))))
+        if x0 >= x1 or y0 >= y1:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        w0 = ((bx - gx) * (cy - gy) - (cx - gx) * (by - gy)) / area
+        w1 = ((cx - gx) * (ay - gy) - (ax - gx) * (cy - gy)) / area
+        inside = (w0 >= 0) & (w1 >= 0) & (1 - w0 - w1 >= 0)
+        count[(gy[inside].astype(int) * n + gx[inside].astype(int))] += 1
+    covered = count > 0
+    return {"texels_per_cm": round((uv_texels / surface_cm2) ** 0.5, 3) if surface_cm2 > 0 else 0.0,
+            "atlas_covered": round(float(covered.mean()), 4),
+            "texels_twice": round(float((count[covered] > 1).mean()), 4) if covered.any() else 0.0}
 
 
 def engine_vertices(vertex, normal, uv) -> int:
@@ -824,7 +859,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     out_report = args.output.with_suffix(".report.json")
     out_report.write_text(json.dumps(report, indent=1))
     print(f"{report['triangles']} triangles, {report['materials']} material, atlas {s['atlas']} "
-          f"({report['atlas_used'] * 100:.0f} % used, {report['uv_islands']} islands), "
+          f"({report['texels_per_cm']:.1f} texels per cm, {report['atlas_covered'] * 100:.0f} % covered, "
+          f"{report['texels_twice'] * 100:.1f} % painted twice, {report['uv_islands']} islands), "
           f"{report['bones']} bones ({len(names)} named, {len(plan)} merged), "
           f"height {report['height']:.2f} m, {len(report['clips'])} move(s)")
     for line in report["problems"] or ["ready: nothing an engine would trip over"]:

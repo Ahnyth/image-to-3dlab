@@ -362,3 +362,50 @@ def face_samples(tris, reach: float = 0.66) -> np.ndarray:
     centre = tris.mean(axis=1)
     toward = centre[:, None] + reach * (tris - centre[:, None])
     return np.concatenate([centre[:, None], toward], axis=1)
+
+
+def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: float,
+               slant: float = 0.08, front_cone: float = 0.4) -> np.ndarray:
+    """Boolean mask of the faces that are inner wall poking out past the outer surface.
+
+    After a thinning, a few pieces of the inner wall of a generated double-walled surface end up a millimetre or
+    two outside the outer one. Their back faces the sky and their front faces the surface under them, so a game
+    that culls back faces never draws them, but a sky-light bake sees them as a roof and shades that surface: small
+    dark triangles at a cape's hem and on the legs (game_ready, #141). Such a face is found by two questions:
+
+    - its front (by its winding, `normals`) looks at the *front* of another face within `near` along its normal
+      (`first_hit(origin, direction, face, reach)` gives the first hit's distance and that face's normal, or None);
+    - from at least one of its `samples` ((F, K, 3), `face_samples`) a ray into its back half of `directions`
+      reaches the outside (`cast(origin, direction, face)` answers whether a ray meets the mesh).
+
+    The first keeps what the camera sees (a face looking outward meets nothing) and a flipped outer face (it looks
+    into the body and meets the back of the other side); the second keeps a cape's underside (the cape's own top
+    is behind it) and the inner wall still inside the body. A face whose middle reaches the outside along a
+    direction within the cone `front_cone` (the cosine to its normal) is kept as well: a camera sees it at more
+    than a grazing angle (a piece over a narrow strap). Only the middle is asked: a flap that lies over a cape's
+    back and hangs past its edge shows the camera at most its tip, and still shades the cape under its middle.
+    Dropping what is left opens no hole: the surface it lies over is there. Directions within `slant` of the
+    face's plane belong to neither half.
+    """
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim == 2:                    # one point per face
+        samples = samples[:, None]
+    normals = np.asarray(normals, dtype=float).reshape(-1, 3)
+    directions = np.asarray(directions, dtype=float).reshape(-1, 3)
+    count = len(normals)
+    out = np.zeros(count, dtype=bool)
+    for face in range(count):
+        n = normals[face]
+        centre = samples[face, 0]
+        hit = first_hit(centre + n * eps, n, face, near)
+        if hit is None or float(np.dot(hit[1], n)) >= 0.0:
+            continue
+        ahead = directions[directions @ n > front_cone]
+        if any(not cast(centre + d * eps, d, face) for d in ahead):
+            continue
+        back = directions[directions @ n < -slant]
+        if not len(back):
+            continue
+        out[face] = any(not cast(p + back[(face + k) % len(back)] * eps, back[(face + k) % len(back)], face)
+                        for p in samples[face] for k in range(len(back)))
+    return out

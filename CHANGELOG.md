@@ -136,6 +136,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwrapped again, at the same texels per square metre as the rest, so the compact islands stay;
   on that figure 1.3 % of the texels were painted twice before and none after, at 5.0 texels per
   cm (4.85 in the last build). The report says how many faces still overlap.
+- `game_ready.py --drop-hidden` also drops the inner wall that pokes out past the outer surface
+  after the thinning. Such a piece lies a millimetre or two over the surface and faces it: a game
+  never draws it (its back faces the camera), but the sky-light bake took it for a roof and baked
+  small dark triangles into the surface under it (a cape's hem, the legs). It is found by rays (seen
+  from behind, its front facing another face's front close by, its middle not seen from in front)
+  and dropped before the bake; the surface under it stays, so no hole opens. The report counts it
+  per try (`poking_out`).
+- `game_ready.py`'s report measures the atlas honestly: texels per centimetre of surface, the share
+  of the atlas covered and the share painted twice, instead of a summed UV area, which counted a
+  folded island twice (a knight's atlas looked 68 % used while 1.2 % of its texels were painted
+  twice).
 - Stable Fast 3D's setup says its real size (about 5.5 GB with the CLIP model), and on AMD a
   Hugging Face refusal says to sign in and accept the terms, not just that setup stopped.
 - Stable Fast 3D models are marked as facing front, so a prop sheet made with it splits in

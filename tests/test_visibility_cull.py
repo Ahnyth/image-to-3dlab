@@ -20,6 +20,7 @@ from scripts.visibility_cull import (
     hollows_only,
     in_sealed_air,
     index_to_color,
+    poking_out,
     sealed_air,
     visible_faces,
 )
@@ -334,3 +335,128 @@ def test_face_samples_are_the_centre_and_three_points_toward_the_corners():
 
 def test_face_samples_of_nothing_is_empty():
     assert face_samples(np.zeros((0, 3, 3))).shape == (0, 4, 3)
+
+
+# --- inner wall poking out past the outer surface (#141) ---------------------------------------
+
+def _quad(a, b, c, d):
+    """Two triangles a-b-c and a-c-d: wound counter-clockwise, so they face (b - a) x (c - a)."""
+    return [[a, b, c], [a, c, d]]
+
+
+def _box_tris(lo, hi):
+    """A closed box with outward-facing triangles."""
+    (x0, y0, z0), (x1, y1, z1) = lo, hi
+    p = {(i, j, k): (x1 if i else x0, y1 if j else y0, z1 if k else z0) for i in (0, 1) for j in (0, 1) for k in (0, 1)}
+    faces = [((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)), ((0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)),
+             ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)), ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)),
+             ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)), ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0))]
+    tris = []
+    for q in faces:
+        tris += _quad(*[p[c] for c in q])
+    return tris
+
+
+def _caster(tris):
+    """Plain ray casts against triangles (Moller-Trumbore), for `poking_out`: whether a ray meets anything,
+    and the first hit's distance and the hit face's normal (by its winding)."""
+    tris = np.asarray(tris, dtype=float)
+    e1, e2 = tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    normals = np.cross(e1, e2)
+    normals /= np.linalg.norm(normals, axis=1)[:, None]
+
+    def first(origin, direction, face, reach=np.inf):
+        o, d = np.asarray(origin, float), np.asarray(direction, float)
+        pv = np.cross(d, e2)
+        det = (e1 * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        tv = o - tris[:, 0]
+        u = (tv * pv).sum(1) * inv
+        qv = np.cross(tv, e1)
+        v = (qv * d).sum(1) * inv
+        t = (qv * e2).sum(1) * inv
+        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9) & (t <= reach)
+        hit[face] = False
+        if not hit.any():
+            return None
+        k = int(np.flatnonzero(hit)[np.argmin(t[hit])])
+        return float(t[k]), normals[k]
+
+    def cast(origin, direction, face):
+        return first(origin, direction, face) is not None
+
+    return tris, normals, cast, first
+
+
+def _poking(tris, near=0.05):
+    tris, normals, cast, first = _caster(tris)
+    return poking_out(face_samples(tris), normals, fibonacci_directions(64), cast, first, near, eps=1e-6)
+
+
+def test_an_inner_wall_piece_lying_over_the_outer_surface_and_facing_it_is_found():
+    """After a thinning a piece of the inner wall pokes past the outer surface: its back faces the sky, its front
+    faces the surface a few millimetres under it. A game culls it, but a sky-light bake lets it shade that surface."""
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    piece = _quad((1.01, 0.4, 0.4), (1.01, 0.4, 0.6), (1.01, 0.6, 0.6), (1.01, 0.6, 0.4))  # faces -x, toward the box
+    poke = _poking(body + piece)
+    assert poke[len(body):].all()
+    assert not poke[:len(body)].any(), "the outer surface itself is kept"
+
+
+def test_a_sheet_facing_away_from_the_surface_is_kept():
+    """A sheet over the surface that faces outward is what the camera sees (a decal, a strap)."""
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    sheet = _quad((1.01, 0.4, 0.4), (1.01, 0.6, 0.4), (1.01, 0.6, 0.6), (1.01, 0.4, 0.6))  # faces +x
+    assert not _poking(body + sheet).any()
+
+
+def test_an_outer_face_wound_the_wrong_way_is_kept():
+    """A flipped outer face also shows its back to the sky, but its front looks into the body and meets the back of
+    the other side: dropping it would open a hole for a game that draws both sides."""
+    slab = _box_tris((0, 0, 0), (1, 1, 0.03))
+    top = [i for i, t in enumerate(slab) if all(abs(p[2] - 0.03) < 1e-9 for p in t)]
+    for i in top:
+        slab[i] = slab[i][::-1]
+    assert not _poking(slab).any()
+
+
+def test_the_underside_of_a_cape_over_the_back_is_kept():
+    """A cape's underside faces the body close by, but the cape's own top is behind it: it never sees the sky."""
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    cape = _box_tris((1.01, 0.1, 0.1), (1.03, 0.9, 0.9))
+    poke = _poking(body + cape)
+    assert not poke.any()
+
+
+def test_a_flap_whose_middle_lies_over_the_surface_goes_even_if_its_tip_hangs_past_the_edge():
+    """A piece over a cape's back whose tip hangs past the cape's edge: the camera sees at most that tip, while the
+    piece shades the cape under its middle (the dark spot at the Wachter's cape edge, #141)."""
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    flap = _quad((1.01, 0.6, 0.4), (1.01, 0.6, 0.6), (1.01, 1.1, 0.6), (1.01, 1.1, 0.4))  # faces -x, past y = 1
+    tris, normals, cast, first = _caster(body + flap)
+    samples = face_samples(tris)
+    assert (samples[len(body):, 0, 1] < 1.0).all(), "both triangles' middles lie over the box"
+    assert poking_out(samples, normals, fibonacci_directions(64), cast, first, 0.05, eps=1e-6)[len(body):].all()
+
+
+def test_a_piece_whose_middle_a_camera_sees_is_kept():
+    """A piece over a narrow strap: straight down it meets the strap, but its middle is seen at an angle past the
+    strap's edge, so a camera draws it and it stays (without the cone it would go)."""
+    strap = _box_tris((0, 0.48, 0), (1, 0.52, 1))
+    piece = _quad((1.01, 0.47, 0.4), (1.01, 0.47, 0.6), (1.01, 0.53, 0.6), (1.01, 0.53, 0.4))  # faces -x
+    tris, normals, cast, first = _caster(strap + piece)
+    args = (face_samples(tris), normals, fibonacci_directions(64), cast, first, 0.05)
+    assert not poking_out(*args, eps=1e-6)[len(strap):].any()
+    assert poking_out(*args, eps=1e-6, front_cone=1.01)[len(strap):].all()
+
+
+def test_a_piece_further_off_than_near_is_kept():
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    piece = _quad((1.2, 0.4, 0.4), (1.2, 0.4, 0.6), (1.2, 0.6, 0.6), (1.2, 0.6, 0.4))
+    assert not _poking(body + piece, near=0.05).any()
+
+
+def test_poking_out_of_nothing_is_empty():
+    assert poking_out(np.zeros((0, 4, 3)), np.zeros((0, 3)), fibonacci_directions(8), None, None, 0.1,
+                      eps=1e-6).shape == (0,)

@@ -281,11 +281,44 @@ def test_the_body_is_never_made_rigid_even_if_it_is_small():
 
 # --- measuring ------------------------------------------------------------------------------
 
-def test_uv_area_is_the_share_of_the_atlas_covered():
+def _square(side_m: float):
+    """A flat square of `side_m` metres, two triangles, mapped onto the whole UV square."""
+    co = np.array([[0, 0, 0], [side_m, 0, 0], [0, side_m, 0], [side_m, side_m, 0]], float)
     uv = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], float)
-    tris = np.array([[0, 1, 2], [1, 3, 2]])
-    assert gr.uv_area(uv, tris) == pytest.approx(1.0)
-    assert gr.uv_area(uv * 0.5, tris[:1]) == pytest.approx(0.125)
+    return co, uv, np.array([[0, 1, 2], [1, 3, 2]])
+
+
+def test_atlas_density_is_texels_per_cm_of_surface():
+    co, uv, tris = _square(1.0)                       # 10,000 cm2 on 1,000 x 1,000 texels
+    m = gr.atlas_density(co, uv, tris, tris, 1000)
+    assert m["texels_per_cm"] == pytest.approx(10.0)
+    assert m["atlas_covered"] == pytest.approx(1.0, abs=0.01)
+    assert m["texels_twice"] == pytest.approx(0.0, abs=0.001)
+
+
+def test_a_folded_island_is_not_counted_as_more_atlas():
+    """The summed UV area counted a fold twice (the 55 % and 68 % 'used' of the Wachter's atlas were inflated so):
+    two triangles laid on the same texels cover half the atlas, and every texel of that half is painted twice."""
+    co = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1]], float)
+    uv = np.array([[0, 0], [1, 0], [0, 1], [0, 0], [1, 0], [0, 1]], float)
+    tris = np.array([[0, 1, 2], [3, 4, 5]])
+    m = gr.atlas_density(co, uv, tris, tris, 400)
+    assert m["atlas_covered"] == pytest.approx(0.5, abs=0.01)
+    assert m["texels_twice"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_atlas_density_reads_uvs_by_corner():
+    """Blender keeps UVs per corner (loop), positions per vertex: each triangle names both."""
+    co, uv, tris = _square(0.5)
+    loops = np.array([[0, 1, 2], [3, 4, 5]])
+    uv_loops = uv[tris.ravel()]
+    m = gr.atlas_density(co, uv_loops, tris, loops, 1000)
+    assert m["texels_per_cm"] == pytest.approx(20.0)
+
+
+def test_atlas_density_of_nothing():
+    m = gr.atlas_density(np.zeros((0, 3)), np.zeros((0, 2)), np.zeros((0, 3), int), np.zeros((0, 3), int), 512)
+    assert m == {"texels_per_cm": 0.0, "atlas_covered": 0.0, "texels_twice": 0.0}
 
 
 def test_engine_vertices_count_each_split_once():

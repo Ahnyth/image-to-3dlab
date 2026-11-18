@@ -33,6 +33,7 @@ from visibility_cull import (
     first_air_sealed,
     hidden_from_rays,
     hollows_only,
+    poking_out,
     sealed_air,
 )
 
@@ -335,6 +336,32 @@ def _hidden_at_samples(bm, which: np.ndarray, directions, cast, eps: float, reac
     return hidden
 
 
+def _first_hit_with(tree, eps: float):
+    """`first_hit` for `poking_out`: the first face a ray meets within `reach` (its own face skipped), as
+    (distance, that face's normal by its winding), or None."""
+    def first_hit(origin, direction, face, reach):
+        location, normal, index, distance = tree.ray_cast(origin, direction, reach)
+        if index == face and location is not None:
+            location, normal, index, more = tree.ray_cast(location + direction * eps, direction, reach - distance)
+            distance = None if location is None else distance + more
+        if location is None:
+            return None
+        return distance, np.array(tuple(normal))
+    return first_hit
+
+
+def _pokes(bm, s: dict, size: float, eps: float) -> np.ndarray:
+    """The faces of `bm` that are inner wall poking out past the outer surface (`poking_out`)."""
+    tree = BVHTree.FromBMesh(bm)
+    tris = np.array([[tuple(loop.vert.co) for loop in f.loops][:3] for f in bm.faces]).reshape(-1, 3, 3)
+    normals = np.array([tuple(f.normal) for f in bm.faces]).reshape(-1, 3)
+    vec_cast = _cast_with(tree, eps)
+    vec_first = _first_hit_with(tree, eps)
+    return poking_out(face_samples(tris, s["hidden_corner_reach"]), normals, fibonacci_directions(s["poke_rays"]),
+                      lambda o, d, f: vec_cast(Vector(o), Vector(d), f),
+                      lambda o, d, f, r: vec_first(Vector(o), Vector(d), f, r), s["poke_near"] * size, eps)
+
+
 def _world_bmesh(mesh, matrix):
     bm = bmesh.new()
     bm.from_mesh(mesh)
@@ -363,6 +390,11 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
         at = np.array([tuple(bm.faces[int(i)].calc_center_median()) for i in which])
         normal = np.array([tuple(bm.faces[i].normal) for i in which])
         hidden[which] = first_air_sealed(grid, at, normal) | first_air_sealed(grid, at, -normal)
+    # inner wall poking out past the outer surface: never drawn (its back faces the sky), but it shades the surface
+    # under it in the sky-light bake. Asked while the inner wall is still there: once it is gone, the back of a seen
+    # face (a collar, an elbow) can look through the opened shell, and that face would pass for a poking piece.
+    # Dropping it opens no hole (the surface it lies over is there), so no pose has to vouch for it.
+    poke = _pokes(bm, s, size, eps) & ~hidden
     bm.free()
 
     vetoed = 0
@@ -408,18 +440,24 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
             m.show_viewport = was
         bpy.context.view_layer.update()
 
-    doomed = np.flatnonzero(hidden)
-    if len(doomed):
-        local = bmesh.new()
-        local.from_mesh(ob.data)
-        local.faces.ensure_lookup_table()
-        bmesh.ops.delete(local, geom=[local.faces[int(i)] for i in doomed], context="FACES")
-        bmesh.ops.delete(local, geom=[v for v in local.verts if not v.link_faces], context="VERTS")
-        local.to_mesh(ob.data)
-        local.free()
-        ob.data.update()
-    return {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "dropped": int(len(doomed)),
-            "left": total - int(len(doomed))}
+    doomed = np.flatnonzero(hidden | poke)
+    _delete_faces(ob, doomed)
+    return {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "poking_out": int(poke.sum()),
+            "dropped": int(len(doomed)), "left": total - int(len(doomed))}
+
+
+def _delete_faces(ob, faces) -> None:
+    """Delete the faces `faces` (indices) of `ob`'s mesh and the vertices left without a face."""
+    if not len(faces):
+        return
+    local = bmesh.new()
+    local.from_mesh(ob.data)
+    local.faces.ensure_lookup_table()
+    bmesh.ops.delete(local, geom=[local.faces[int(i)] for i in faces], context="FACES")
+    bmesh.ops.delete(local, geom=[v for v in local.verts if not v.link_faces], context="VERTS")
+    local.to_mesh(ob.data)
+    local.free()
+    ob.data.update()
 
 
 def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
@@ -443,7 +481,8 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
         drop = drop_hidden_wall(ob, arm, s, poses)
         tries.append({"first": first, "thinned": thinned, **drop})
         log(f"hidden wall, try {attempt + 1}: thinned to {thinned}, {drop['enclosed']} enclosed, "
-            f"{drop['vetoed']} kept for the poses, {drop['dropped']} dropped, {drop['left']} left")
+            f"{drop['vetoed']} kept for the poses, {drop['poking_out']} poking out, {drop['dropped']} dropped, "
+            f"{drop['left']} left")
         if gr.drop_settled(drop["left"], target, s["drop_slack"]):
             break
         first = gr.next_first_target(first, drop["left"], target)
@@ -635,11 +674,15 @@ def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     me.uv_layers["UVMap"].data.foreach_get("uv", uv)
     tris = np.array([(p.loop_start, p.loop_start + k, p.loop_start + k + 1)
                      for p in me.polygons for k in range(1, p.loop_total - 1)])
-    used = gr.uv_area(uv.reshape(-1, 2), tris)
-    log(f"new UVs: {islands} islands, {used * 100:.1f} % of the atlas, {hard} hard edges, {seams} seam edges, "
+    loop_vert = np.empty(len(me.loops), np.int32)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    co = np.array([v.co[:] for v in me.vertices])
+    atlas = gr.atlas_density(co, uv.reshape(-1, 2), loop_vert[tris], tris, s["atlas"])
+    log(f"new UVs: {islands} islands, {atlas['texels_per_cm']:.2f} texels per cm, "
+        f"{atlas['atlas_covered'] * 100:.1f} % of the atlas covered, {atlas['texels_twice'] * 100:.2f} % painted "
+        f"twice, {hard} hard edges, {seams} seam edges, "
         f"{'unchecked' if overlapping is None else overlapping} faces overlapping")
-    out = {"uv_islands": islands, "atlas_used": round(used, 4), "hard_edges": hard,
-           "uv_overlapping_faces": overlapping}
+    out = {"uv_islands": islands, **atlas, "hard_edges": hard, "uv_overlapping_faces": overlapping}
     if head_uv_share is not None:
         out["head_uv_share"] = head_uv_share
     return out
