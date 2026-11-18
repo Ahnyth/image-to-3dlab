@@ -46,7 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named (which side, how big, darker or lighter, where on the figure), a marked picture with
   `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
   dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
-  four only lost dark specks their old bake had).
+  four only lost dark specks their old bake had). `--ignore-glow` leaves out where the second
+  model glows on purpose, for a game model against its source.
+- `game_ready.py` checks its own result by colour: the finished figure against the model its colour
+  came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
+  out. A patch that differs is a bake fault: it is named in the report and its problems, and marked
+  in `<output>.colour.png`. On a knight it named the dark patch a folded atlas had baked onto the
+  cape's back (three views), and nothing on the fixed build. `--no-colour-check` skips it.
 - **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
   `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
   on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.

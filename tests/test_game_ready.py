@@ -339,6 +339,42 @@ def test_problems_name_what_a_game_engine_would_trip_over():
         assert word in found
 
 
+def test_problems_name_colour_patches_against_the_source():
+    """game_ready compares the finished figure with the model its colour came from (Taha's wish, #145)."""
+    good = {"materials": 1, "max_influences": 4, "unweighted": 0, "height": 1.8, "min_z": 0.0,
+            "animation_error_m": 0.0}
+    clean = dict(good, colour_check={"against": "raw.glb", "patches": [], "picture": None})
+    assert gr.problems(clean, max_influences=4, height=1.8) == []
+    found = gr.problems(dict(good, colour_check={
+        "against": "raw.glb", "picture": "game.colour.png",
+        "patches": ["back: a darker patch, 0.6 % of the figure in that view, middle (dE 14, L* -10)",
+                    "back left: a darker patch, 0.5 % of the figure in that view, middle (dE 14, L* -9)"]}),
+        max_influences=4, height=1.8)
+    assert len(found) == 1
+    assert "2 patches" in found[0] and "raw.glb" in found[0] and "back:" in found[0] and "game.colour.png" in found[0]
+
+
+def test_the_colour_check_finds_a_patch_and_leaves_out_what_glows(tmp_path):
+    from test_colour_compare import _glb, cube, glow_texture, texture
+    p, uv, f = cube()
+    source, dark, lit = tmp_path / "source.glb", tmp_path / "dark.glb", tmp_path / "lit.glb"
+    source.write_bytes(_glb([(p, uv, f, texture())]))
+    dark.write_bytes(_glb([(p, uv, f, texture(dark_side=1))]))
+    lit.write_bytes(_glb([(p, uv, f, texture(dark_side=1), glow_texture(1))]))
+    picture = tmp_path / "dark.colour.png"
+    found = gr.colour_check(source, dark, picture)
+    assert found["against"] == "source.glb" and found["patches"] and found["picture"] == "dark.colour.png"
+    assert picture.is_file()
+    calm = gr.colour_check(source, lit, tmp_path / "lit.colour.png")
+    assert calm["patches"] == [] and calm["picture"] is None
+    assert not (tmp_path / "lit.colour.png").exists()
+
+
+def test_settings_check_the_colour_unless_told_not_to():
+    assert gr.settings([])["colour_check"] is True
+    assert gr.settings(["--no-colour-check"])["colour_check"] is False
+
+
 def test_blender_runs_headless_and_fails_loudly(tmp_path):
     cmd = gr.blender_command(Path("blender.exe"), tmp_path / "job.json")
     assert cmd[:5] == ["blender.exe", "--background", "--python-exit-code", "1", "--python"]

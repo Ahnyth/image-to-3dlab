@@ -10,6 +10,7 @@ that move a pixel or two (a thinner mesh, new UVs) and the outline's rim do not 
 
     python scripts/colour_compare.py OLD.glb NEW.glb
     python scripts/colour_compare.py OLD.glb NEW.glb --picture changed.png
+    python scripts/colour_compare.py SOURCE.glb GAME.glb --ignore-glow
 
 OLD and NEW are two versions of one figure (before and after a change, or a game model and the
 model it was baked from). It only reports; it exits 1 when a patch differs, 0 when none does.
@@ -36,12 +37,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="colour difference that counts, CIE76 delta E (default 12; 2 is just visible)")
     parser.add_argument("--min-share", type=float, default=0.3,
                         help="smallest patch, in percent of the figure in that view (default 0.3)")
+    parser.add_argument("--ignore-glow", action="store_true",
+                        help="leave out where NEW glows on purpose (its emissive texture), as against its source")
     args = parser.parse_args(argv)
     old, new = cc.read_model(args.old), cc.read_model(args.new)
+    ignore = cc.read_glow(args.new) if args.ignore_glow else None
     if args.picture:
-        patches = cc.marked_picture(old, new, args.picture, args.size, args.delta, args.min_share / 100)
+        patches = cc.marked_picture(old, new, args.picture, args.size, args.delta, args.min_share / 100,
+                                    ignore=ignore)
     else:
-        patches = cc.compare(old, new, args.size, args.delta, args.min_share / 100)
+        patches = cc.compare(old, new, args.size, args.delta, args.min_share / 100, ignore=ignore)
     if not patches:
         print(f"no patch differs in colour ({len(cc.VIEWS)} views, delta E above {args.delta:g}, "
               f"at least {args.min_share:g} % of the figure)")

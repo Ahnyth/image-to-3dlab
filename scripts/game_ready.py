@@ -24,8 +24,13 @@ the file:
 6. Skin weights: at most `--max-influences` bones per vertex, smoothed a little; small separate
    pieces (a pouch, a lamp) move as one.
 
-The numbers (triangles, atlas use, bones, weights, height) go to `<output>.report.json`, and the
-licence record travels on as `<output>.provenance.json`.
+Last, the finished figure is compared by colour with the model its colour came from (`--colour-from`,
+else the source), from eight sides, leaving out where it glows on purpose: a patch that differs is a
+bake fault, named in the report and marked in `<output>.colour.png` (`--no-colour-check` skips it).
+
+The numbers (triangles, texels per centimetre and the share of the atlas painted twice, bones,
+weights, height, the colour check) go to `<output>.report.json`, and the licence record travels on
+as `<output>.provenance.json`.
 
     python scripts/game_ready.py output/animate/<run>/<name>_idle.glb game.glb --height 1.8
     python scripts/game_ready.py rigged.glb game.glb --height 1.8 --readability 1 --glow "#29e6ff" --fingers merge
@@ -240,6 +245,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "inside its body), after the thinning and only those that stay hidden in a stride, a "
                              "crouch, a straddle, arms up and a twist too; the thinning aims higher first, so the "
                              "figure still lands on --decimate-to with more of it seen (needs --decimate-to)")
+    parser.add_argument("--no-colour-check", action="store_true",
+                        help="skip the closing colour check (the finished figure drawn from eight sides against the "
+                             "model its colour came from, --colour-from or the source; patches that differ are "
+                             "named in the report and marked in <output>.colour.png)")
 
 
 def _to_settings(ns: argparse.Namespace) -> dict:
@@ -253,7 +262,8 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
-             transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach, drop_hidden=ns.drop_hidden)
+             transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach, drop_hidden=ns.drop_hidden,
+             colour_check=not ns.no_colour_check)
     if not ns.hard_seams:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
@@ -769,7 +779,26 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
     error = report.get("animation_error_m")
     if error is not None and error > 0.002:
         out.append(f"moves changed by up to {error:.4f} m in the rescale")
+    check = report.get("colour_check") or {}
+    if check.get("patches"):
+        n = len(check["patches"])
+        out.append(f"{n} patch{'es' if n != 1 else ''} differ in colour from {check['against']} "
+                   f"(first: {check['patches'][0]}); marked in {check['picture']}")
     return out
+
+
+def colour_check(source: Path, output: Path, picture: Path) -> dict:
+    """The finished figure against the model its colour came from, drawn from eight sides in their base colour
+    (`image_to_3dlab.colour_compare`), leaving out where the figure glows on purpose (its accents). A bake fault
+    shows here and nowhere else: a fold in the atlas once put a dark, faceted patch on a cape's back that the
+    numbers and a check for holes in motion both missed. The marked picture is written only when a patch differs.
+    """
+    from image_to_3dlab import colour_compare as cc
+
+    old, new = cc.read_model(source), cc.read_model(output)
+    patches = cc.marked_picture(old, new, picture, ignore=cc.read_glow(output))
+    return {"against": Path(source).name, "patches": [p.describe() for p in patches],
+            "picture": Path(picture).name if patches else None}
 
 
 def blender_command(blender: Path, job: Path) -> list[str]:
@@ -853,6 +882,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     report["bones_merged"] = len(plan)
     report["missing_core_bones"] = missing_core_bones(unity)
     report["style"] = s["style"]
+    if s["colour_check"]:
+        report["colour_check"] = colour_check(Path(s["colour_from"] or args.source), args.output,
+                                              args.output.with_suffix(".colour.png"))
     report["problems"] = problems(report, s["max_influences"], s["height"])
     report["settings"] = {k: v for k, v in s.items() if k != "glow"} | {
         "glow": ["#" + "".join(f"{round(c * 255):02x}" for c in g) for g in s["glow"]]}

@@ -114,7 +114,9 @@ def _glb(parts, node_translation=None) -> bytes:
         binary += data
         return len(views) - 1
 
-    for positions, uvs, faces, tex in parts:
+    for part in parts:
+        positions, uvs, faces, tex = part[:4]
+        glow = part[4] if len(part) > 4 else None
         p = add(positions.astype(np.float32).tobytes())
         accessors.append({"bufferView": p, "componentType": 5126, "count": len(positions), "type": "VEC3",
                           "min": positions.min(0).tolist(), "max": positions.max(0).tolist()})
@@ -125,7 +127,14 @@ def _glb(parts, node_translation=None) -> bytes:
         buf = io.BytesIO()
         Image.fromarray(tex).save(buf, "PNG")
         images.append({"bufferView": add(buf.getvalue()), "mimeType": "image/png"})
-        materials.append({"pbrMetallicRoughness": {"baseColorTexture": {"index": len(images) - 1}}})
+        material = {"pbrMetallicRoughness": {"baseColorTexture": {"index": len(images) - 1}}}
+        if glow is not None:
+            buf = io.BytesIO()
+            Image.fromarray(glow).save(buf, "PNG")
+            images.append({"bufferView": add(buf.getvalue()), "mimeType": "image/png"})
+            material["emissiveTexture"] = {"index": len(images) - 1}
+            material["emissiveFactor"] = [1.0, 1.0, 1.0]
+        materials.append(material)
         primitives.append({"attributes": {"POSITION": len(accessors) - 3, "TEXCOORD_0": len(accessors) - 2},
                            "indices": len(accessors) - 1, "material": len(materials) - 1})
     node = {"mesh": 0}
@@ -168,3 +177,41 @@ def test_the_script_says_what_changed_and_exits_1(tmp_path):
                           capture_output=True, text=True)
     assert same.returncode == 0, same.stdout + same.stderr
     assert "no patch" in same.stdout
+
+
+def glow_texture(side: int) -> np.ndarray:
+    """Black, except the square `texture(dark_side=side)` darkens: that part glows."""
+    tex = np.zeros((64, 6 * 64, 3), np.uint8)
+    tex[16:40, side * 64 + 16:side * 64 + 40] = (40, 230, 255)
+    return tex
+
+
+def test_a_patch_where_the_new_model_glows_on_purpose_is_left_out():
+    """A game model may glow on purpose (game_ready's accents): against its source that is no fault."""
+    p, uv, f = cube()
+    glow = cc.Model.single(p, uv, f, glow_texture(1))
+    assert cc.compare(model(), model(dark_side=1))
+    assert cc.compare(model(), model(dark_side=1), ignore=glow) == []
+    assert cc.compare(model(), model(dark_side=0), ignore=glow), "a patch elsewhere is still found"
+
+
+def test_read_glow_reads_the_emissive_texture(tmp_path):
+    p, uv, f = cube()
+    lit, plain = tmp_path / "lit.glb", tmp_path / "plain.glb"
+    lit.write_bytes(_glb([(p, uv, f, texture(), glow_texture(1))]))
+    plain.write_bytes(_glb([(p, uv, f, texture())]))
+    glow = cc.read_glow(lit)
+    assert glow is not None and glow.textures[0].max() == 255
+    assert cc.read_glow(plain) is None
+
+
+def test_the_script_can_leave_out_where_the_new_model_glows(tmp_path):
+    p, uv, f = cube()
+    old, new = tmp_path / "old.glb", tmp_path / "new.glb"
+    old.write_bytes(_glb([(p, uv, f, texture())]))
+    new.write_bytes(_glb([(p, uv, f, texture(dark_side=1), glow_texture(1))]))
+    script = str(REPO / "scripts" / "colour_compare.py")
+    plain = subprocess.run([sys.executable, script, str(old), str(new)], capture_output=True, text=True)
+    assert plain.returncode == 1, plain.stdout + plain.stderr
+    lit = subprocess.run([sys.executable, script, str(old), str(new), "--ignore-glow"], capture_output=True, text=True)
+    assert lit.returncode == 0, lit.stdout + lit.stderr

@@ -108,11 +108,38 @@ def _base_colour(doc: dict, binary: bytes, material: int | None, cache: dict) ->
     return np.round(picture * np.clip(factor, 0, 1)).astype(np.uint8)
 
 
-def read_model(path: Path) -> Model:
+def _emissive(doc: dict, binary: bytes, material: int | None, cache: dict) -> np.ndarray:
+    """A material's emissive colour as a texture (black where it has none)."""
+    mat = doc["materials"][material] if material is not None else {}
+    factor = np.asarray(mat.get("emissiveFactor", (0.0, 0.0, 0.0))[:3], float)
+    ref = mat.get("emissiveTexture")
+    if ref is None or not factor.any():   # a plain glow colour, or a texture switched off by a zero factor
+        solid = factor if ref is None else np.zeros(3)
+        return np.round(np.clip(solid, 0, 1) * 255).astype(np.uint8).reshape(1, 1, 3)
+    texture = doc["textures"][ref["index"]]
+    source = texture.get("extensions", {}).get("EXT_texture_webp", {}).get("source", texture.get("source"))
+    if source not in cache:
+        cache[source] = _image(doc, binary, source)
+    return np.round(cache[source] * np.clip(factor, 0, 1)).astype(np.uint8)
+
+
+def read_glow(path: Path) -> Model | None:
+    """The model of a GLB with each part's emissive colour instead of its base colour, or None when nothing glows.
+
+    A game model may glow on purpose (game_ready's accents); pass it as `ignore` so a comparison with the
+    model it was made from leaves those parts out.
+    """
+    glow = read_model(path, colour=_emissive)
+    return glow if any(t.max() > 0 for t in glow.textures) else None
+
+
+def read_model(path: Path, colour=None) -> Model:
     """Every triangle primitive of a GLB in the scene's coordinates, each with its base colour.
 
     Node transforms are applied, except on a skinned mesh, whose node glTF says to ignore.
+    `colour(doc, binary, material, cache)` picks another texture per material (`read_glow`).
     """
+    colour = colour or _base_colour
     doc, binary = _split_glb(Path(path).read_bytes())
     nodes = doc.get("nodes", [])
     roots = doc["scenes"][doc.get("scene", 0)]["nodes"] if doc.get("scenes") else range(len(nodes))
@@ -142,7 +169,7 @@ def read_model(path: Path) -> Model:
             key = prim.get("material")
             if key not in materials:
                 materials[key] = len(textures)
-                textures.append(_base_colour(doc, binary, key, cache))
+                textures.append(colour(doc, binary, key, cache))
             positions.append(p)
             uvs.append(uv)
             faces.append(f + count)
@@ -247,13 +274,20 @@ def _where(cy: float, cx: float, rows: np.ndarray, cols: np.ndarray) -> str:
 
 
 def compare_view(old: Model, new: Model, name: str, direction, size: int = 384, delta: float = 12.0,
-                 min_share: float = 0.003, reach: int = 2, rim: int = 2, frame=None) -> tuple[list, dict]:
-    """The patches of one view, and the two pictures and the changed mask for a marked picture."""
+                 min_share: float = 0.003, reach: int = 2, rim: int = 2, frame=None,
+                 ignore: Model | None = None) -> tuple[list, dict]:
+    """The patches of one view, and the two pictures and the changed mask for a marked picture.
+
+    `ignore` (`read_glow` of `new`): where it shows a colour, `new` glows on purpose, and those pixels (grown by
+    the colour edge's reach) do not count."""
     fo, fn = frame or frames(old, new)
     a, ca = render(old, direction, size, fo)
     b, cb = render(new, direction, size, fn)
     la, lb = lab(a), lab(b)
     inside = ndimage.binary_erosion(ca, iterations=rim) & ndimage.binary_erosion(cb, iterations=rim)
+    if ignore is not None:
+        g, cg = render(ignore, direction, size, fn)
+        inside &= ~ndimage.binary_dilation(cg & (g.max(-1) > 0.08), iterations=reach + 1)
     diff = np.maximum(_nearest_difference(la, lb, cb, reach), _nearest_difference(lb, la, ca, reach))
     changed = inside & (diff > delta)
     changed = ndimage.binary_opening(changed, structure=np.ones((3, 3), bool))
@@ -276,22 +310,23 @@ def compare_view(old: Model, new: Model, name: str, direction, size: int = 384, 
 
 
 def compare(old: Model, new: Model, size: int = 384, delta: float = 12.0, min_share: float = 0.003,
-            views=VIEWS) -> list[Patch]:
-    """Every patch, over all `views`, where `new` differs in colour from `old`."""
+            views=VIEWS, ignore: Model | None = None) -> list[Patch]:
+    """Every patch, over all `views`, where `new` differs in colour from `old` (outside `ignore`'s glow)."""
     frame = frames(old, new)
     found = []
     for name, direction in views:
-        found += compare_view(old, new, name, direction, size, delta, min_share, frame=frame)[0]
+        found += compare_view(old, new, name, direction, size, delta, min_share, frame=frame, ignore=ignore)[0]
     return found
 
 
 def marked_picture(old: Model, new: Model, path: Path, size: int = 384, delta: float = 12.0,
-                   min_share: float = 0.003, views=VIEWS) -> list[Patch]:
+                   min_share: float = 0.003, views=VIEWS, ignore: Model | None = None) -> list[Patch]:
     """`compare`, and a picture of every view with a patch: old | new | new with the patches in red."""
     frame = frames(old, new)
     rows, found = [], []
     for name, direction in views:
-        patches, pics = compare_view(old, new, name, direction, size, delta, min_share, frame=frame)
+        patches, pics = compare_view(old, new, name, direction, size, delta, min_share, frame=frame,
+                                     ignore=ignore)
         found += patches
         if not patches:
             continue
