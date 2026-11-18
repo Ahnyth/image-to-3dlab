@@ -561,6 +561,10 @@ def unfold_overlaps(bpy, me, angle: float, margin: float, rounds: int = rb.UV_RO
         if overlapping():
             bpy.ops.mesh.mark_seam(clear=False)   # the last few: each an island of its own
             bpy.ops.uv.unwrap(method="CONFORMAL", margin=margin)
+        # the unwrap scales its islands on their own; give every island the same texels per square
+        # metre again, or the spots that folded come out blockier (or sharper) than the rest
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.uv.average_islands_scale()
         left = overlapping()
         bpy.ops.mesh.select_all(action="SELECT")
         return left

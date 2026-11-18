@@ -39,6 +39,16 @@ for i in range(steps * turns):
     for j in range(rings):
         k = i * (rings + 1) + j
         faces.append((k, k + 1, k + rings + 2, k + rings + 1))
+ramp_faces = len(faces)
+# beside it a flat plate (2 m by 2 m, 8 by 8 quads, facing +y) that projects cleanly
+base = len(verts)
+for i in range(9):
+    for j in range(9):
+        verts.append((3.0 + 2.0 * i / 8, 0.0, 2.0 * j / 8))
+for i in range(8):
+    for j in range(8):
+        k = base + i * 9 + j
+        faces.append((k, k + 9, k + 10, k + 1))
 data = bpy.data.meshes.new("ramp")
 data.from_pydata(verts, [], faces)
 data.uv_layers.new(name="UVMap")          # the source's own UVs, which new_uvs keeps as "src"
@@ -49,7 +59,13 @@ mesh = obj.data
 mesh.calc_loop_triangles()
 uv = mesh.uv_layers["UVMap"].data
 tris = [[list(uv[loop].uv) for loop in tri.loops] for tri in mesh.loop_triangles]
-json.dump({{"tris": tris, "report": report}}, open({out!r}, "w"))
+density = {{"ramp": [0.0, 0.0], "plate": [0.0, 0.0]}}   # summed UV area and 3D area per part
+for tri in mesh.loop_triangles:
+    (ax, ay), (bx, by), (cx, cy) = (uv[loop].uv for loop in tri.loops)
+    part = "ramp" if tri.polygon_index < ramp_faces else "plate"
+    density[part][0] += abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2
+    density[part][1] += tri.area
+json.dump({{"tris": tris, "report": report, "density": density}}, open({out!r}, "w"))
 '''
 
 
@@ -68,3 +84,7 @@ def test_the_game_ready_atlas_paints_no_texel_twice(tmp_path):
     result = json.loads(out.read_text(encoding="utf-8"))
     assert overlap_percent(result["tris"]) < 1.0
     assert result["report"]["uv_overlapping_faces"] == 0
+    # the faces unwrapped again get as many texels per square metre as the projected ones,
+    # or the spots that folded come out blockier than the rest
+    (ramp_uv, ramp_area), (plate_uv, plate_area) = result["density"]["ramp"], result["density"]["plate"]
+    assert ramp_uv / ramp_area == pytest.approx(plate_uv / plate_area, rel=0.15)
