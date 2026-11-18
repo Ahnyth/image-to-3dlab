@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
   flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
   onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
+  `--no-colour-check` skips it.
 - `game_ready.py --drop-hidden` checks its drop in motion and repairs it: the figure before and after
   the drop is posed in a run, a dodge, a fall and a reach (other moves than the drop's own veto) and
   looked at from twelve sides by rays; where a ray first meets a dropped face and, without it, nothing
@@ -63,7 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<output>.pose.png` (`--no-pose-check` skips it). A separate check of this kind found the holes a
   looser drop rule had opened that the colour check could not see; on a knight in white fur it found
   50 small hole pixels in 27 of 48 views and put 35 faces back, leaving none, for about 30 s more.
-  `--no-colour-check` skips it.
+- `game_ready.py --feet-from <Finish run>` fixes a sole the generator made up below the pictures'
+  feet: the outline check finds the parts below the outline that start on the floor; one reaching
+  4 % of the height or more (a second, larger shoe glued under the real one) is cut off, the cut
+  closed with a flat sole and the inner wall's second cap left out; a lower one (a heel too high)
+  is pressed flat to 2.5 cm, which keeps the shoe's length. The bones go with it, the figure stands
+  on its new soles at its height, the colour model and the colour check get the same feet, and the
+  report says what was done (`--feet cut|squash|off` decides by hand). Five figures fixed by hand in
+  Blender set the numbers (cut at 6-7 %, pressed at 3.5 %).
 - **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 - **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
   `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified

@@ -18,7 +18,12 @@ the file:
    lit skin or a light plate washes out. `--glow COLOUR` (repeatable) finds that colour's
    accents, widens them by `--glow-width` texels and makes them glow; `--glow-max-width` keeps
    it to thin lines, so a plate of the same colour stays as painted.
-4. Real height (`--height`, metres) with the feet on the floor, centred under the hips.
+4. Real height (`--height`, metres) with the feet on the floor, centred under the hips. With
+   `--feet-from` (the Finish run the figure was made in) a sole the generator made up below the
+   pictures' feet goes first: the outline check (`scripts/outline_check.py`) finds it, a sole
+   reaching 4 % of the height or more below them is cut off (a second shoe glued under the real
+   one), a lower one is pressed flat to 2.5 cm (a heel too high), and the figure is stood on its
+   new soles at its height (`--feet cut|squash|off` decides by hand).
 5. Engine bone names (`--style unity|mixamo|keep`, the names of `unity_humanoid_names.py`);
    `--fingers merge` folds the finger bones into the hands, for figures too small for fingers.
 6. Skin weights: at most `--max-influences` bones per vertex, smoothed a little; small separate
@@ -35,6 +40,7 @@ as `<output>.provenance.json`.
     python scripts/game_ready.py output/animate/<run>/<name>_idle.glb game.glb --height 1.8
     python scripts/game_ready.py rigged.glb game.glb --height 1.8 --readability 1 --glow "#29e6ff" --fingers merge
     python scripts/game_ready.py rigged.glb game.glb --readability auto --glow "#d91f1a" --glow-max-width 4
+    python scripts/game_ready.py rigged.glb game.glb --height 1.85 --feet-from output/finish/<run>
 
 Needs Blender 4.2 or newer; `blender_game_ready.py` does the Blender part. Everything here
 except `main` is plain maths that the Blender part imports, so it is tested without Blender.
@@ -97,6 +103,12 @@ FIXED = {
     "drop_slack": 0.03,       # ... until the figure lands within this share of --decimate-to
     "pose_check_res": 192,    # --drop-hidden's pose check: rays per side of each view ...
     "pose_check_gap": 0.01,   # ... and a dropped face counts as a hole when nothing lies within this share of the size behind it
+    "feet_cut_at": 0.04,      # --feet-from: a sole reaching this share of the height below the pictures' feet is cut off ...
+    "feet_squash_at": 0.02,   # ... one reaching this far is pressed flat ...
+    "feet_sole_m": 0.025,     # ... to a sole this thick (metres); hand fixes of five figures set these (D205 of the
+                              # AssetFurnace Support notes: cut at 6-7 %, squashed at 3.5 %)
+    "feet_floor": 0.01,       # an outline part counts as a sole when it starts this close to the floor ...
+    "feet_top": 0.15,         # ... and stays below this share of the height (higher, it is a robe or a cape)
 }
 
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
@@ -270,6 +282,13 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "in a run, a dodge, a fall and a reach and seen from twelve sides; a dropped face seen "
                              "there is a hole and is put back; what is left is named in the report and marked in "
                              "<output>.pose.png)")
+    parser.add_argument("--feet-from", type=Path, default=None, metavar="RUN",
+                        help="the Finish run the figure was made in (or a model with its pictures, or the JSON of "
+                             "scripts/outline_check.py): a sole the generator made up below the pictures' feet is "
+                             "cut off or pressed flat")
+    parser.add_argument("--feet", choices=("auto", "cut", "squash", "off"), default="auto",
+                        help="with --feet-from: cut a sole 4 %% of the height or more below the pictures' feet, "
+                             "press a lower one flat (auto, the default), always cut, always press, or leave them")
     parser.add_argument("--no-colour-check", action="store_true",
                         help="skip the closing colour check (the finished figure drawn from eight sides against the "
                              "model its colour came from, --colour-from or the source; patches that differ are "
@@ -288,7 +307,8 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
              transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach, drop_hidden=ns.drop_hidden,
-             colour_check=not ns.no_colour_check, pose_check=not ns.no_pose_check)
+             colour_check=not ns.no_colour_check, pose_check=not ns.no_pose_check,
+             feet_from=str(ns.feet_from) if ns.feet_from else None, feet=ns.feet)
     if not ns.hard_seams:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
@@ -534,6 +554,97 @@ def write_png(path, rgb) -> None:
 
 
 # --- bones and weights ----------------------------------------------------------------------
+
+# --- the feet ---------------------------------------------------------------------------------
+
+def feet_plan(parts: list[dict], mode: str = "auto", height: float = 1.8, s: dict | None = None) -> dict | None:
+    """What to do with a sole the generator made up below the pictures' feet, from the outline check's parts
+    (`image_to_3dlab.outline_check`, as plain dicts): the parts below the outline that start on the floor and stay at
+    foot level are that sole, and the farthest one says how high it reaches (a share of the height). A second shoe
+    glued under the real one reaches far (6-7 % on three figures) and is cut off; a heel a little too high (3.5 %) is
+    pressed flat, which keeps the shoe's length. None when there is nothing to do."""
+    s = s or FIXED
+    soles = [p for p in parts if p["side"] == "below" and p["low"] <= s["feet_floor"] and p["high"] <= s["feet_top"]]
+    if mode == "off" or not soles:
+        return None
+    reach = max(float(p["reach"]) for p in soles)
+    if mode == "auto":
+        mode = "cut" if reach >= s["feet_cut_at"] else "squash" if reach >= s["feet_squash_at"] else None
+    sole = s["feet_sole_m"] / height if mode == "squash" else 0.0
+    if mode is None or (mode == "squash" and reach <= sole):
+        return None
+    return {"mode": mode, "at": round(reach, 4), "sole": round(sole, 4), "parts": len(soles)}
+
+
+def feet_heights(z, plan: dict):
+    """Heights (shares of the figure's height from its lowest point) after the feet are fixed, from the new lowest
+    point: a cut lays what was below it on the floor and moves the rest down by the cut; a squash presses what was
+    below into the sole and moves the rest down by the difference, so the shoe stays joined."""
+    z = np.asarray(z, dtype=np.float64)
+    at = plan["at"]
+    if plan["mode"] == "cut":
+        return np.maximum(z - at, 0.0)
+    return np.where(z <= at, z * (plan["sole"] / at), z - (at - plan["sole"]))
+
+
+def feet_drop(plan: dict) -> float:
+    """How far everything above the fixed feet moves down, as a share of the height."""
+    return plan["at"] - (plan["sole"] if plan["mode"] == "squash" else 0.0)
+
+
+def feet_positions(positions, plan: dict, up: int = 1):
+    """A model's points with the same feet (`feet_heights`), scaled back to its own height on its own floor; the
+    colour check draws the source this way so it stands like the fixed figure."""
+    out = np.array(positions, dtype=np.float64)
+    bottom = float(out[:, up].min())
+    size = max(float(out[:, up].max()) - bottom, 1e-12)
+    out[:, up] = bottom + feet_heights((out[:, up] - bottom) / size, plan) * size / (1.0 - feet_drop(plan))
+    return out
+
+
+def _polygon_area(poly) -> float:
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _inside(points, poly):
+    """Which of `points` (n, 2) lie inside the polygon (m, 2), by the even-odd rule."""
+    x, y = points[:, 0][:, None], points[:, 1][:, None]
+    x0, y0 = poly[:, 0][None, :], poly[:, 1][None, :]
+    x1, y1 = np.roll(poly[:, 0], -1)[None, :], np.roll(poly[:, 1], -1)[None, :]
+    crosses = (y0 > y) != (y1 > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        at = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+    return (crosses & (x < at)).sum(axis=1) % 2 == 1
+
+
+def nested_caps(polygons: list) -> list[bool]:
+    """For the caps that close a cut (each an (n, 2) outline seen from below), which lie inside a larger one: the
+    generator builds a second wall a few millimetres inside the outer one, and its cap would be a second sole inside
+    the first; only the outer cap stays."""
+    polygons = [np.asarray(p, dtype=np.float64) for p in polygons]
+    order = sorted(range(len(polygons)), key=lambda i: -_polygon_area(polygons[i]))
+    inner, kept = [False] * len(polygons), []
+    for i in order:
+        if any(_inside(polygons[i], polygons[k]).mean() >= 0.5 for k in kept):
+            inner[i] = True
+        else:
+            kept.append(i)
+    return inner
+
+
+def outline_parts(path: Path) -> dict:
+    """The outline check's result for `--feet-from`: its JSON as written by `scripts/outline_check.py --json`, or
+    the check run on a Finish run folder or a model with its pictures."""
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        return json.loads(path.read_text(encoding="utf-8"))
+    sys.path.insert(0, str(SCRIPTS.parent))
+    from image_to_3dlab import outline_check as oc
+
+    model, views = oc.find_inputs(path)
+    return oc.check(model, views, frame=oc.PIXAL3D_FRAME)
+
 
 def bone_plan(parents: dict[str, str | None], unity_names: dict[str, str], fingers: str) -> dict[str, str]:
     """{bone: bone it merges into}. With fingers merged, everything below each hand joins the hand."""
@@ -868,13 +979,15 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
     return out
 
 
-def colour_check(source: Path, output: Path, picture: Path, curve: tuple | None = None) -> dict:
+def colour_check(source: Path, output: Path, picture: Path, curve: tuple | None = None,
+                 feet: dict | None = None) -> dict:
     """The finished figure against the model its colour came from, drawn from eight sides in their base colour
     (`image_to_3dlab.colour_compare`), leaving out where the figure glows on purpose (its accents). A bake fault
     shows here and nowhere else: a fold in the atlas once put a dark, faceted patch on a cape's back that the
     numbers and a check for holes in motion both missed. `curve` (strength, pivot) puts the readability curve the
     figure got onto the source first, so a figure lightened on purpose is no fault (without it, 5 of 21 figures
-    were flagged for exactly that). The marked picture is written only when a patch differs.
+    were flagged for exactly that). `feet` (the plan of `--feet-from`) gives the source the same feet first, so it
+    stands like the figure. The marked picture is written only when a patch differs.
     """
     from image_to_3dlab import colour_compare as cc
 
@@ -882,6 +995,8 @@ def colour_check(source: Path, output: Path, picture: Path, curve: tuple | None 
     if curve and curve[0] and curve[1] is not None:
         old = cc.Model(old.positions, old.uvs, old.faces, old.part,
                        [np.round(curve_at(t / 255.0, curve[0], curve[1]) * 255).astype(np.uint8) for t in old.textures])
+    if feet:
+        old = cc.Model(feet_positions(old.positions, feet, up=1), old.uvs, old.faces, old.part, old.textures)
     patches = cc.marked_picture(old, new, picture, ignore=cc.read_glow(output))
     return {"against": Path(source).name, "patches": [p.describe() for p in patches],
             "picture": Path(picture).name if patches else None}
@@ -944,6 +1059,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         parser.error(f"--mesh-from: not found: {s['mesh_from']}")
     if (s["head_protect"] > 0 or s["head_texel"] > 1) and "Head" not in unity.values():
         print("note: no head bone found, so --head-protect and --head-texel change nothing")
+    feet = None
+    if s["feet_from"] and s["feet"] != "off":
+        try:
+            outline = outline_parts(Path(s["feet_from"]))
+        except FileNotFoundError as error:
+            parser.error(f"--feet-from: {error}")
+        feet = feet_plan(outline["parts"], s["feet"], s["height"], s)
+        print("feet: " + (f"{feet['mode']} at {feet['at']:.1%} of the height ({feet['parts']} part(s) below the "
+                          "pictures' feet)" if feet else "nothing below the pictures' feet to fix"))
 
     with tempfile.TemporaryDirectory() as tmp:
         job = Path(tmp) / "job.json"
@@ -954,7 +1078,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
                                    "all_head_bones": head_bones(parents, unity), "veto_poses": veto_poses(unity),
                                    "check_poses": check_poses(unity) if s["pose_check"] else [],
                                    "pose_picture": str(args.output.with_suffix(".pose.png").resolve()),
-                                   "settings": s}, indent=1))
+                                   "feet": feet, "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():
             print(run.stdout[-4000:])
@@ -974,7 +1098,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         made = report.get("colour") or {}
         report["colour_check"] = colour_check(Path(s["colour_from"] or args.source), args.output,
                                               args.output.with_suffix(".colour.png"),
-                                              (made.get("readability", 0), made.get("readability_pivot")))
+                                              (made.get("readability", 0), made.get("readability_pivot")), feet)
     report["problems"] = problems(report, s["max_influences"], s["height"])
     report["settings"] = {k: v for k, v in s.items() if k != "glow"} | {
         "glow": ["#" + "".join(f"{round(c * 255):02x}" for c in g) for g in s["glow"]]}

@@ -756,3 +756,78 @@ def test_problems_name_holes_the_pose_check_could_not_repair():
 def test_settings_check_the_poses_unless_told_not_to():
     assert gr.settings([])["pose_check"] is True
     assert gr.settings(["--no-pose-check"])["pose_check"] is False
+
+
+# --- the feet: a sole the generator made up below the pictures' feet ------------------------------
+
+def _part(reach, side="below", low=0.0, high=0.05, view="front"):
+    return {"view": view, "side": side, "reach": reach, "low": low, "high": high, "vertices": 150}
+
+
+def test_a_second_shoe_glued_under_the_real_one_is_cut_off():
+    # the Sturmschuetze of the AssetFurnace Support notes: 6.8 % of his height below the pictures' feet
+    plan = gr.feet_plan([_part(0.0677), _part(0.0667), _part(0.0555, view="back"), _part(0.0429, side="right",
+                                                                                          low=0.46, high=0.52)])
+    assert plan["mode"] == "cut" and plan["at"] == pytest.approx(0.0677) and plan["parts"] == 3
+
+
+def test_a_heel_a_little_too_high_is_pressed_flat_to_a_sole():
+    plan = gr.feet_plan([_part(0.0346), _part(0.0299, view="back")], height=1.85)
+    assert plan["mode"] == "squash" and plan["at"] == pytest.approx(0.0346)
+    assert plan["sole"] == pytest.approx(gr.FIXED["feet_sole_m"] / 1.85, abs=1e-4)
+
+
+def test_feet_inside_the_pictures_or_parts_off_the_floor_change_nothing():
+    assert gr.feet_plan([]) is None
+    assert gr.feet_plan([_part(0.015)]) is None                       # within the outline's slack
+    assert gr.feet_plan([_part(0.08, side="left", low=0.4, high=0.5)]) is None   # a hand past the outline
+    assert gr.feet_plan([_part(0.08, low=0.05)]) is None              # not on the floor
+    assert gr.feet_plan([_part(0.08, high=0.3)]) is None              # a robe down to the floor, not a shoe
+
+
+def test_the_feet_can_be_told_what_to_do_or_left_alone():
+    assert gr.feet_plan([_part(0.065)], mode="squash")["mode"] == "squash"
+    assert gr.feet_plan([_part(0.03)], mode="cut")["mode"] == "cut"
+    assert gr.feet_plan([_part(0.065)], mode="off") is None
+    assert gr.feet_plan([_part(0.01)], mode="squash", height=1.8) is None  # already thinner than a sole
+
+
+def test_a_cut_moves_everything_above_down_and_lays_what_was_below_on_the_floor():
+    plan = {"mode": "cut", "at": 0.06, "sole": 0.0}
+    z = np.array([0.0, 0.03, 0.06, 0.5, 1.0])
+    assert gr.feet_heights(z, plan) == pytest.approx([0.0, 0.0, 0.0, 0.44, 0.94])
+    assert gr.feet_drop(plan) == pytest.approx(0.06)
+
+
+def test_a_squash_presses_the_sole_and_keeps_the_shoe_joined():
+    plan = {"mode": "squash", "at": 0.04, "sole": 0.01}
+    z = np.array([0.0, 0.02, 0.04, 0.5, 1.0])
+    assert gr.feet_heights(z, plan) == pytest.approx([0.0, 0.005, 0.01, 0.47, 0.97])
+    assert gr.feet_drop(plan) == pytest.approx(0.03)
+
+
+def test_a_model_drawn_for_the_colour_check_gets_the_same_feet_at_its_own_height():
+    plan = {"mode": "cut", "at": 0.1, "sole": 0.0}
+    positions = np.array([[0.0, -1.0, 0.0], [0.0, -0.9, 0.2], [0.3, 0.0, 0.0], [0.0, 1.0, 0.0]])  # 2 tall, y up
+    out = gr.feet_positions(positions, plan, up=1)
+    assert out[:, 1].min() == pytest.approx(-1.0) and out[:, 1].max() == pytest.approx(1.0)
+    assert out[1, 1] == pytest.approx(-1.0)                              # the cut sole lies on the floor
+    assert out[2, 1] == pytest.approx(-1.0 + 2.0 * 0.4 / 0.9)         # halfway up: 0.4 above the cut, scaled back
+    assert np.array_equal(out[:, [0, 2]], positions[:, [0, 2]])
+
+
+def test_the_inner_walls_cap_inside_each_sole_is_found():
+    def square(cx, cy, r):
+        return np.array([[cx - r, cy - r], [cx + r, cy - r], [cx + r, cy + r], [cx - r, cy + r]])
+
+    left, right = square(-0.15, 0.0, 0.06), square(0.15, 0.0, 0.06)
+    inner_left, inner_right = square(-0.15, 0.0, 0.05), square(0.15, 0.01, 0.045)
+    assert gr.nested_caps([left, right]) == [False, False]
+    assert gr.nested_caps([inner_left, left, right, inner_right]) == [True, False, False, True]
+
+
+def test_settings_take_the_feet_from_a_finish_run_and_auto_by_default():
+    s = gr.settings([])
+    assert s["feet_from"] is None and s["feet"] == "auto"
+    s = gr.settings(["--feet-from", "output/finish/run", "--feet", "squash"])
+    assert s["feet_from"] == str(Path("output/finish/run")) and s["feet"] == "squash"

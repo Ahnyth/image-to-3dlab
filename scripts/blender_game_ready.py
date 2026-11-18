@@ -190,6 +190,102 @@ def rescale(arm, ob, height: float, hips: str):
     return S, T
 
 
+def _cut_soles(ob, at: float, height: float) -> dict:
+    """Cuts off everything under the height `at`, closes each cut with a flat sole facing the floor (its corners take
+    the colour and material of the shoe beside them), leaves out the inner wall's second cap inside each sole, and
+    drops small bits the cut leaves hanging just above it (a strap of the made-up shoe)."""
+    me = ob.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    faces_before = len(bm.faces)
+    geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+    res = bmesh.ops.bisect_plane(bm, geom=geom, dist=1e-6, plane_co=(0.0, 0.0, at), plane_no=(0.0, 0.0, 1.0),
+                                 clear_inner=True)
+    rim = [e for e in res["geom_cut"] if isinstance(e, bmesh.types.BMEdge) and e.is_boundary]
+    caps = bmesh.ops.holes_fill(bm, edges=rim, sides=0)["faces"]
+    inner = gr.nested_caps([np.array([v.co[:2] for v in f.verts]) for f in caps])
+    dropped = [f for f, x in zip(caps, inner) if x]
+    kept = [f for f, x in zip(caps, inner) if not x]
+    if dropped:
+        bmesh.ops.delete(bm, geom=dropped, context="FACES_ONLY")
+    for f in kept:
+        f.normal_update()
+        if f.normal.z > 0:
+            f.normal_flip()
+    soles = bmesh.ops.triangulate(bm, faces=kept, quad_method="BEAUTY", ngon_method="BEAUTY")["faces"]
+    sole_set = set(soles)
+    layers = list(bm.loops.layers.uv.values())
+    for f in soles:
+        f.smooth = False
+        for e in f.edges:
+            beside = [g for g in e.link_faces if g not in sole_set]
+            if beside:
+                e.smooth = False
+                f.material_index = beside[0].material_index
+        for loop in f.loops:
+            other = next((lo for lo in loop.vert.link_loops if lo.face not in sole_set), None)
+            if other is not None:
+                for uv in layers:
+                    loop[uv].uv = other[uv].uv.copy()
+    bm.faces.index_update()
+    small = max(60, faces_before // 1000)
+    loose = [c for c in shells(bm) if len(c) < small and max(v.co.z for f in c for v in f.verts) < at + 0.04 * height]
+    if loose:
+        bmesh.ops.delete(bm, geom=list({v for c in loose for f in c for v in f.verts}), context="VERTS")
+    bm.normal_update()
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    return {"soles": len(kept), "inner_caps_left_out": len(dropped), "sole_triangles": len(soles),
+            "loose_bits_dropped": len(loose)}
+
+
+def feet_move(me, plan: dict, height: float, T) -> None:
+    """Moves a mesh in the figure's frame (floor at 0, `height` tall) by the feet plan, then by `T`."""
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    co[:, 2] = gr.feet_heights(co[:, 2] / height, plan) * height
+    me.vertices.foreach_set("co", co.ravel())
+    me.transform(T)
+    me.update()
+
+
+def fix_feet(arm, ob, plan: dict, s: dict, hips: str):
+    """The feet plan of `--feet-from` (`game_ready.feet_plan`), right after the rescale: a made-up sole is cut off or
+    pressed flat, the bones go with it (a toe bone that sat in the cut part is laid on the new sole), and the figure is
+    stood on its new soles and scaled back to its height. Returns (stats, the second rescale's T, the bones that moved
+    otherwise than the figure as a whole, which the moves' check leaves out, the height it measured the feet at)."""
+    me = ob.data
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    height = float(co.reshape(-1, 3)[:, 2].max())  # the rescale put the floor at 0
+    at = plan["at"] * height
+    stats = {"mode": plan["mode"], "at_m": round(at, 4), "at": plan["at"], "parts": plan["parts"]}
+    if plan["mode"] == "cut":
+        stats.update(_cut_soles(ob, at, height))
+    else:
+        stats["sole_m"] = round(plan["sole"] * height, 4)
+    feet_move(me, plan, height, Matrix.Identity(4))
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    moved = []
+    for eb in arm.data.edit_bones:
+        if min(eb.head.z, eb.tail.z) < at:
+            moved.append(eb.name)
+        for end in ("head", "tail"):
+            point = getattr(eb, end).copy()
+            point.z = float(gr.feet_heights(point.z / height, plan)) * height
+            setattr(eb, end, point)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    S, T = rescale(arm, ob, s["height"], hips)
+    stats.update(scale=round(S, 4), bones_moved=moved)
+    log("feet:", stats)
+    return stats, T, moved, height
+
+
 def shells(bm):
     bm.faces.ensure_lookup_table()
     done, out = set(), []
@@ -886,8 +982,9 @@ def head_mask_attribute(ob, bones: list[str]) -> str | None:
     return attr.name
 
 
-def import_colour_model(path: str, T):
-    """The finer painted model, moved by the same rescale as the figure (it shares the figure's coordinates)."""
+def import_colour_model(path: str, T, feet: tuple | None = None):
+    """The finer painted model, moved by the same rescale as the figure (it shares the figure's coordinates), and by
+    the same feet (`feet`: the plan, the height it was made at and the second rescale)."""
     before = set(bpy.data.objects)
     try:
         bpy.ops.import_scene.gltf(filepath=path, disable_bone_shape=True)
@@ -904,6 +1001,8 @@ def import_colour_model(path: str, T):
         o.parent = None
         o.matrix_world = Matrix.Identity(4)
         o.data.transform(T @ mw)
+        if feet:
+            feet_move(o.data, *feet)
         for mod in list(o.modifiers):
             o.modifiers.remove(mod)
     log(f"colour from {Path(path).name}: {sum(len(o.data.polygons) for o in meshes)} faces")
@@ -1251,6 +1350,7 @@ def main() -> None:
         f0, f1 = (int(round(f)) for f in action.frame_range)
         frames = sorted({f0, (f0 + f1) // 2, f1})
     kept = [b.name for b in arm.data.bones if b.name not in plan]
+    before_names = list(kept)
     before = sample_heads(arm, frames, kept)
 
     S, T = rescale(arm, ob, s["height"], job["hips"])
@@ -1258,6 +1358,14 @@ def main() -> None:
     for m in ob.modifiers:
         m.show_viewport = m.show_render = False
     report["cleaning"] = clean_mesh(ob, s)
+    T_moves, feet = T, None
+    if job.get("feet"):
+        soles = job["feet"]
+        report["feet"], T2, moved, frame = fix_feet(arm, ob, soles, s, job["hips"])
+        feet = (soles, frame, T2)
+        T_moves = T2 @ Matrix.Translation((0.0, 0.0, -gr.feet_drop(soles) * frame)) @ T
+        kept = [b for b in kept if b not in moved]
+        before = {f: before[f][[i for i, b in enumerate(before_names) if b not in moved]] for f in before}
     head = job.get("all_head_bones") or []
     if s.get("decimate_to") and s.get("drop_hidden"):
         report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or [], job.get("check_poses") or [],
@@ -1265,11 +1373,11 @@ def main() -> None:
     elif s.get("decimate_to"):
         report.update(decimate_with_head(ob, s, head))
     report.update(new_uvs(ob, s, head))
-    colour_objs = import_colour_model(s["colour_from"], T) if s.get("colour_from") else None
+    colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
     normal_objs = None
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
-        normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T)
+        normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T, feet)
     report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs)
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
@@ -1280,7 +1388,7 @@ def main() -> None:
     error = None
     if frames:
         after = sample_heads(arm, frames, kept)
-        Tn = np.array(T)
+        Tn = np.array(T_moves)
         error = max(float(np.abs(after[f] - (before[f] @ Tn[:3, :3].T + Tn[:3, 3])).max()) for f in frames)
         log(f"moves after the rescale differ by up to {error:.6f} m")
     bpy.context.scene.frame_set(frames[0] if frames else 1)
