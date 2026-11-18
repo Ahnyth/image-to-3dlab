@@ -22,6 +22,7 @@ from scripts.visibility_cull import (
     index_to_color,
     poking_out,
     sealed_air,
+    shading_roofs,
     visible_faces,
 )
 
@@ -466,3 +467,41 @@ def test_a_piece_further_off_than_near_is_kept():
 def test_poking_out_of_nothing_is_empty():
     assert poking_out(np.zeros((0, 4, 3)), np.zeros((0, 3)), fibonacci_directions(8), None, None, 0.1,
                       eps=1e-6).shape == (0,)
+
+
+# --- roofs: what may not shade the surface in the sky-light bake (TODO 103) -----------------------
+
+def _roofs(tris, near=0.05):
+    tris, normals, cast, first = _caster(tris)
+    return shading_roofs(face_samples(tris), normals, fibonacci_directions(64), cast, first, near, eps=1e-6)
+
+
+def test_a_piece_over_the_surface_is_a_roof_even_where_a_camera_sees_its_front():
+    """The Frostwaechter's grey fur (TODO 103): pieces the strict rule keeps, because a camera sees their front at
+    some angle, still shade the fur under them in the sky-light bake. As roofs they stay in the mesh but cast no shade."""
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    piece = _quad((1.01, 0.4, 0.4), (1.01, 0.4, 0.6), (1.01, 0.6, 0.6), (1.01, 0.6, 0.4))
+    roofs = _roofs(body + piece)
+    assert roofs[len(body):].all() and not roofs[:len(body)].any()
+    flap = _quad((1.01, 0.6, 0.4), (1.01, 0.6, 0.6), (1.01, 1.1, 0.6), (1.01, 1.1, 0.4))   # its tip is seen past the edge
+    assert _roofs(body + flap)[len(body):].all()
+    strap = _box_tris((0, 0.48, 0), (1, 0.52, 1))
+    over = _quad((1.01, 0.47, 0.4), (1.01, 0.47, 0.6), (1.01, 0.53, 0.6), (1.01, 0.53, 0.4))
+    assert _roofs(strap + over)[len(strap):].all()
+
+
+def test_what_a_roof_is_not():
+    body = _box_tris((0, 0, 0), (1, 1, 1))
+    sheet = _quad((1.01, 0.4, 0.4), (1.01, 0.6, 0.4), (1.01, 0.6, 0.6), (1.01, 0.4, 0.6))   # faces outward
+    assert not _roofs(body + sheet).any()
+    cape = _box_tris((1.01, 0.1, 0.1), (1.03, 0.9, 0.9))                                  # its underside: no sky behind
+    assert not _roofs(body + cape).any()
+    far = _quad((1.2, 0.4, 0.4), (1.2, 0.4, 0.6), (1.2, 0.6, 0.6), (1.2, 0.6, 0.4))
+    assert not _roofs(body + far, near=0.05).any()
+    slab = _box_tris((0, 0, 0), (1, 1, 0.03))
+    for i, t in enumerate(slab):
+        if all(abs(p[2] - 0.03) < 1e-9 for p in t):
+            slab[i] = t[::-1]
+    assert not _roofs(slab).any()
+    assert shading_roofs(np.zeros((0, 4, 3)), np.zeros((0, 3)), fibonacci_directions(8), None, None, 0.1,
+                         eps=1e-6).shape == (0,)

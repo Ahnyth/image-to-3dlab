@@ -35,6 +35,7 @@ from visibility_cull import (
     hollows_only,
     poking_out,
     sealed_air,
+    shading_roofs,
 )
 
 T0 = time.time()
@@ -365,6 +366,24 @@ def _pokes(bm, s: dict, size: float, eps: float, which=None) -> np.ndarray:
                       lambda o, d, f, r: vec_first(Vector(o), Vector(d), int(which[f]), r), s["poke_near"] * size, eps)
 
 
+def sky_roofs(ob, s: dict) -> np.ndarray:
+    """The faces of `ob` (at rest) that may not shade the surface in the sky-light bake (`shading_roofs`): pieces over
+    the surface that face it and see the sky behind them; a game shows the surface under them from outside."""
+    bm = _world_bmesh(ob.data, ob.matrix_world)
+    bm.normal_update()
+    size = max(max(v.co[k] for v in bm.verts) - min(v.co[k] for v in bm.verts) for k in range(3))
+    eps = size * 1e-5
+    tree = BVHTree.FromBMesh(bm)
+    tris = np.array([[tuple(loop.vert.co) for loop in f.loops][:3] for f in bm.faces]).reshape(-1, 3, 3)
+    normals = np.array([tuple(f.normal) for f in bm.faces]).reshape(-1, 3)
+    vec_cast, vec_first = _cast_with(tree, eps), _first_hit_with(tree, eps)
+    roofs = shading_roofs(face_samples(tris, s["hidden_corner_reach"]), normals, fibonacci_directions(s["poke_rays"]),
+                          lambda o, d, f: vec_cast(Vector(o), Vector(d), f),
+                          lambda o, d, f, r: vec_first(Vector(o), Vector(d), f, r), s["roof_near"] * size, eps)
+    bm.free()
+    return roofs
+
+
 def _world_bmesh(mesh, matrix):
     bm = bmesh.new()
     bm.from_mesh(mesh)
@@ -373,7 +392,136 @@ def _world_bmesh(mesh, matrix):
     return bm
 
 
-def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
+def _pose_on(ob, arm) -> list:
+    """Let the armature move the mesh (for posing); returns what to put back with `_pose_off`."""
+    skins = [m for m in ob.modifiers if m.type == "ARMATURE"]
+    shown = [(m, m.show_viewport) for m in skins]
+    for m in skins:
+        m.show_viewport = True
+    arm.data.pose_position = "POSE"
+    return shown
+
+
+def _pose_off(arm, shown: list) -> None:
+    for pb in arm.pose.bones:
+        pb.matrix_basis = Matrix.Identity(4)
+    arm.data.pose_position = "REST"
+    for m, was in shown:
+        m.show_viewport = was
+    bpy.context.view_layer.update()
+
+
+def _posed_bmesh(ob, arm, moves, total: int):
+    """The mesh in world space with the figure posed by `moves` ([(bone, axis, degrees), ...], each bone turned about
+    a world axis through its head), or None when a modifier changed the topology (the pose then vouches for nothing)."""
+    def rotate(name, axis, degrees):
+        if name not in arm.pose.bones:
+            return
+        bpy.context.view_layer.update()
+        pb = arm.pose.bones[name]
+        head = arm.matrix_world @ pb.head
+        turn = Matrix.Translation(head) @ Matrix.Rotation(math.radians(degrees), 4, Vector(axis)) \
+            @ Matrix.Translation(-head)
+        pb.matrix = arm.matrix_world.inverted() @ turn @ arm.matrix_world @ pb.matrix
+        bpy.context.view_layer.update()
+
+    for pb in arm.pose.bones:
+        pb.matrix_basis = Matrix.Identity(4)
+    bpy.context.view_layer.update()
+    for bone, axis, degrees in moves:
+        rotate(bone, axis, degrees)
+    evaluated = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    posed = _world_bmesh(evaluated.to_mesh(), ob.matrix_world)
+    evaluated.to_mesh_clear()
+    if len(posed.faces) != total:
+        posed.free()
+        return None
+    return posed
+
+
+def _first_front(tree, front_of, origin: Vector, direction: Vector, skip, eps: float, reach: float):
+    """The first face a ray meets whose front faces it (back faces are not drawn, so the ray goes on through them),
+    skipping the faces `skip` marks: (face, distance) or (-1, inf)."""
+    travelled = 0.0
+    at = origin
+    for _ in range(24):
+        location, _n, index, distance = tree.ray_cast(at, direction, reach - travelled)
+        if location is None:
+            return -1, math.inf
+        travelled += distance
+        if front_of(index) and not skip[index]:
+            return index, travelled
+        at = location + direction * eps
+        travelled += eps
+    return -1, math.inf
+
+
+def pose_check(ob, arm, s: dict, poses: list, doomed: np.ndarray, total: int, picture: str | None) -> tuple[dict, np.ndarray]:
+    """The figure with and without the faces `doomed` marks, posed in each of `poses` and seen from the twelve sides of
+    `gr.CHECK_VIEWS`: a ray that first meets a dropped face and, without it, nothing close behind shows a hole. Returns
+    the counts and the dropped faces seen through the holes (put back by the caller); the worst view goes to `picture`."""
+    res = s["pose_check_res"]
+    seen = np.zeros(total, dtype=bool)
+    hole_px = views_with_holes = 0
+    worst = (0, None, None)
+    nothing = np.zeros(total, dtype=bool)
+    shown = _pose_on(ob, arm)
+    try:
+        for name, moves in poses:
+            posed = _posed_bmesh(ob, arm, moves, total)
+            if posed is None:
+                continue
+            posed.normal_update()
+            tree = BVHTree.FromBMesh(posed)
+            normals = np.array([tuple(f.normal) for f in posed.faces])
+            coords = np.array([tuple(v.co) for v in posed.verts])
+            lo, hi = coords.min(0), coords.max(0)
+            center = (lo + hi) / 2
+            radius = float(np.linalg.norm(hi - lo)) / 2 * 1.02
+            eps = radius * 2e-5
+            gap = s["pose_check_gap"] * radius * 2
+            posed.free()
+            for azimuth, elevation in gr.CHECK_VIEWS:
+                origins, direction = gr.view_rays(center, radius, azimuth, elevation, res)
+                d = Vector(direction)
+                facing = normals @ direction < 0
+                front_of = facing.__getitem__
+                before_face = np.full(len(origins), -1)
+                before_depth = np.full(len(origins), math.inf)
+                after_depth = np.full(len(origins), math.inf)
+                for k, o in enumerate(origins):
+                    origin = Vector(o)
+                    face, depth = _first_front(tree, front_of, origin, d, nothing, eps, 4 * radius)
+                    before_face[k], before_depth[k] = face, depth
+                    if face >= 0 and doomed[face]:
+                        after_depth[k] = _first_front(tree, front_of, origin, d, doomed, eps, 4 * radius)[1]
+                hole = gr.pose_holes(before_face, before_depth, after_depth, doomed, gap)
+                count = int(hole.sum())
+                if count:
+                    views_with_holes += 1
+                    hole_px += count
+                    seen[gr.faces_seen_in(before_face, hole)] = True
+                    if count > worst[0]:
+                        image = np.zeros((res * res, 3), np.float32)
+                        image[before_face >= 0] = 0.55
+                        image[hole] = (1.0, 0.1, 0.1)
+                        worst = (count, f"{name}, {azimuth} deg round, {elevation} deg up", image.reshape(res, res, 3))
+    finally:
+        _pose_off(arm, shown)
+    written = None
+    if worst[2] is not None and picture:
+        big = np.repeat(np.repeat(worst[2], 3, axis=0), 3, axis=1)   # three times larger, to be read
+        gr.write_png(Path(picture), big[::-1])   # write_png takes row 0 as the bottom
+        written = picture
+    restore = np.flatnonzero(seen)
+    report = {"poses": len(poses), "views": len(gr.CHECK_VIEWS), "rays_per_view": res * res, "hole_px": hole_px,
+              "views_with_holes": views_with_holes, "restored": int(len(restore)), "worst": worst[1],
+              "picture": written}
+    return report, restore
+
+
+def drop_hidden_wall(ob, arm, s: dict, poses: list, check: list | None = None, picture: str | None = None,
+                     final=lambda left: True) -> dict:
     """Delete the triangles nobody can see: no ray from them reaches the outside, the air beside them is a
     sealed, compact hollow (the body's inside, not the pocket behind a cape), and they stay hidden in every
     pose of `poses` ([name, [(bone, axis, degrees), ...]]: the figure posed by its own bones)."""
@@ -403,34 +551,10 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
 
     vetoed = poke_vetoed = 0
     if (hidden.any() or poke.any()) and poses:
-        skins = [m for m in ob.modifiers if m.type == "ARMATURE"]
-        shown = [(m, m.show_viewport) for m in skins]
-        for m in skins:
-            m.show_viewport = True
-        arm.data.pose_position = "POSE"
-
-        def rotate(name, axis, degrees):
-            if name not in arm.pose.bones:
-                return
-            bpy.context.view_layer.update()
-            pb = arm.pose.bones[name]
-            head = arm.matrix_world @ pb.head
-            turn = Matrix.Translation(head) @ Matrix.Rotation(math.radians(degrees), 4, Vector(axis)) \
-                @ Matrix.Translation(-head)
-            pb.matrix = arm.matrix_world.inverted() @ turn @ arm.matrix_world @ pb.matrix
-            bpy.context.view_layer.update()
-
+        shown = _pose_on(ob, arm)
         for _name, moves in poses:
-            for pb in arm.pose.bones:
-                pb.matrix_basis = Matrix.Identity(4)
-            bpy.context.view_layer.update()
-            for bone, axis, degrees in moves:
-                rotate(bone, axis, degrees)
-            evaluated = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
-            posed = _world_bmesh(evaluated.to_mesh(), ob.matrix_world)
-            evaluated.to_mesh_clear()
-            if len(posed.faces) != total:   # a modifier changed the topology: this pose cannot vouch for anything
-                posed.free()
+            posed = _posed_bmesh(ob, arm, moves, total)
+            if posed is None:   # a modifier changed the topology: this pose cannot vouch for anything
                 continue
             which = np.flatnonzero(hidden)
             if len(which):
@@ -444,17 +568,28 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
                 poke_vetoed += int((~still).sum())
                 poke[which[~still]] = False
             posed.free()
-        for pb in arm.pose.bones:
-            pb.matrix_basis = Matrix.Identity(4)
-        arm.data.pose_position = "REST"
-        for m, was in shown:
-            m.show_viewport = was
-        bpy.context.view_layer.update()
+        _pose_off(arm, shown)
 
-    doomed = np.flatnonzero(hidden | poke)
+    doomed_mask = hidden | poke
+    checked = None
+    if check and doomed_mask.any() and final(total - int(doomed_mask.sum())):
+        # the pose check (#153 of the AssetFurnace Support notes): what a game would show of the dropped faces in
+        # other moves is a hole; those faces stay
+        checked, restore = pose_check(ob, arm, s, check, doomed_mask, total, picture)
+        doomed_mask[restore] = False
+        checked["hole_px_left"] = 0
+        if len(restore):
+            again, _more = pose_check(ob, arm, s, check, doomed_mask, total, None)
+            checked["hole_px_left"] = again["hole_px"]
+        log(f"pose check: {checked['hole_px']} px of holes in {checked['views_with_holes']} views, "
+            f"{checked['restored']} faces put back, {checked['hole_px_left']} px left")
+    doomed = np.flatnonzero(doomed_mask)
     _delete_faces(ob, doomed)
-    return {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "poking_out": int(poke.sum()),
-            "poking_kept_for_poses": poke_vetoed, "dropped": int(len(doomed)), "left": total - int(len(doomed))}
+    result = {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "poking_out": int(poke.sum()),
+              "poking_kept_for_poses": poke_vetoed, "dropped": int(len(doomed)), "left": total - int(len(doomed))}
+    if checked is not None:
+        result["pose_check"] = checked
+    return result
 
 
 def _delete_faces(ob, faces) -> None:
@@ -471,7 +606,8 @@ def _delete_faces(ob, faces) -> None:
     ob.data.update()
 
 
-def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
+def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | None = None,
+                  picture: str | None = None) -> dict:
     """--drop-hidden: thin to a first target above the budget, drop the hidden inner wall, and aim the next try
     by what the drop left, until the figure lands within `drop_slack` of `decimate_to` (at most `drop_tries`).
     Each try starts again from the cleaned, unthinned mesh: thinning what a drop left would spend triangles on
@@ -489,18 +625,23 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
             ob.data = original.copy()
             bpy.data.meshes.remove(spent)
         thinned = decimate_with_head(ob, dict(s, decimate_to=first), head)["decimated"][1]
-        drop = drop_hidden_wall(ob, arm, s, poses)
-        tries.append({"first": first, "thinned": thinned, **drop})
+        last = attempt == s["drop_tries"] - 1
+        drop = drop_hidden_wall(ob, arm, s, poses, check, picture,
+                                final=lambda left, last=last: last or gr.drop_settled(left, target, s["drop_slack"]))
+        tries.append({"first": first, "thinned": thinned, **{k: v for k, v in drop.items() if k != "pose_check"}})
         log(f"hidden wall, try {attempt + 1}: thinned to {thinned}, {drop['enclosed']} enclosed, "
             f"{drop['vetoed']} kept for the poses, {drop['poking_out']} poking out "
             f"({drop['poking_kept_for_poses']} kept for the poses), {drop['dropped']} dropped, "
             f"{drop['left']} left")
-        if gr.drop_settled(drop["left"], target, s["drop_slack"]):
+        if "pose_check" in drop or gr.drop_settled(drop["left"], target, s["drop_slack"]):
             break
         first = gr.next_first_target(first, drop["left"], target)
     bpy.data.meshes.remove(original)
     ob.data.calc_loop_triangles()
-    return {"decimated": [before, len(ob.data.loop_triangles)], "hidden_wall": tries}
+    out = {"decimated": [before, len(ob.data.loop_triangles)], "hidden_wall": tries}
+    if "pose_check" in drop:
+        out["pose_check"] = drop["pose_check"]
+    return out
 
 
 def scale_head_islands(ob, factor: float, head: list[str]):
@@ -931,10 +1072,41 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     wn.links.new(split.outputs["Z"], ramp.inputs["Value"])
     wn.links.new(ramp.outputs[0], bg.inputs["Strength"])
     bg.inputs[0].default_value = (1, 1, 1, 1)
+    # roofs (TODO 103 of the AssetFurnace Support notes): a piece lying over the surface and facing it, its back to
+    # the sky, is not drawn from outside, so the light reaches the surface under it; in the bake the shadow and
+    # bounce rays go through it, while its own texels are baked as usual
+    roofs = sky_roofs(ob, s)
+    roof_attr = None
+    if roofs.any():
+        roof_attr = me.attributes.new("gr_sky_roof", "FLOAT", "FACE")
+        roof_attr.data.foreach_set("value", roofs.astype(np.float32))
+        roof_attr = roof_attr.name
     for m in mats:
-        m["nt"].links.new(m["diffuse"].outputs[0], m["out"].inputs["Surface"])
+        surface = m["diffuse"].outputs[0]
+        if roof_attr:
+            nt = m["nt"]
+            attr, path, mix = (nt.nodes.new("ShaderNodeAttribute"), nt.nodes.new("ShaderNodeLightPath"),
+                               nt.nodes.new("ShaderNodeMix"))
+            attr.attribute_name = roof_attr
+            either, both = nt.nodes.new("ShaderNodeMath"), nt.nodes.new("ShaderNodeMath")
+            either.operation, both.operation = "MAXIMUM", "MULTIPLY"
+            nt.links.new(path.outputs["Is Shadow Ray"], either.inputs[0])
+            nt.links.new(path.outputs["Is Diffuse Ray"], either.inputs[1])
+            nt.links.new(either.outputs[0], both.inputs[0])
+            nt.links.new(attr.outputs["Fac"], both.inputs[1])
+            through = nt.nodes.new("ShaderNodeBsdfTransparent")
+            shader_mix = nt.nodes.new("ShaderNodeMixShader")
+            nt.links.new(both.outputs[0], shader_mix.inputs["Fac"])
+            nt.links.new(m["diffuse"].outputs[0], shader_mix.inputs[1])
+            nt.links.new(through.outputs[0], shader_mix.inputs[2])
+            nt.nodes.remove(mix)
+            surface = shader_mix.outputs[0]
+        m["nt"].links.new(surface, m["out"].inputs["Surface"])
     scene.cycles.use_denoising = True
     sky = bake("sky light", 160, "DIFFUSE", pass_filter={"DIRECT", "INDIRECT"})
+    if roof_attr:
+        me.attributes.remove(me.attributes[roof_attr])
+    log(f"sky light: {int(roofs.sum())} roof faces seen through")
 
     k = s["bake_scale"]
     inside = (mask[..., 0:1] > 0.5).astype(np.float32)
@@ -1006,6 +1178,7 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     stats["bake_device"] = device
     if transfer_share is not None:
         stats["colour_transfer_share"] = round(transfer_share, 4)
+    stats["sky_roofs"] = int(roofs.sum())
     return stats, p_emi is not None
 
 
@@ -1087,7 +1260,8 @@ def main() -> None:
     report["cleaning"] = clean_mesh(ob, s)
     head = job.get("all_head_bones") or []
     if s.get("decimate_to") and s.get("drop_hidden"):
-        report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or []))
+        report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or [], job.get("check_poses") or [],
+                                    job.get("pose_picture")))
     elif s.get("decimate_to"):
         report.update(decimate_with_head(ob, s, head))
     report.update(new_uvs(ob, s, head))

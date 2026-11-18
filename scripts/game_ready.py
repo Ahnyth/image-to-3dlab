@@ -92,8 +92,11 @@ FIXED = {
     "hidden_corner_reach": 0.66,  # a face is asked at its centre and this far toward each corner
     "poke_rays": 128,         # --drop-hidden also drops inner wall poking past the outer surface: seen from behind ...
     "poke_near": 0.02,        # ... (rays of these), its front facing another face's front within this share of the size
+    "roof_near": 0.05,        # the sky-light bake looks through a piece over the surface this close that faces it
     "drop_tries": 3,          # thin-and-drop tries per figure, each aiming the thinning by what the last drop left ...
     "drop_slack": 0.03,       # ... until the figure lands within this share of --decimate-to
+    "pose_check_res": 192,    # --drop-hidden's pose check: rays per side of each view ...
+    "pose_check_gap": 0.01,   # ... and a dropped face counts as a hole when nothing lies within this share of the size behind it
 }
 
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
@@ -112,6 +115,23 @@ VETO_POSES = {
     "twist": [("UpperChest", "Z", -40), ("Spine", "Z", -15), ("LeftUpperLeg", "X", 35), ("RightUpperLeg", "X", -40),
               ("RightLowerLeg", "X", 50)],
 }
+# After the drop the figure is checked in other moves than the veto's, as a game shows it (run, dodge, fall, reach),
+# from twelve sides: a dropped face seen there is a hole, and it is put back (#153 of the AssetFurnace Support notes;
+# its separate pose check found the holes of a looser drop rule that the colour check could not see).
+CHECK_POSES = {
+    "run": [("Spine", "X", 15), ("LeftUpperLeg", "X", -50), ("LeftLowerLeg", "X", 70), ("RightUpperLeg", "X", 35),
+            ("RightLowerLeg", "X", 40), ("LeftUpperArm", "X", 40), ("LeftLowerArm", "X", -60),
+            ("RightUpperArm", "X", -50), ("RightLowerArm", "X", -70)],
+    "dodge": [("Spine", "X", 35), ("LeftUpperLeg", "X", -85), ("LeftLowerLeg", "X", 110), ("RightUpperLeg", "X", -70),
+              ("RightLowerLeg", "X", 120), ("LeftUpperArm", "X", -70), ("RightUpperArm", "X", -70),
+              ("LeftLowerArm", "X", -50), ("RightLowerArm", "X", -50)],
+    "fall": [("Spine", "X", -30), ("LeftUpperArm", "Y", -110), ("RightUpperArm", "Y", 110), ("LeftUpperLeg", "X", -35),
+             ("RightUpperLeg", "Y", 25), ("Head", "X", -25)],
+    "reach": [("UpperChest", "Z", 35), ("LeftUpperArm", "X", -95), ("RightUpperArm", "X", -95),
+              ("LeftUpperLeg", "Y", -25), ("RightUpperLeg", "Y", 25), ("LeftLowerLeg", "X", 20)],
+}
+# (azimuth, elevation) in degrees: eight round at 10 degrees up, four from 35 degrees below
+CHECK_VIEWS = [(az, 10) for az in range(0, 360, 45)] + [(az, -35) for az in (0, 90, 180, 270)]
 AXES = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
 
 
@@ -245,6 +265,11 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "inside its body), after the thinning and only those that stay hidden in a stride, a "
                              "crouch, a straddle, arms up and a twist too; the thinning aims higher first, so the "
                              "figure still lands on --decimate-to with more of it seen (needs --decimate-to)")
+    parser.add_argument("--no-pose-check", action="store_true",
+                        help="with --drop-hidden: skip the pose check (the figure before and after the drop posed "
+                             "in a run, a dodge, a fall and a reach and seen from twelve sides; a dropped face seen "
+                             "there is a hole and is put back; what is left is named in the report and marked in "
+                             "<output>.pose.png)")
     parser.add_argument("--no-colour-check", action="store_true",
                         help="skip the closing colour check (the finished figure drawn from eight sides against the "
                              "model its colour came from, --colour-from or the source; patches that differ are "
@@ -263,7 +288,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
              transfer_cage_m=ns.transfer_cage, transfer_reach_m=ns.transfer_reach, drop_hidden=ns.drop_hidden,
-             colour_check=not ns.no_colour_check)
+             colour_check=not ns.no_colour_check, pose_check=not ns.no_pose_check)
     if not ns.hard_seams:
         s["sharp_seam_deg"] = s["sharp_deg"]
     if not s["shade"]:
@@ -601,6 +626,44 @@ def veto_poses(unity_names: dict[str, str]) -> list[tuple[str, list[tuple[str, t
             for name, moves in VETO_POSES.items()]
 
 
+def check_poses(unity_names: dict[str, str]) -> list[tuple[str, list[tuple[str, tuple[float, float, float], float]]]]:
+    """CHECK_POSES with the rig's own bone names, like `veto_poses`."""
+    bone_of = {unity: bone for bone, unity in unity_names.items()}
+    return [(name, [(bone_of[unity], AXES[axis], float(degrees)) for unity, axis, degrees in moves if unity in bone_of])
+            for name, moves in CHECK_POSES.items()]
+
+
+def view_rays(center, radius: float, azimuth: float, elevation: float, res: int):
+    """An orthographic view of a sphere (`center`, `radius`) from `azimuth` (0: in front, at -Y; 90: at +X) and
+    `elevation` degrees: (`res` x `res` ray origins outside the sphere, row by row from the top, and their direction)."""
+    az, el = math.radians(azimuth), math.radians(elevation)
+    eye = np.array([math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)])
+    direction = -eye
+    right = np.cross(direction, (0.0, 0.0, 1.0))
+    right /= np.linalg.norm(right)
+    up = np.cross(right, direction)
+    steps = (np.arange(res) - (res - 1) / 2) / (res / 2) * radius
+    across, down = np.meshgrid(steps, steps[::-1])
+    origins = (np.asarray(center, dtype=float) + eye * 2 * radius + across.reshape(-1, 1) * right
+               + down.reshape(-1, 1) * up)
+    return origins, direction
+
+
+def pose_holes(before_face, before_depth, after_depth, doomed, gap: float):
+    """Per ray: whether it shows a hole, i.e. it first meets a dropped face (`before_face`, -1 for none) and, with the
+    dropped faces gone, nothing within `gap` behind it (`after_depth`, inf for nothing)."""
+    before_face = np.asarray(before_face)
+    seen = before_face >= 0
+    dropped = np.zeros(len(before_face), dtype=bool)
+    dropped[seen] = np.asarray(doomed)[before_face[seen]]
+    return dropped & (np.asarray(after_depth) > np.asarray(before_depth) + gap)
+
+
+def faces_seen_in(before_face, hole):
+    """The dropped faces seen through the holes: those the repair puts back."""
+    return np.unique(np.asarray(before_face)[np.asarray(hole)])
+
+
 def head_share(W, columns: list[str], head: list[str]):
     """Per vertex, how much of it moves with the head (its weights on the head bones, at most 1)."""
     pick = [j for j, c in enumerate(columns) if c in set(head)]
@@ -793,6 +856,10 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
     error = report.get("animation_error_m")
     if error is not None and error > 0.002:
         out.append(f"moves changed by up to {error:.4f} m in the rescale")
+    pose = report.get("pose_check") or {}
+    if pose.get("hole_px_left"):
+        out.append(f"{pose['hole_px_left']} px of holes in motion left after putting {pose.get('restored', 0)} faces "
+                   f"back (worst: {pose.get('worst')}); marked in {pose.get('picture')}")
     check = report.get("colour_check") or {}
     if check.get("patches"):
         n = len(check["patches"])
@@ -885,6 +952,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         job.write_text(json.dumps({"source": str(args.source.resolve()), "output": str(raw), "report": str(report_path),
                                    "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan, "head_bones": heads_off,
                                    "all_head_bones": head_bones(parents, unity), "veto_poses": veto_poses(unity),
+                                   "check_poses": check_poses(unity) if s["pose_check"] else [],
+                                   "pose_picture": str(args.output.with_suffix(".pose.png").resolve()),
                                    "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():

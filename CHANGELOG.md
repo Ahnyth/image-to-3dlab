@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
   flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
   onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
+- `game_ready.py --drop-hidden` checks its drop in motion and repairs it: the figure before and after
+  the drop is posed in a run, a dodge, a fall and a reach (other moves than the drop's own veto) and
+  looked at from twelve sides by rays; where a ray first meets a dropped face and, without it, nothing
+  close behind, the figure would show a hole, and that face is put back. The report says how many
+  pixels of holes were found, how many faces went back and what is left; the worst view is marked in
+  `<output>.pose.png` (`--no-pose-check` skips it). A separate check of this kind found the holes a
+  looser drop rule had opened that the colour check could not see; on a knight in white fur it found
+  50 small hole pixels in 27 of 48 views and put 35 faces back, leaving none, for about 30 s more.
   `--no-colour-check` skips it.
 - **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
   `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
@@ -192,6 +200,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wall. (A looser first version, which let a face go when it was seen only flatter than 66 degrees,
   opened holes at the edge of a figure's hair and at the joints of six of 21 figures.) The report
   counts it per try (`poking_out`, `poking_kept_for_poses`).
+- `game_ready.py`'s sky-light bake looks through a piece lying over the surface and facing it, with the
+  sky behind it: a game culling back faces never draws such a piece from outside, so the light reaches
+  the surface under it. Pieces a camera sees at a grazing angle stay in the mesh (dropping them opened
+  holes) and kept baking flat grey triangles into a knight's white fur; now only the shadow and bounce
+  rays pass through them (163 of 13,912 faces there), their own texels are baked as before, and the
+  grey patches are gone but for one or two small ones.
 - `game_ready.py`'s report measures the atlas honestly: texels per centimetre of surface, the share
   of the atlas covered and the share painted twice, instead of a summed UV area, which counted a
   folded island twice (a knight's atlas looked 68 % used while 1.2 % of its texels were painted

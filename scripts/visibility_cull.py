@@ -364,6 +364,30 @@ def face_samples(tris, reach: float = 0.66) -> np.ndarray:
     return np.concatenate([centre[:, None], toward], axis=1)
 
 
+def shading_roofs(samples, normals, directions, cast, first_hit, near: float, eps: float,
+                  slant: float = 0.08) -> np.ndarray:
+    """Boolean mask of the faces that may not shade the surface in a sky-light bake: the first two questions of
+    `poking_out` without the third. Such a face looks with its front at the front of another face within `near`, and
+    its back sees the sky, so a game that culls back faces shows the surface under it from outside, but the bake
+    lets it roof that surface over: grey triangles on the Frostwaechter's white fur where a piece kept for being seen
+    at a grazing angle lay over it (TODO 103 of the AssetFurnace Support notes). A roof stays in the mesh; only the
+    sky-light bake looks through it."""
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim == 2:
+        samples = samples[:, None]
+    normals = np.asarray(normals, dtype=float).reshape(-1, 3)
+    directions = np.asarray(directions, dtype=float).reshape(-1, 3)
+    out = np.zeros(len(normals), dtype=bool)
+    for face in range(len(normals)):
+        n = normals[face]
+        hit = first_hit(samples[face, 0] + n * eps, n, face, near)
+        if hit is None or float(np.dot(hit[1], n)) >= 0.0:
+            continue
+        back = directions[directions @ n < -slant]
+        out[face] = any(not cast(p + d * eps, d, face) for p in samples[face] for d in back)
+    return out
+
+
 def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: float,
                slant: float = 0.08) -> np.ndarray:
     """Boolean mask of the faces that are inner wall poking out past the outer surface.

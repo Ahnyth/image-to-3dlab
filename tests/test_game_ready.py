@@ -705,3 +705,54 @@ def test_the_drop_settings_are_fixed_values():
     s = gr.settings(["--drop-hidden", "--decimate-to", "14000"])
     assert (s["hidden_rays"], s["hidden_cells"], s["hidden_close"], s["hidden_corner_reach"]) == (16, 400, 2, 0.66)
     assert (s["drop_tries"], s["drop_slack"]) == (3, 0.03)
+
+
+# --- the pose check: holes the drop opened in motion, found and repaired -----------------------
+
+def test_the_pose_check_moves_the_figure_by_its_own_bones_and_not_like_the_veto():
+    poses = gr.check_poses({"mixamorig:LeftUpLeg": "LeftUpperLeg", "mixamorig:Spine": "Spine"})
+    assert [name for name, _moves in poses] == list(gr.CHECK_POSES)
+    run = dict(poses)["run"]
+    assert ("mixamorig:Spine", (1.0, 0.0, 0.0), 15.0) in run
+    assert {bone for bone, _axis, _deg in run} <= {"mixamorig:LeftUpLeg", "mixamorig:Spine"}
+    # an independent look: other moves than the ones the drop already asked
+    assert set(gr.CHECK_POSES).isdisjoint(gr.VETO_POSES)
+
+
+def test_a_view_looks_at_the_figure_from_its_side_and_covers_it():
+    origins, direction = gr.view_rays((0.0, 0.0, 1.0), 1.0, 0, 0, 8)
+    assert direction == pytest.approx((0.0, 1.0, 0.0))   # from the front (-Y), looking toward +Y
+    assert origins.shape == (64, 3)
+    assert (origins[:, 1] < -1.0).all()                   # every ray starts outside the figure's sphere
+    assert origins[:, 0].min() == pytest.approx(-0.875) and origins[:, 0].max() == pytest.approx(0.875)
+    assert origins[0, 2] == pytest.approx(1.875) and origins[-1, 2] == pytest.approx(0.125)   # top row first
+    _o, side = gr.view_rays((0.0, 0.0, 0.0), 1.0, 90, 0, 4)
+    assert side == pytest.approx((-1.0, 0.0, 0.0))
+    _o, below = gr.view_rays((0.0, 0.0, 0.0), 1.0, 0, -35, 4)
+    assert below[2] > 0                                   # from below, looking up
+
+
+def test_a_hole_is_a_dropped_face_seen_with_nothing_close_behind_it():
+    doomed = np.array([False, True, True])
+    before_face = np.array([-1, 0, 1, 1, 2])                # nothing; a kept face; three dropped faces
+    before_depth = np.array([np.inf, 1.0, 1.0, 1.0, 1.0])
+    after_depth = np.array([np.inf, 1.0, np.inf, 1.005, 1.5])   # empty; real surface 5 mm behind; far behind
+    hole = gr.pose_holes(before_face, before_depth, after_depth, doomed, gap=0.01)
+    assert hole.tolist() == [False, False, True, False, True]
+    assert gr.faces_seen_in(before_face, hole).tolist() == [1, 2]
+
+
+def test_problems_name_holes_the_pose_check_could_not_repair():
+    good = {"materials": 1, "max_influences": 4, "unweighted": 0, "height": 1.8, "min_z": 0.0,
+            "animation_error_m": 0.0}
+    repaired = dict(good, pose_check={"hole_px": 120, "restored": 14, "hole_px_left": 0, "picture": "g.pose.png"})
+    assert gr.problems(repaired, max_influences=4, height=1.8) == []
+    left = dict(good, pose_check={"hole_px": 120, "restored": 14, "hole_px_left": 9, "picture": "g.pose.png",
+                                  "worst": "fall, back"})
+    found = gr.problems(left, max_influences=4, height=1.8)
+    assert len(found) == 1 and "9 px" in found[0] and "fall, back" in found[0] and "g.pose.png" in found[0]
+
+
+def test_settings_check_the_poses_unless_told_not_to():
+    assert gr.settings([])["pose_check"] is True
+    assert gr.settings(["--no-pose-check"])["pose_check"] is False
