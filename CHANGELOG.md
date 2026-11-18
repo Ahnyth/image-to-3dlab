@@ -51,8 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `game_ready.py` checks its own result by colour: the finished figure against the model its colour
   came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
   out. A patch that differs is a bake fault: it is named in the report and its problems, and marked
-  in `<output>.colour.png`. On a knight it named the dark patch a folded atlas had baked onto the
-  cape's back (three views), and nothing on the fixed build. `--no-colour-check` skips it.
+  in `<output>.colour.png`. The readability curve the figure got (`--readability`) is put onto the
+  source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
+  flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
+  onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
+  `--no-colour-check` skips it.
 - **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
   `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
   on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.

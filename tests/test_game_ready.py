@@ -370,6 +370,29 @@ def test_the_colour_check_finds_a_patch_and_leaves_out_what_glows(tmp_path):
     assert not (tmp_path / "lit.colour.png").exists()
 
 
+def test_the_curve_at_a_known_pivot_is_the_readability_curve():
+    """game_ready keeps the readability curve's pivot in its report, so the colour check can put the same curve on
+    the source and does not take a figure lightened on purpose for a fault (the Hoellenwaechter's face, #145)."""
+    rng = np.random.default_rng(5)
+    srgb = rng.uniform(0, 1, (12, 12, 3))
+    grey = np.ones((12, 12), bool)
+    for t in (0.0, 0.35, 1.0):
+        pivot = gr.readability_pivot(srgb, grey, t)
+        assert gr.curve_at(srgb, t, pivot) == pytest.approx(gr.value_curve(srgb, grey, t))
+    assert gr.readability_pivot(srgb, grey, 0.0) is None
+
+
+def test_the_colour_check_puts_the_readability_curve_on_the_source(tmp_path):
+    from test_colour_compare import _glb, cube, texture
+    p, uv, f = cube()
+    lifted = np.round(gr.curve_at(texture() / 255.0, 1.0, 0.4) * 255).astype(np.uint8)
+    source, game = tmp_path / "source.glb", tmp_path / "game.glb"
+    source.write_bytes(_glb([(p, uv, f, texture())]))
+    game.write_bytes(_glb([(p, uv, f, lifted)]))
+    assert gr.colour_check(source, game, tmp_path / "plain.png")["patches"], "the curve changes the colour"
+    assert gr.colour_check(source, game, tmp_path / "curved.png", curve=(1.0, 0.4))["patches"] == []
+
+
 def test_settings_check_the_colour_unless_told_not_to():
     assert gr.settings([])["colour_check"] is True
     assert gr.settings(["--no-colour-check"])["colour_check"] is False

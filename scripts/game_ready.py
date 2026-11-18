@@ -305,15 +305,28 @@ def curve_params(t: float) -> tuple[float, float, float, float]:
     return 0.02 * t, 1.0 + 0.06 * t, 1.0 - 0.10 * t, 1.0 + 0.45 * t
 
 
-def value_curve(srgb, grey, t: float):
-    """Lift the darkest values and push the lighter parts apart, around the median of `grey`."""
+def readability_pivot(srgb, grey, t: float) -> float | None:
+    """The value the readability curve turns around: the median of `grey` after the lift (None at strength 0)."""
+    lift = curve_params(t)[0]
+    if t == 0 or not np.any(grey):
+        return None
+    v = lift + (1.0 - lift) * np.asarray(srgb, float)
+    return float(np.median(v.mean(-1)[grey]))
+
+
+def curve_at(srgb, t: float, pivot: float | None):
+    """The readability curve of strength `t` turning around `pivot` (`readability_pivot`)."""
     lift, gain, lo, hi = curve_params(t)
     v = lift + (1.0 - lift) * np.asarray(srgb, float)
-    if t == 0 or not np.any(grey):
+    if t == 0 or pivot is None:
         return np.clip(v, 0.0, 1.0)
-    pivot = float(np.median(v.mean(-1)[grey]))
     d = v - pivot
     return np.clip(pivot * gain + np.where(d < 0, d * lo, d * hi), 0.0, 1.0)
+
+
+def value_curve(srgb, grey, t: float):
+    """Lift the darkest values and push the lighter parts apart, around the median of `grey`."""
+    return curve_at(srgb, t, readability_pivot(srgb, grey, t))
 
 
 READABILITY_CEILING = 200 / 255  # "auto" never lifts the brightest 1 % of the figure above this
@@ -443,7 +456,8 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None):
              "accent_share": float((found[inside] > 0.5).mean()) if inside.any() else 0.0}
     t = auto_readability(a_s, grey) if s["readability"] == "auto" else float(s["readability"])
     stats["readability"] = t
-    v = value_curve(a_s, grey, t)
+    stats["readability_pivot"] = readability_pivot(a_s, grey, t)
+    v = curve_at(a_s, t, stats["readability_pivot"])
     if s["shade_lo"] != 1.0 or s["shade_hi"] != 1.0:
         ref = float(np.percentile(lit[inside], 97)) if inside.any() else 1.0
         filled, _ = push_out(lit[..., None], inside, 2)
@@ -787,15 +801,20 @@ def problems(report: dict, max_influences: int, height: float) -> list[str]:
     return out
 
 
-def colour_check(source: Path, output: Path, picture: Path) -> dict:
+def colour_check(source: Path, output: Path, picture: Path, curve: tuple | None = None) -> dict:
     """The finished figure against the model its colour came from, drawn from eight sides in their base colour
     (`image_to_3dlab.colour_compare`), leaving out where the figure glows on purpose (its accents). A bake fault
     shows here and nowhere else: a fold in the atlas once put a dark, faceted patch on a cape's back that the
-    numbers and a check for holes in motion both missed. The marked picture is written only when a patch differs.
+    numbers and a check for holes in motion both missed. `curve` (strength, pivot) puts the readability curve the
+    figure got onto the source first, so a figure lightened on purpose is no fault (without it, 5 of 21 figures
+    were flagged for exactly that). The marked picture is written only when a patch differs.
     """
     from image_to_3dlab import colour_compare as cc
 
     old, new = cc.read_model(source), cc.read_model(output)
+    if curve and curve[0] and curve[1] is not None:
+        old = cc.Model(old.positions, old.uvs, old.faces, old.part,
+                       [np.round(curve_at(t / 255.0, curve[0], curve[1]) * 255).astype(np.uint8) for t in old.textures])
     patches = cc.marked_picture(old, new, picture, ignore=cc.read_glow(output))
     return {"against": Path(source).name, "patches": [p.describe() for p in patches],
             "picture": Path(picture).name if patches else None}
@@ -883,8 +902,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     report["missing_core_bones"] = missing_core_bones(unity)
     report["style"] = s["style"]
     if s["colour_check"]:
+        made = report.get("colour") or {}
         report["colour_check"] = colour_check(Path(s["colour_from"] or args.source), args.output,
-                                              args.output.with_suffix(".colour.png"))
+                                              args.output.with_suffix(".colour.png"),
+                                              (made.get("readability", 0), made.get("readability_pivot")))
     report["problems"] = problems(report, s["max_influences"], s["height"])
     report["settings"] = {k: v for k, v in s.items() if k != "glow"} | {
         "glow": ["#" + "".join(f"{round(c * 255):02x}" for c in g) for g in s["glow"]]}
