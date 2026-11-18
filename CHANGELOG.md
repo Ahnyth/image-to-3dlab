@@ -41,6 +41,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.11] - 2026-11-17
 
 ### Added
+- `scripts/colour_compare.py` says where two models of the same figure differ in colour: both
+  drawn from eight sides in their base colour as a game shows them, every patch that changed
+  named (which side, how big, darker or lighter, where on the figure), a marked picture with
+  `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
+  dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
+  four only lost dark specks their old bake had).
+- **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
+  `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
+  on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
+- **Add-ons studio UI**: a dedicated Add-ons page linked from Setup lists reviewed add-ons
+  (installed first) with author, summary, links, star rating, Install/Remove and inline tool
+  cards. The Library labels models "made with <add-on>" from their provenance sidecar.
+- **Add-ons for agents**: `list_addons`, `install_addon` and `run_addon` MCP tools call the
+  same studio API as the UI; `install_addon` asks before installing, and `run_addon` returns
+  a run id to poll with `run_status`.
+- **Add-on pictures**: an add-on's card in the studio shows a picture of what it makes, and `list_addons` gives agents the link.
+- **`--unlisted`**: the way to install an add-on that is not on the list (it is marked Unknown). `--unreviewed` still works.
+- **Verified, Listed or Unknown**: every add-on now carries one of three labels, the same words in the studio, the command line, the agent tools and the install plan, and in the licence record of what it makes. The old yes/no "reviewed" flag is gone.
+- **Cloud or on this machine**: every add-on says whether it runs on your machine or uses the cloud. The studio shows a badge, and the install plan says plainly when your models would be sent off this machine.
+- **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
+  add-ons can do, how to test locally, and the rules for being listed.
+
+### Fixed
+
+- Installing an unreviewed add-on no longer fails when its repo name differs from its id.
+
+### Fixed
+
+- An add-on you installed without review is no longer shown as reviewed just because a listed add-on has the same name.
+- A model made by an add-on now keeps the licence of the model that went into it, including restrictions such as "not licensed in the EU, UK or South Korea". A model with no licence record counts as unverified. The record also holds a fingerprint of the result file.
+
+### Fixed
+
+- Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+
+## [0.5.11] - 2026-11-17
+
+### Added
 - **Export for Roblox**: a button under a model's stats (and `export_roblox` for agents, and
   `scripts/export_roblox.py`) makes a copy Roblox Studio imports at the right size, with PNG
   pictures and the four surface pictures loose for a SurfaceAppearance. It checks the model
