@@ -190,10 +190,12 @@ def rescale(arm, ob, height: float, hips: str):
     return S, T
 
 
-def _cut_soles(ob, at: float, height: float) -> dict:
+def _cut_soles(ob, at: float, height: float, feet=None, refuse_splinters: bool = False) -> dict:
     """Cuts off everything under the height `at`, closes each cut with a flat sole facing the floor (its corners take
     the colour and material of the shoe beside them), leaves out the inner wall's second cap inside each sole, and
-    drops small bits the cut leaves hanging just above it (a strap of the made-up shoe)."""
+    drops small bits the cut leaves hanging just above it (a strap of the made-up shoe). With `feet` (the foot and
+    toe bones' points) it measures what thin plates the cut left in front of the boot (`game_ready.splinters`); with
+    `refuse_splinters` it writes nothing when there are such plates (`game_ready.splintered`) and says so."""
     me = ob.data
     bm = bmesh.new()
     bm.from_mesh(me)
@@ -233,11 +235,21 @@ def _cut_soles(ob, at: float, height: float) -> dict:
     if loose:
         bmesh.ops.delete(bm, geom=list({v for c in loose for f in c for v in f.verts}), context="VERTS")
     bm.normal_update()
+    stats = {"soles": len(kept), "inner_caps_left_out": len(dropped), "sole_triangles": len(soles),
+             "loose_bits_dropped": len(loose)}
+    if feet is not None:
+        bm.verts.index_update()
+        points = np.array([v.co[:] for v in bm.verts])
+        tris = np.array([[lo.vert.index for lo in t] for t in bm.calc_loop_triangles()], dtype=np.int64)
+        stats["splinters"] = gr.splinters(points, tris, floor=at, height=height, feet=feet)
+        if refuse_splinters and gr.splintered(stats["splinters"], height):
+            bm.free()
+            stats["refused"] = True
+            return stats
     bm.to_mesh(me)
     bm.free()
     me.update()
-    return {"soles": len(kept), "inner_caps_left_out": len(dropped), "sole_triangles": len(soles),
-            "loose_bits_dropped": len(loose)}
+    return stats
 
 
 def feet_move(me, plan: dict, height: float, T) -> None:
@@ -251,20 +263,30 @@ def feet_move(me, plan: dict, height: float, T) -> None:
     me.update()
 
 
-def fix_feet(arm, ob, plan: dict, s: dict, hips: str):
+def fix_feet(arm, ob, plan: dict, s: dict, hips: str, feet_bones=()):
     """The feet plan of `--feet-from` (`game_ready.feet_plan`), right after the rescale: a made-up sole is cut off or
     pressed flat, the bones go with it (a toe bone that sat in the cut part is laid on the new sole), and the figure is
-    stood on its new soles and scaled back to its height. Returns (stats, the second rescale's T, the bones that moved
-    otherwise than the figure as a whole, which the moves' check leaves out, the height it measured the feet at)."""
+    stood on its new soles and scaled back to its height. A cut chosen by `--feet auto` that leaves thin plates of the
+    made-up shoe in front of the boot (measured near `feet_bones`) is not made: the sole is pressed flat instead.
+    Returns (stats, the second rescale's T, the bones that moved otherwise than the figure as a whole, which the
+    moves' check leaves out, the height it measured the feet at, the plan as done)."""
     me = ob.data
     co = np.empty(len(me.vertices) * 3)
     me.vertices.foreach_get("co", co)
     height = float(co.reshape(-1, 3)[:, 2].max())  # the rescale put the floor at 0
     at = plan["at"] * height
     stats = {"mode": plan["mode"], "at_m": round(at, 4), "at": plan["at"], "parts": plan["parts"]}
+    feet = [p for name in feet_bones if name in arm.data.bones
+            for p in (arm.data.bones[name].head_local[:], arm.data.bones[name].tail_local[:])]
     if plan["mode"] == "cut":
-        stats.update(_cut_soles(ob, at, height))
-    else:
+        cut = _cut_soles(ob, at, height, feet or None, refuse_splinters=bool(plan.get("auto")))
+        if cut.pop("refused", False):
+            plan = gr.squash_instead(plan, s["height"])
+            stats.update(mode="squash", splinters=cut.get("splinters"),
+                         switched="the cut left thin plates of the made-up shoe in front of the boot: pressed flat")
+        else:
+            stats.update(cut)
+    if plan["mode"] == "squash":
         stats["sole_m"] = round(plan["sole"] * height, 4)
     feet_move(me, plan, height, Matrix.Identity(4))
     bpy.ops.object.select_all(action="DESELECT")
@@ -283,7 +305,7 @@ def fix_feet(arm, ob, plan: dict, s: dict, hips: str):
     S, T = rescale(arm, ob, s["height"], hips)
     stats.update(scale=round(S, 4), bones_moved=moved)
     log("feet:", stats)
-    return stats, T, moved, height
+    return stats, T, moved, height, plan
 
 
 def shells(bm):
@@ -968,7 +990,8 @@ def setup_cycles(scene) -> str:
 
 
 def head_mask_attribute(ob, bones: list[str]) -> str | None:
-    """A point colour attribute holding each vertex's skin weight on the head bones (0..1)."""
+    """A point colour attribute holding each vertex's skin weight on the bones that keep no glow (0..1): the head's
+    with --glow-not-on-head, the hands' with --glow-not-on-hands."""
     if not bones:
         return None
     me = ob.data
@@ -978,7 +1001,7 @@ def head_mask_attribute(ob, bones: list[str]) -> str | None:
         w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
     attr = me.color_attributes.new(name="gr_head", type="FLOAT_COLOR", domain="POINT")
     attr.data.foreach_set("color", np.repeat(w, 4).astype(np.float32))
-    log(f"head mask: {int((w > 0.5).sum())} of {len(w)} vertices on the head")
+    log(f"no-glow mask: {int((w > 0.5).sum())} of {len(w)} vertices on the head or hands asked for")
     return attr.name
 
 
@@ -1360,8 +1383,9 @@ def main() -> None:
     report["cleaning"] = clean_mesh(ob, s)
     T_moves, feet = T, None
     if job.get("feet"):
-        soles = job["feet"]
-        report["feet"], T2, moved, frame = fix_feet(arm, ob, soles, s, job["hips"])
+        report["feet"], T2, moved, frame, soles = fix_feet(arm, ob, job["feet"], s, job["hips"],
+                                                           job.get("feet_bones") or ())
+        report["feet"]["plan"] = soles
         feet = (soles, frame, T2)
         T_moves = T2 @ Matrix.Translation((0.0, 0.0, -gr.feet_drop(soles) * frame)) @ T
         kept = [b for b in kept if b not in moved]

@@ -4,6 +4,7 @@ Colour, weight and bone-plan maths, the PNG writer and the Blender command line 
 functions, imported here exactly as `scripts/blender_game_ready.py` imports them.
 """
 
+import json
 import struct
 import sys
 import zlib
@@ -533,6 +534,36 @@ def test_settings_glow_on_the_head_by_default():
     assert gr.settings(["--glow-not-on-head"])["glow_not_on_head"] is True
 
 
+def test_hand_bones_are_both_hands_and_everything_below_them():
+    parents, heads, _roles = _humanoid()
+    parents, heads = dict(parents), dict(heads)
+    unity = _unity(parents, heads)
+    left = next(b for b, n in unity.items() if n == "LeftHand")
+    parents["left_index_1"] = left
+    parents["left_index_2"] = "left_index_1"
+    heads["left_index_1"], heads["left_index_2"] = heads[left] + 0.05, heads[left] + 0.08
+    found = gr.hand_bones(parents, _unity(parents, heads))
+    hands = {b for b, n in unity.items() if n in ("LeftHand", "RightHand")}
+    assert hands <= set(found) and {"left_index_1", "left_index_2"} <= set(found)
+    assert not {b for b, n in unity.items() if n in ("LeftLowerArm", "RightLowerArm", "Head")} & set(found)
+
+
+def test_glow_stays_on_the_hands_by_default():
+    assert gr.settings([])["glow_not_on_hands"] is False
+    assert gr.settings(["--glow-not-on-hands"])["glow_not_on_hands"] is True
+
+
+def test_the_glow_is_kept_off_the_bones_asked_for():
+    parents, heads, _roles = _humanoid()
+    unity = _unity(dict(parents), dict(heads))
+    s = gr.settings(["--glow-not-on-head", "--glow-not-on-hands"])
+    off = gr.glow_off_bones(dict(parents), unity, s)
+    assert set(gr.head_bones(dict(parents), unity)) <= set(off) and set(gr.hand_bones(dict(parents), unity)) <= set(off)
+    assert gr.glow_off_bones(dict(parents), unity, gr.settings([])) == []
+    only_hands = gr.glow_off_bones(dict(parents), unity, gr.settings(["--glow-not-on-hands"]))
+    assert set(only_hands) == set(gr.hand_bones(dict(parents), unity))
+
+
 def test_compose_keeps_the_glow_off_an_excluded_area():
     alb, lit, cov = _atlas()
     s = gr.settings(["--no-shade", "--glow", "#29e6ff", "--glow-width", "0"])
@@ -831,3 +862,85 @@ def test_settings_take_the_feet_from_a_finish_run_and_auto_by_default():
     assert s["feet_from"] is None and s["feet"] == "auto"
     s = gr.settings(["--feet-from", "output/finish/run", "--feet", "squash"])
     assert s["feet_from"] == str(Path("output/finish/run")) and s["feet"] == "squash"
+
+
+def _box(x0, y0, z0, x1, y1, z1):
+    """A closed box as (vertices, triangles), its faces turned outward."""
+    v = np.array([[x, y, z] for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)], dtype=float)
+    quads = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
+    return v, np.array([t for a, b, c, d in quads for t in ((a, b, c), (a, c, d))])
+
+
+def _join(*meshes):
+    verts, faces, n = [], [], 0
+    for v, f in meshes:
+        verts.append(v)
+        faces.append(f + n)
+        n += len(v)
+    return np.concatenate(verts), np.concatenate(faces)
+
+
+def test_a_cut_through_a_boot_leaves_no_thin_plate():
+    boot = _box(0.0, 0.0, 0.0, 0.1, 0.25, 0.15)      # a boot 10 x 25 cm, hollow above its sole
+    found = gr.splinters(*boot, height=1.85)
+    assert found["sole_m2"] == pytest.approx(0.025) and found["thin_m2"] == 0.0 and found["reach_m"] == 0.0
+
+
+def test_a_plate_of_the_made_up_shoe_in_front_of_the_boot_is_found():
+    boot = _box(0.0, 0.0, 0.0, 0.1, 0.25, 0.15)
+    plate = _box(0.0, 0.26, 0.0, 0.1, 0.36, 0.004)    # 10 x 10 cm, 4 mm thick, out in front of the toe
+    found = gr.splinters(*_join(boot, plate), height=1.85)
+    assert found["thin_m2"] == pytest.approx(0.01) and found["thin_share"] == pytest.approx(0.01 / 0.035, abs=1e-3)
+    assert found["reach_m"] > 0.1
+    assert gr.splintered(found, 1.85)
+
+
+def test_only_soles_near_the_feet_count_so_a_robe_on_the_floor_is_left_out():
+    boot = _box(0.0, 0.0, 0.0, 0.1, 0.25, 0.15)
+    hem = _box(0.6, 0.0, 0.0, 0.9, 0.05, 0.004)      # a thin robe hem lying on the floor, 60 cm away
+    feet = [[0.05, 0.05, 0.08], [0.05, 0.2, 0.02]]
+    assert gr.splinters(*_join(boot, hem), height=1.85)["thin_m2"] > 0
+    assert gr.splinters(*_join(boot, hem), height=1.85, feet=feet)["thin_m2"] == 0.0
+
+
+def test_a_small_thin_tip_of_a_pointed_shoe_is_no_reason_to_press_the_sole():
+    # measured in Blender right after the cut on four figures whose platform shoes were cut (D207 of the AssetFurnace
+    # Support notes): two keep a clean cut, two leave blades of the made-up shoe in front of the boot
+    assert not gr.splintered({"thin_m2": 0.00739, "reach_m": 0.0323}, 1.85)  # Arkan-Duellant: stays cut
+    assert not gr.splintered({"thin_m2": 0.00684, "reach_m": 0.0217}, 1.85)  # Sturmschuetze: stays cut
+    assert gr.splintered({"thin_m2": 0.0185, "reach_m": 0.0451}, 1.85)       # Revolverheld: pressed flat
+    assert gr.splintered({"thin_m2": 0.01518, "reach_m": 0.0621}, 2.2)       # Daemonenhexer: pressed flat
+
+
+def test_a_cut_that_left_plates_becomes_a_squash_of_the_same_sole():
+    plan = gr.feet_plan([_part(0.065)], height=1.85)
+    assert plan["mode"] == "cut" and plan["auto"]
+    squash = gr.squash_instead(plan, 1.85)
+    assert squash["mode"] == "squash" and squash["at"] == plan["at"] and not squash["auto"]
+    assert squash["sole"] == pytest.approx(gr.FIXED["feet_sole_m"] / 1.85, abs=1e-4)
+    assert not gr.feet_plan([_part(0.065)], mode="cut")["auto"]    # a cut asked for by hand is kept
+
+
+def _provenance(path: Path, record: dict) -> None:
+    path.with_name(path.stem + ".provenance.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_the_finish_run_is_found_in_the_rigs_provenance(tmp_path):
+    run = tmp_path / "output" / "finish" / "hero__a1__pixal3d__20261114__finish__20261115"
+    run.mkdir(parents=True)
+    rigged = tmp_path / "output" / "animate" / "hero_8k__rig" / "hero_8k_rigged.glb"
+    rigged.parent.mkdir(parents=True)
+    rigged.write_bytes(b"glTF")
+    _provenance(rigged, {"operation": "rig", "source_record": {
+        "operation": "finish", "output": {"path": str(run / "hero_8k.glb")}, "source_record": {"operation": "pixal3d"}}})
+    assert gr.finish_run_from_provenance(rigged) == run
+
+
+def test_no_finish_run_without_a_provenance_or_when_the_run_is_gone(tmp_path):
+    rigged = tmp_path / "hero_rigged.glb"
+    rigged.write_bytes(b"glTF")
+    assert gr.finish_run_from_provenance(rigged) is None
+    _provenance(rigged, {"source_record": {"operation": "finish", "output": {"path": str(tmp_path / "gone" / "a.glb")}}})
+    assert gr.finish_run_from_provenance(rigged) is None
+    _provenance(rigged, {"source_record": {"operation": "pixal3d", "output": {"path": str(rigged)}}})
+    assert gr.finish_run_from_provenance(rigged) is None

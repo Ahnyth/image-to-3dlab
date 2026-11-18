@@ -62,6 +62,7 @@ import numpy as np
 
 SCRIPTS = Path(__file__).resolve().parent
 STYLES = ("unity", "mixamo", "keep")
+FEET_BONES = ("LeftFoot", "RightFoot", "LeftToes", "RightToes")  # where --feet-from looks for plates a cut left
 CORE_BONES = ("Hips", "Spine", "Chest", "UpperChest", "Neck", "Head",
               "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand",
               "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand",
@@ -109,6 +110,10 @@ FIXED = {
                               # AssetFurnace Support notes: cut at 6-7 %, squashed at 3.5 %)
     "feet_floor": 0.01,       # an outline part counts as a sole when it starts this close to the floor ...
     "feet_top": 0.15,         # ... and stays below this share of the height (higher, it is a robe or a cape)
+    "feet_splinter_reach": 0.02,   # --feet auto presses flat instead of cutting when the cut leaves thin plates reaching
+    "feet_splinter_area": 0.002,   # this share of the height past the boot, over this share of the height squared;
+                                   # four cut figures set these (two clean cuts reached 1.2 and 1.7 %, two with blades
+                                   # 2.4 and 2.8 %; D207 of the AssetFurnace Support notes)
 }
 
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
@@ -229,6 +234,9 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--glow-not-on-head", action="store_true",
                         help="no glow on the head and what hangs from it (paint on a face stays paint; "
                              "leave it off for a glowing visor)")
+    parser.add_argument("--glow-not-on-hands", action="store_true",
+                        help="no glow on the hands and fingers (glowing hands read as too big at a game's camera; "
+                             "leave it off for a glowing gauntlet or a spell in the hand)")
     parser.add_argument("--no-shade", action="store_true",
                         help="leave the soft sky light out of the colour (it keeps the normal map's detail)")
     parser.add_argument("--fingers", choices=("keep", "merge"), default="keep",
@@ -299,7 +307,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
     s = dict(FIXED)
     s.update(height=ns.height, atlas=ns.atlas, readability=ns.readability, glow=list(ns.glow),
              glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
-             glow_not_on_head=ns.glow_not_on_head,
+             glow_not_on_head=ns.glow_not_on_head, glow_not_on_hands=ns.glow_not_on_hands,
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
@@ -568,12 +576,29 @@ def feet_plan(parts: list[dict], mode: str = "auto", height: float = 1.8, s: dic
     if mode == "off" or not soles:
         return None
     reach = max(float(p["reach"]) for p in soles)
+    auto = mode == "auto"
     if mode == "auto":
         mode = "cut" if reach >= s["feet_cut_at"] else "squash" if reach >= s["feet_squash_at"] else None
     sole = s["feet_sole_m"] / height if mode == "squash" else 0.0
     if mode is None or (mode == "squash" and reach <= sole):
         return None
-    return {"mode": mode, "at": round(reach, 4), "sole": round(sole, 4), "parts": len(soles)}
+    return {"mode": mode, "at": round(reach, 4), "sole": round(sole, 4), "parts": len(soles), "auto": auto}
+
+
+def squash_instead(plan: dict, height: float = 1.8, s: dict | None = None) -> dict:
+    """The same sole pressed flat instead of cut off: what `--feet auto` does when the cut left thin plates of the
+    made-up shoe lying in front of the boot (`splintered`)."""
+    s = s or FIXED
+    return dict(plan, mode="squash", sole=round(s["feet_sole_m"] / height, 4), auto=False)
+
+
+def splintered(found: dict, height: float = 1.8, s: dict | None = None) -> bool:
+    """Whether a cut left plates of the made-up shoe lying out in front (`splinters`' result): enough thin sole that
+    reaches far enough past the boot. A boot's own toe can leave a small thin tip (a pointed shoe); the Revolverheld's
+    cut left blades several centimetres long (D206)."""
+    s = s or FIXED
+    return (found.get("reach_m", 0.0) >= s["feet_splinter_reach"] * height
+            and found.get("thin_m2", 0.0) >= s["feet_splinter_area"] * height * height)
 
 
 def feet_heights(z, plan: dict):
@@ -600,6 +625,68 @@ def feet_positions(positions, plan: dict, up: int = 1):
     size = max(float(out[:, up].max()) - bottom, 1e-12)
     out[:, up] = bottom + feet_heights((out[:, up] - bottom) / size, plan) * size / (1.0 - feet_drop(plan))
     return out
+
+
+def splinters(vertices, faces, floor: float | None = None, height: float | None = None,
+              thin: float = 0.015, feet=None, radius: float = 0.12) -> dict:
+    """How much of a figure's soles is a thin plate: the soles are the faces facing the floor at the floor (`floor`,
+    else the lowest point), with `feet` (the foot and toe bones' points, x and y) only those within `radius` (a share
+    of the height) of one, so a robe or a cape lying on the floor is no sole; from each, straight up, the first
+    surface it meets. A cut through a boot closes a hollow shell, so above its sole lies the boot's inside, decimetres
+    high; a made-up shoe longer than the boot leaves the front of its toe as a flat plate a few millimetres thick
+    lying out in front (the Revolverheld, D206). Returns the soles' area and the area under which another surface lies
+    closer than `thin` (a share of the height), in square metres, that share, and how far the plates reach past the
+    thick part of the soles (metres)."""
+    v = np.asarray(vertices, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    z = v[:, 2]
+    floor = float(z.min()) if floor is None else float(floor)
+    height = float(z.max() - floor) if height is None else float(height)
+    tri = v[f]
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+    nz = cross[:, 2] / np.maximum(2.0 * area, 1e-18)
+    sole = (nz < -0.9) & (tri[:, :, 2].max(axis=1) <= floor + 0.002 * height) & (area > 0)
+    if feet is not None and len(feet):
+        feet = np.asarray(feet, dtype=np.float64)[:, :2]
+        c2 = tri[:, :, :2].mean(axis=1)
+        near_foot = np.zeros(len(tri), dtype=bool)
+        for q in feet:
+            near_foot |= ((c2 - q) ** 2).sum(axis=1) <= (radius * height) ** 2
+        sole &= near_foot
+    if not sole.any():
+        return {"sole_m2": 0.0, "thin_m2": 0.0, "thin_share": 0.0, "reach_m": 0.0}
+    reach = floor + thin * height
+    over = tri[~sole & (tri[:, :, 2].min(axis=1) < reach) & (area > 0)]
+    points = tri[sole].mean(axis=1)
+    hit = np.zeros(len(points), dtype=bool)
+    if len(over):
+        a, b, c = over[:, 0], over[:, 1], over[:, 2]
+        d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+        ok = np.abs(d) > 1e-18
+        a, b, c, d = a[ok], b[ok], c[ok], d[ok]
+        for start in range(0, len(points), 256):
+            p = points[start:start + 256, None, :]
+            w0 = ((b[:, 1] - c[:, 1]) * (p[..., 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (p[..., 1] - c[:, 1])) / d
+            w1 = ((c[:, 1] - a[:, 1]) * (p[..., 0] - c[:, 0]) + (a[:, 0] - c[:, 0]) * (p[..., 1] - c[:, 1])) / d
+            w2 = 1.0 - w0 - w1
+            zz = w0 * a[:, 2] + w1 * b[:, 2] + w2 * c[:, 2]
+            inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+            hit[start:start + 256] = (inside & (zz > p[..., 2] + 1e-4 * height) & (zz < reach)).any(axis=1)
+    sole_area = area[sole]
+    thin_area = float(sole_area[hit].sum())
+    # how far the plates reach past the thick part of the soles (the boot itself), area-weighted 90th percentile
+    reach_m = 0.0
+    if hit.any() and (~hit).any():
+        thick = points[~hit][:, :2]
+        dist = np.array([np.sqrt(((thick - q) ** 2).sum(axis=1)).min() for q in points[hit][:, :2]])
+        order = np.argsort(dist)
+        cum = np.cumsum(sole_area[hit][order])
+        reach_m = float(dist[order][np.searchsorted(cum, 0.9 * cum[-1])])
+    elif hit.any():
+        reach_m = float(np.ptp(points[hit][:, :2], axis=0).max())
+    return {"sole_m2": round(float(sole_area.sum()), 5), "thin_m2": round(thin_area, 5),
+            "thin_share": round(thin_area / max(float(sole_area.sum()), 1e-12), 4), "reach_m": round(reach_m, 4)}
 
 
 def _polygon_area(poly) -> float:
@@ -631,6 +718,27 @@ def nested_caps(polygons: list) -> list[bool]:
         else:
             kept.append(i)
     return inner
+
+
+def finish_run_from_provenance(model: Path) -> Path | None:
+    """The Finish run a rigged model was made from, read from its provenance sidecar (`<model>.provenance.json`,
+    written by AssetFurnace beside every result): the first record in its chain of source records whose operation
+    is "finish", the folder its output lies in. None without a sidecar, without a Finish in the chain, or when that
+    folder is no longer there, so `--feet-from` need not be named for a figure rigged in the studio."""
+    sidecar = Path(model).with_name(Path(model).stem + ".provenance.json")
+    try:
+        record = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for _ in range(32):
+        if not isinstance(record, dict):
+            return None
+        if record.get("operation") == "finish":
+            out = (record.get("output") or {}).get("path")
+            run = Path(out).parent if out else None
+            return run if run is not None and run.is_dir() else None
+        record = record.get("source_record")
+    return None
 
 
 def outline_parts(path: Path) -> dict:
@@ -690,6 +798,25 @@ def head_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> l
         bone = stack.pop()
         out.append(bone)
         stack.extend(b for b, p in parents.items() if p == bone)
+    return out
+
+
+def hand_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> list[str]:
+    """Both hand bones and every bone below them (the fingers, a held piece)."""
+    out, stack = [], [b for b, n in unity_names.items() if n in ("LeftHand", "RightHand")]
+    while stack:
+        bone = stack.pop()
+        out.append(bone)
+        stack.extend(b for b, p in parents.items() if p == bone)
+    return out
+
+
+def glow_off_bones(parents: dict[str, str | None], unity_names: dict[str, str], s: dict) -> list[str]:
+    """The bones whose skin keeps no glow: the head's with `--glow-not-on-head`, the hands' with
+    `--glow-not-on-hands` (a figure whose glowing hands read as too big and odd, D980 of ArcherSoul's notes)."""
+    out = head_bones(parents, unity_names) if s.get("glow_not_on_head") else []
+    if s.get("glow_not_on_hands"):
+        out += [b for b in hand_bones(parents, unity_names) if b not in out]
     return out
 
 
@@ -1050,7 +1177,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     names = {} if s["style"] == "keep" else engine_names(parents, mapping, s["style"])
     names = {b: n for b, n in names.items() if b not in plan}
     hips = next(b for b, n in unity.items() if n == "Hips")
-    heads_off = head_bones(parents, unity) if s["glow_not_on_head"] else []
+    heads_off = glow_off_bones(parents, unity, s)  # the bake keeps the glow off these bones' skin
     if drop_hidden_refusal(s):
         parser.error(drop_hidden_refusal(s))
     if s["colour_from"] and not Path(s["colour_from"]).is_file():
@@ -1060,6 +1187,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
     if (s["head_protect"] > 0 or s["head_texel"] > 1) and "Head" not in unity.values():
         print("note: no head bone found, so --head-protect and --head-texel change nothing")
     feet = None
+    if not s["feet_from"] and s["feet"] != "off":
+        found = finish_run_from_provenance(args.source)
+        if found:
+            s["feet_from"] = str(found)
+            print(f"feet: the Finish run from the rig's provenance: {found.name}")
     if s["feet_from"] and s["feet"] != "off":
         try:
             outline = outline_parts(Path(s["feet_from"]))
@@ -1078,7 +1210,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
                                    "all_head_bones": head_bones(parents, unity), "veto_poses": veto_poses(unity),
                                    "check_poses": check_poses(unity) if s["pose_check"] else [],
                                    "pose_picture": str(args.output.with_suffix(".pose.png").resolve()),
-                                   "feet": feet, "settings": s}, indent=1))
+                                   "feet": feet, "feet_bones": [b for b, n in unity.items() if n in FEET_BONES],
+                                   "settings": s}, indent=1))
         run = subprocess.run(blender_command(Path(blender), job), capture_output=True, text=True, check=False)
         if run.returncode != 0 or not raw.is_file():
             print(run.stdout[-4000:])
@@ -1086,6 +1219,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
             print("Blender stopped; nothing written")
             return 1
         report = json.loads(report_path.read_text())
+        feet = (report.get("feet") or {}).get("plan", feet)  # a cut that left thin plates was pressed flat instead
+        if (report.get("feet") or {}).get("switched"):
+            print("feet: " + report["feet"]["switched"])
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(rename(raw.read_bytes(), names))
     set_glb_generator(args.output)
