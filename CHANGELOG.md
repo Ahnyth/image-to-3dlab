@@ -130,6 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The Windows installer's anonymous started / stopped / finished count reaches the site.
   Its message was split apart on the way to curl, so the site turned every one away.
+- `game_ready.py`'s atlas paints no texel twice: Smart UV Project at its wide angle folded some
+  islands onto themselves, and the bake wrote hidden faces from inside over seen ones (a dark,
+  faceted patch on a cape's back, after a finer thinning). Only the faces that overlap are now
+  unwrapped again, so the compact islands stay; on that figure the atlas went from 55 % to 68 %
+  used, so the texture is a little sharper too. The report says how many faces still overlap.
 - Stable Fast 3D's setup says its real size (about 5.5 GB with the CLIP model), and on AMD a
   Hugging Face refusal says to sign in and accept the terms, not just that setup stopped.
 - Stable Fast 3D models are marked as facing front, so a prop sheet made with it splits in

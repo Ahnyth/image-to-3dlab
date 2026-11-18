@@ -24,6 +24,7 @@ from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import blender_retopo_bake as rb
 import game_ready as gr
 from visibility_cull import (
     dense_surface,
@@ -515,6 +516,59 @@ def pin_source_uvs(me) -> None:
                 n.uv_map = "src"
 
 
+def unfold_overlaps(bpy, me, angle: float, margin: float, rounds: int = rb.UV_ROUNDS) -> int | None:
+    """Smart UV Project's islands, with only the faces that land on other faces unwrapped again.
+
+    At game_ready's wide angle Smart UV Project folds an island onto itself where the surface
+    turns, and the bake then writes one face over another: hidden faces from inside over a
+    cape's back gave a dark, faceted patch (black sky light, another colour). The Finish's
+    `unwrap_islands` unwraps every island conformally, which here left a third of the atlas
+    empty (39 % used instead of 55 %); so the projection's compact islands stay, and only the
+    overlapping faces are cut along their islands and unwrapped conformally, a few rounds, the
+    last few each an island of its own. Returns the faces still overlapping, or None on a
+    Blender whose overlap check crashes (it projects only, as before). Call in edit mode with
+    every face selected; the select mode is given back.
+    """
+    def project():
+        bpy.ops.uv.smart_project(angle_limit=angle, island_margin=0.0, area_weight=0.0,
+                                 correct_aspect=True, scale_to_bounds=False)
+
+    if rb.unwrap_crashes(bpy.app.version):
+        project()
+        return None
+    settings = bpy.context.scene.tool_settings
+    synced, mode = settings.use_uv_select_sync, tuple(settings.mesh_select_mode)
+    settings.use_uv_select_sync = True   # UV operators then select mesh faces
+    settings.mesh_select_mode = (False, False, True)
+    try:
+        project()
+
+        def overlapping() -> int:
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.uv.pack_islands(rotate=False, margin=margin)   # islands apart: what overlaps now is a fold
+            bpy.ops.mesh.select_all(action="DESELECT")
+            bpy.ops.uv.select_overlap()
+            count, added = rb.overlap_selection(bmesh.from_edit_mesh(me))
+            if added:
+                bmesh.update_edit_mesh(me, loop_triangles=False, destructive=False)
+            return count
+
+        for _ in range(rounds):
+            if not overlapping():
+                break
+            bpy.ops.uv.seams_from_islands()
+            bpy.ops.uv.unwrap(method="CONFORMAL", margin=margin)   # the overlapping faces only
+        if overlapping():
+            bpy.ops.mesh.mark_seam(clear=False)   # the last few: each an island of its own
+            bpy.ops.uv.unwrap(method="CONFORMAL", margin=margin)
+        left = overlapping()
+        bpy.ops.mesh.select_all(action="SELECT")
+        return left
+    finally:
+        settings.use_uv_select_sync = synced
+        settings.mesh_select_mode = mode
+
+
 def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     me = ob.data
     pin_source_uvs(me)
@@ -526,8 +580,7 @@ def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     bpy.context.view_layer.objects.active = ob
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(angle_limit=math.radians(s["uv_angle"]), island_margin=0.0, area_weight=0.0,
-                             correct_aspect=True, scale_to_bounds=False)
+    overlapping = unfold_overlaps(bpy, me, math.radians(s["uv_angle"]), gr.uv_margin(s))
     head_uv_share = scale_head_islands(ob, s.get("head_texel", 1.0), head or [])
     bpy.ops.uv.select_all(action="SELECT")
     try:
@@ -579,8 +632,10 @@ def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     tris = np.array([(p.loop_start, p.loop_start + k, p.loop_start + k + 1)
                      for p in me.polygons for k in range(1, p.loop_total - 1)])
     used = gr.uv_area(uv.reshape(-1, 2), tris)
-    log(f"new UVs: {islands} islands, {used * 100:.1f} % of the atlas, {hard} hard edges, {seams} seam edges")
-    out = {"uv_islands": islands, "atlas_used": round(used, 4), "hard_edges": hard}
+    log(f"new UVs: {islands} islands, {used * 100:.1f} % of the atlas, {hard} hard edges, {seams} seam edges, "
+        f"{'unchecked' if overlapping is None else overlapping} faces overlapping")
+    out = {"uv_islands": islands, "atlas_used": round(used, 4), "hard_edges": hard,
+           "uv_overlapping_faces": overlapping}
     if head_uv_share is not None:
         out["head_uv_share"] = head_uv_share
     return out
