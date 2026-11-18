@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `scripts/colour_compare.py` says where two models of the same figure differ in colour: both
+  drawn from eight sides in their base colour as a game shows them, every patch that changed
+  named (which side, how big, darker or lighter, where on the figure), a marked picture with
+  `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
+  dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
+  four only lost dark specks their old bake had).
 - **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
   `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
   on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
