@@ -429,26 +429,32 @@ def test_the_underside_of_a_cape_over_the_back_is_kept():
     assert not poke.any()
 
 
-def test_a_flap_whose_middle_lies_over_the_surface_goes_even_if_its_tip_hangs_past_the_edge():
-    """A piece over a cape's back whose tip hangs past the cape's edge: the camera sees at most that tip, while the
-    piece shades the cape under its middle (the dark spot at the Wachter's cape edge, #141)."""
+def test_a_flap_whose_tip_a_camera_sees_past_the_edge_is_kept():
+    """A piece over a cape's back whose tip hangs past the cape's edge: from in front, past the edge, a camera sees
+    that tip, so the piece stays though its middle lies over the surface (dropping such faces opened holes)."""
     body = _box_tris((0, 0, 0), (1, 1, 1))
     flap = _quad((1.01, 0.6, 0.4), (1.01, 0.6, 0.6), (1.01, 1.1, 0.6), (1.01, 1.1, 0.4))  # faces -x, past y = 1
     tris, normals, cast, first = _caster(body + flap)
     samples = face_samples(tris)
     assert (samples[len(body):, 0, 1] < 1.0).all(), "both triangles' middles lie over the box"
-    assert poking_out(samples, normals, fibonacci_directions(64), cast, first, 0.05, eps=1e-6)[len(body):].all()
+    assert not poking_out(samples, normals, fibonacci_directions(64), cast, first, 0.05, eps=1e-6)[len(body):].any()
 
 
-def test_a_piece_whose_middle_a_camera_sees_is_kept():
-    """A piece over a narrow strap: straight down it meets the strap, but its middle is seen at an angle past the
-    strap's edge, so a camera draws it and it stays (without the cone it would go)."""
+def test_a_piece_seen_at_an_angle_past_a_strap_is_kept():
+    """A piece over a narrow strap: straight down it meets the strap, but at an angle it is seen past the strap's
+    edge, so a camera draws it and it stays."""
     strap = _box_tris((0, 0.48, 0), (1, 0.52, 1))
     piece = _quad((1.01, 0.47, 0.4), (1.01, 0.47, 0.6), (1.01, 0.53, 0.6), (1.01, 0.53, 0.4))  # faces -x
-    tris, normals, cast, first = _caster(strap + piece)
-    args = (face_samples(tris), normals, fibonacci_directions(64), cast, first, 0.05)
-    assert not poking_out(*args, eps=1e-6)[len(strap):].any()
-    assert poking_out(*args, eps=1e-6, front_cone=1.01)[len(strap):].all()
+    assert not _poking(strap + piece)[len(strap):].any()
+
+
+def test_a_piece_seen_only_at_a_grazing_angle_is_kept():
+    """Hair strands lie over one another, each facing the next: a strand at the edge of the hair is seen from behind
+    only at a grazing angle, and dropping it opened a hole the arm showed through (the Daemonenrufer's v15j, #141).
+    Any front direction that reaches the outside keeps a face, however flat."""
+    strap = _box_tris((0, 0.45, 0), (1, 0.55, 1))
+    piece = _quad((1.01, 0.47, 0.4), (1.01, 0.47, 0.6), (1.01, 0.53, 0.6), (1.01, 0.53, 0.4))  # faces -x
+    assert not _poking(strap + piece)[len(strap):].any()
 
 
 def test_a_piece_further_off_than_near_is_kept():

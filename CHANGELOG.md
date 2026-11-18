@@ -183,10 +183,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `game_ready.py --drop-hidden` also drops the inner wall that pokes out past the outer surface
   after the thinning. Such a piece lies a millimetre or two over the surface and faces it: a game
   never draws it (its back faces the camera), but the sky-light bake took it for a roof and baked
-  small dark triangles into the surface under it (a cape's hem, the legs). It is found by rays (seen
-  from behind, its front facing another face's front close by, its middle not seen from in front)
-  and dropped before the bake; the surface under it stays, so no hole opens. The report counts it
-  per try (`poking_out`).
+  small dark triangles into the surface under it (a cape's hem, the legs). It is found by rays: seen
+  from behind, its front facing another face's front close by, and its front seen from no direction
+  at all, in the A-pose and in every pose the hidden wall is checked in; then it goes with the hidden
+  wall. (A looser first version, which let a face go when it was seen only flatter than 66 degrees,
+  opened holes at the edge of a figure's hair and at the joints of six of 21 figures.) The report
+  counts it per try (`poking_out`, `poking_kept_for_poses`).
 - `game_ready.py`'s report measures the atlas honestly: texels per centimetre of surface, the share
   of the atlas covered and the share painted twice, instead of a summed UV area, which counted a
   folded island twice (a knight's atlas looked 68 % used while 1.2 % of its texels were painted

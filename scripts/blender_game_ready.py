@@ -350,16 +350,19 @@ def _first_hit_with(tree, eps: float):
     return first_hit
 
 
-def _pokes(bm, s: dict, size: float, eps: float) -> np.ndarray:
-    """The faces of `bm` that are inner wall poking out past the outer surface (`poking_out`)."""
+def _pokes(bm, s: dict, size: float, eps: float, which=None) -> np.ndarray:
+    """Of the faces `which` of `bm` (all by default), those that are inner wall poking out past the outer surface
+    (`poking_out`), by their own winding as the mesh stands now."""
+    bm.normal_update()
     tree = BVHTree.FromBMesh(bm)
-    tris = np.array([[tuple(loop.vert.co) for loop in f.loops][:3] for f in bm.faces]).reshape(-1, 3, 3)
-    normals = np.array([tuple(f.normal) for f in bm.faces]).reshape(-1, 3)
+    which = np.arange(len(bm.faces)) if which is None else np.asarray(which, dtype=int)
+    tris = np.array([[tuple(loop.vert.co) for loop in bm.faces[int(i)].loops][:3] for i in which]).reshape(-1, 3, 3)
+    normals = np.array([tuple(bm.faces[int(i)].normal) for i in which]).reshape(-1, 3)
     vec_cast = _cast_with(tree, eps)
     vec_first = _first_hit_with(tree, eps)
     return poking_out(face_samples(tris, s["hidden_corner_reach"]), normals, fibonacci_directions(s["poke_rays"]),
-                      lambda o, d, f: vec_cast(Vector(o), Vector(d), f),
-                      lambda o, d, f, r: vec_first(Vector(o), Vector(d), f, r), s["poke_near"] * size, eps)
+                      lambda o, d, f: vec_cast(Vector(o), Vector(d), int(which[f])),
+                      lambda o, d, f, r: vec_first(Vector(o), Vector(d), int(which[f]), r), s["poke_near"] * size, eps)
 
 
 def _world_bmesh(mesh, matrix):
@@ -390,15 +393,16 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
         at = np.array([tuple(bm.faces[int(i)].calc_center_median()) for i in which])
         normal = np.array([tuple(bm.faces[i].normal) for i in which])
         hidden[which] = first_air_sealed(grid, at, normal) | first_air_sealed(grid, at, -normal)
-    # inner wall poking out past the outer surface: never drawn (its back faces the sky), but it shades the surface
-    # under it in the sky-light bake. Asked while the inner wall is still there: once it is gone, the back of a seen
-    # face (a collar, an elbow) can look through the opened shell, and that face would pass for a poking piece.
-    # Dropping it opens no hole (the surface it lies over is there), so no pose has to vouch for it.
+    # inner wall poking out past the outer surface: never drawn (its back faces the sky, no camera sees its front),
+    # but it shades the surface under it in the sky-light bake. Asked while the inner wall is still there: once it
+    # is gone, the back of a seen face (a collar, an elbow) can look through the opened shell. Like the hidden wall
+    # it goes only if every pose keeps it so: a looser rule without the poses opened holes in hair and at the
+    # joints (round 9 of the AssetFurnace Support notes).
     poke = _pokes(bm, s, size, eps) & ~hidden
     bm.free()
 
-    vetoed = 0
-    if hidden.any() and poses:
+    vetoed = poke_vetoed = 0
+    if (hidden.any() or poke.any()) and poses:
         skins = [m for m in ob.modifiers if m.type == "ARMATURE"]
         shown = [(m, m.show_viewport) for m in skins]
         for m in skins:
@@ -429,9 +433,16 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
                 posed.free()
                 continue
             which = np.flatnonzero(hidden)
-            still = _hidden_at_samples(posed, which, directions, _cast_with(BVHTree.FromBMesh(posed), eps), eps, reach)
-            vetoed += int((~still).sum())
-            hidden[which[~still]] = False
+            if len(which):
+                still = _hidden_at_samples(posed, which, directions, _cast_with(BVHTree.FromBMesh(posed), eps), eps,
+                                           reach)
+                vetoed += int((~still).sum())
+                hidden[which[~still]] = False
+            which = np.flatnonzero(poke)
+            if len(which):
+                still = _pokes(posed, s, size, eps, which)
+                poke_vetoed += int((~still).sum())
+                poke[which[~still]] = False
             posed.free()
         for pb in arm.pose.bones:
             pb.matrix_basis = Matrix.Identity(4)
@@ -443,7 +454,7 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list) -> dict:
     doomed = np.flatnonzero(hidden | poke)
     _delete_faces(ob, doomed)
     return {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "poking_out": int(poke.sum()),
-            "dropped": int(len(doomed)), "left": total - int(len(doomed))}
+            "poking_kept_for_poses": poke_vetoed, "dropped": int(len(doomed)), "left": total - int(len(doomed))}
 
 
 def _delete_faces(ob, faces) -> None:
@@ -481,7 +492,8 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list) -> dict:
         drop = drop_hidden_wall(ob, arm, s, poses)
         tries.append({"first": first, "thinned": thinned, **drop})
         log(f"hidden wall, try {attempt + 1}: thinned to {thinned}, {drop['enclosed']} enclosed, "
-            f"{drop['vetoed']} kept for the poses, {drop['poking_out']} poking out, {drop['dropped']} dropped, "
+            f"{drop['vetoed']} kept for the poses, {drop['poking_out']} poking out "
+            f"({drop['poking_kept_for_poses']} kept for the poses), {drop['dropped']} dropped, "
             f"{drop['left']} left")
         if gr.drop_settled(drop["left"], target, s["drop_slack"]):
             break

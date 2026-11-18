@@ -365,7 +365,7 @@ def face_samples(tris, reach: float = 0.66) -> np.ndarray:
 
 
 def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: float,
-               slant: float = 0.08, front_cone: float = 0.4) -> np.ndarray:
+               slant: float = 0.08) -> np.ndarray:
     """Boolean mask of the faces that are inner wall poking out past the outer surface.
 
     After a thinning, a few pieces of the inner wall of a generated double-walled surface end up a millimetre or
@@ -376,16 +376,15 @@ def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: 
     - its front (by its winding, `normals`) looks at the *front* of another face within `near` along its normal
       (`first_hit(origin, direction, face, reach)` gives the first hit's distance and that face's normal, or None);
     - from at least one of its `samples` ((F, K, 3), `face_samples`) a ray into its back half of `directions`
-      reaches the outside (`cast(origin, direction, face)` answers whether a ray meets the mesh).
+      reaches the outside (`cast(origin, direction, face)` answers whether a ray meets the mesh);
+    - from none of its samples does a ray into its front half reach the outside: no camera ever draws it.
 
     The first keeps what the camera sees (a face looking outward meets nothing) and a flipped outer face (it looks
     into the body and meets the back of the other side); the second keeps a cape's underside (the cape's own top
-    is behind it) and the inner wall still inside the body. A face whose middle reaches the outside along a
-    direction within the cone `front_cone` (the cosine to its normal) is kept as well: a camera sees it at more
-    than a grazing angle (a piece over a narrow strap). Only the middle is asked: a flap that lies over a cape's
-    back and hangs past its edge shows the camera at most its tip, and still shades the cape under its middle.
-    Dropping what is left opens no hole: the surface it lies over is there. Directions within `slant` of the
-    face's plane belong to neither half.
+    is behind it) and the inner wall still inside the body; the third keeps everything a camera can draw, however
+    flat it sees it: hair strands lie over one another, each facing the next, and a strand at the hair's edge seen
+    at a grazing angle passed a looser test and left a hole when dropped. Directions within `slant` of the face's
+    plane belong to neither half.
     """
     samples = np.asarray(samples, dtype=float)
     if samples.ndim == 2:                    # one point per face
@@ -400,8 +399,8 @@ def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: 
         hit = first_hit(centre + n * eps, n, face, near)
         if hit is None or float(np.dot(hit[1], n)) >= 0.0:
             continue
-        ahead = directions[directions @ n > front_cone]
-        if any(not cast(centre + d * eps, d, face) for d in ahead):
+        ahead = directions[directions @ n > slant]
+        if any(not cast(p + d * eps, d, face) for p in samples[face] for d in ahead):
             continue
         back = directions[directions @ n < -slant]
         if not len(back):
