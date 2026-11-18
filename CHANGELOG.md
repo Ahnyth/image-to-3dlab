@@ -7,115 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-18
-
 ### Added
-- **Add-ons: "Partly run-checked"**: when only some of an add-on's tools could be test-run (the others need a picture or
-  model file), the studio, command line, install plan and agent tools say so and name the tools that were not run.
-- **Add-ons: "Not run-checked"**: a Listed add-on we could not test-run on a clean machine now says so in the studio, the
-  command line, the install plan and the agent tools; one that passed the test run says "and a test run".
-- **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
-  `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
-  on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
-- **Add-ons studio UI**: a dedicated Add-ons page linked from Setup lists reviewed add-ons
-  (installed first) with author, summary, links, star rating, Install/Remove and inline tool
-  cards. The Library labels models "made with <add-on>" from their provenance sidecar.
-- **Add-ons for agents**: `list_addons`, `install_addon` and `run_addon` MCP tools call the
-  same studio API as the UI; `install_addon` asks before installing, and `run_addon` returns
-  a run id to poll with `run_status`.
-- **Add-on pictures**: an add-on's card in the studio shows a picture of what it makes, and `list_addons` gives agents the link.
-- **`--unlisted`**: the way to install an add-on that is not on the list (it is marked Unknown). `--unreviewed` still works.
-- **Verified, Listed or Unknown**: every add-on now carries one of three labels, the same words in the studio, the command line, the agent tools and the install plan, and in the licence record of what it makes. The old yes/no "reviewed" flag is gone.
-- **Cloud or on this machine**: every add-on says whether it runs on your machine or uses the cloud. The studio shows a badge, and the install plan says plainly when your models would be sent off this machine.
-- **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
-  add-ons can do, how to test locally, and the rules for being listed.
-
-### Fixed
-- **Add-ons on Linux**: an add-on whose run command names its script by a bare file name (`-P crate.py`) now finds it, so the list's test run can run it.
-- **Add-ons docs**: "Getting listed" now describes the submit page, not a pull request on the list repo (those are closed).
-- Installing an unreviewed add-on no longer fails when its repo name differs from its id.
-- An add-on you installed without review is no longer shown as reviewed just because a listed add-on has the same name.
-- A model made by an add-on now keeps the licence of the model that went into it, including restrictions such as "not licensed in the EU, UK or South Korea". A model with no licence record counts as unverified. The record also holds a fingerprint of the result file.
-- Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
-
-## [0.5.11] - 2026-11-17
-
-### Added
-- `scripts/colour_compare.py` says where two models of the same figure differ in colour: both
-  drawn from eight sides in their base colour as a game shows them, every patch that changed
-  named (which side, how big, darker or lighter, where on the figure), a marked picture with
-  `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
-  dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
-  four only lost dark specks their old bake had). `--ignore-glow` leaves out where the second
-  model glows on purpose, for a game model against its source.
-- `game_ready.py` checks its own result by colour: the finished figure against the model its colour
-  came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
-  out. A patch that differs is a bake fault: it is named in the report and its problems, and marked
-  in `<output>.colour.png`. The readability curve the figure got (`--readability`) is put onto the
-  source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
-  flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
-  onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
-  `--no-colour-check` skips it.
-- `game_ready.py --drop-hidden` checks its drop in motion and repairs it: the figure before and after
-  the drop is posed in a run, a dodge, a fall and a reach (other moves than the drop's own veto) and
-  looked at from twelve sides by rays; where a ray first meets a dropped face and, without it, nothing
-  close behind, the figure would show a hole, and that face is put back. The report says how many
-  pixels of holes were found, how many faces went back and what is left; the worst view is marked in
-  `<output>.pose.png` (`--no-pose-check` skips it). A separate check of this kind found the holes a
-  looser drop rule had opened that the colour check could not see; on a knight in white fur it found
-  50 small hole pixels in 27 of 48 views and put 35 faces back, leaving none, for about 30 s more.
-- `game_ready.py --feet-from <Finish run>` fixes a sole the generator made up below the pictures'
-  feet: the outline check finds the parts below the outline that start on the floor; one reaching
-  4 % of the height or more (a second, larger shoe glued under the real one) is cut off, the cut
-  closed with a flat sole and the inner wall's second cap left out; a lower one (a heel too high)
-  is pressed flat to 2.5 cm, which keeps the shoe's length. The bones go with it, the figure stands
-  on its new soles at its height, the colour model and the colour check get the same feet, and the
-  report says what was done (`--feet cut|squash|off` decides by hand). Five figures fixed by hand in
-  Blender set the numbers (cut at 6-7 %, pressed at 3.5 %).
-- **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
-- **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
-  `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
-  on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
-- **Add-ons studio UI**: a dedicated Add-ons page linked from Setup lists reviewed add-ons
-  (installed first) with author, summary, links, star rating, Install/Remove and inline tool
-  cards. The Library labels models "made with <add-on>" from their provenance sidecar.
-- **Add-ons for agents**: `list_addons`, `install_addon` and `run_addon` MCP tools call the
-  same studio API as the UI; `install_addon` asks before installing, and `run_addon` returns
-  a run id to poll with `run_status`.
-- **Add-on pictures**: an add-on's card in the studio shows a picture of what it makes, and `list_addons` gives agents the link.
-- **`--unlisted`**: the way to install an add-on that is not on the list (it is marked Unknown). `--unreviewed` still works.
-- **Verified, Listed or Unknown**: every add-on now carries one of three labels, the same words in the studio, the command line, the agent tools and the install plan, and in the licence record of what it makes. The old yes/no "reviewed" flag is gone.
-- **Cloud or on this machine**: every add-on says whether it runs on your machine or uses the cloud. The studio shows a badge, and the install plan says plainly when your models would be sent off this machine.
-- **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
-  add-ons can do, how to test locally, and the rules for being listed.
-
-### Fixed
-
-- Installing an unreviewed add-on no longer fails when its repo name differs from its id.
-
-### Fixed
-
-- An add-on you installed without review is no longer shown as reviewed just because a listed add-on has the same name.
-- A model made by an add-on now keeps the licence of the model that went into it, including restrictions such as "not licensed in the EU, UK or South Korea". A model with no licence record counts as unverified. The record also holds a fingerprint of the result file.
-
-### Fixed
-
-- Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
-
-## [0.5.11] - 2026-11-17
-
-### Added
-- **Export for Roblox**: a button under a model's stats (and `export_roblox` for agents, and
-  `scripts/export_roblox.py`) makes a copy Roblox Studio imports at the right size, with PNG
-  pictures and the four surface pictures loose for a SurfaceAppearance. It checks the model
-  against Roblox's limits (20,000 triangles per mesh, 4,000 for a wearable item) and says
-  plainly what won't fit. Rigged characters keep their skeleton but stand still: Studio
-  plays our moves wrongly, so they are left out for now.
-- Rig: a **Bone names** choice. **Unity Humanoid** gives the body bones Unity's names (Hips,
-  Spine, ... LeftToes) and keeps at most four weights a vertex, so Unity maps the avatar on its
-  own; hair, capes and gear keep their names under the nearest body bone. Also for agents
-  (`advanced={"bone_names": "unity"}`), and `scripts/name_bones.py` does it for a model rigged
-  before. The names live in `image_to_3dlab/bone_names.py`, one table per engine (#237).
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).
@@ -190,10 +82,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own moving effect. The mesh and textures stay as they are. With `--side` (the right side view
   with and without the effect) each node sits at the depth the side shows, so a mane of flames on the
   back of the neck is marked there and not on the face.
+- `scripts/colour_compare.py` says where two models of the same figure differ in colour: both
+  drawn from eight sides in their base colour as a game shows them, every patch that changed
+  named (which side, how big, darker or lighter, where on the figure), a marked picture with
+  `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
+  dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
+  four only lost dark specks their old bake had). `--ignore-glow` leaves out where the second
+  model glows on purpose, for a game model against its source.
+- `game_ready.py` checks its own result by colour: the finished figure against the model its colour
+  came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
+  out. A patch that differs is a bake fault: it is named in the report and its problems, and marked
+  in `<output>.colour.png`. The readability curve the figure got (`--readability`) is put onto the
+  source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
+  flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
+  onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
+  `--no-colour-check` skips it.
+- `game_ready.py --drop-hidden` checks its drop in motion and repairs it: the figure before and after
+  the drop is posed in a run, a dodge, a fall and a reach (other moves than the drop's own veto) and
+  looked at from twelve sides by rays; where a ray first meets a dropped face and, without it, nothing
+  close behind, the figure would show a hole, and that face is put back. The report says how many
+  pixels of holes were found, how many faces went back and what is left; the worst view is marked in
+  `<output>.pose.png` (`--no-pose-check` skips it). A separate check of this kind found the holes a
+  looser drop rule had opened that the colour check could not see; on a knight in white fur it found
+  50 small hole pixels in 27 of 48 views and put 35 faces back, leaving none, for about 30 s more.
+- `game_ready.py --feet-from <Finish run>` fixes a sole the generator made up below the pictures'
+  feet: the outline check finds the parts below the outline that start on the floor; one reaching
+  4 % of the height or more (a second, larger shoe glued under the real one) is cut off, the cut
+  closed with a flat sole and the inner wall's second cap left out; a lower one (a heel too high)
+  is pressed flat to 2.5 cm, which keeps the shoe's length. The bones go with it, the figure stands
+  on its new soles at its height, the colour model and the colour check get the same feet, and the
+  report says what was done (`--feet cut|squash|off` decides by hand). Five figures fixed by hand in
+  Blender set the numbers (cut at 6-7 %, pressed at 3.5 %).
+- **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 
 ### Fixed
-- The Windows installer's anonymous started / stopped / finished count reaches the site.
-  Its message was split apart on the way to curl, so the site turned every one away.
 - `game_ready.py`'s atlas paints no texel twice: Smart UV Project at its wide angle folded some
   islands onto themselves, and the bake wrote hidden faces from inside over seen ones (a dark,
   faceted patch on a cape's back, after a finer thinning). Only the faces that overlap are now
@@ -219,6 +141,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the atlas covered and the share painted twice, instead of a summed UV area, which counted a
   folded island twice (a knight's atlas looked 68 % used while 1.2 % of its texels were painted
   twice).
+
+## [0.6.0] - 2026-11-18
+
+### Added
+- **Add-ons: "Partly run-checked"**: when only some of an add-on's tools could be test-run (the others need a picture or
+  model file), the studio, command line, install plan and agent tools say so and name the tools that were not run.
+- **Add-ons: "Not run-checked"**: a Listed add-on we could not test-run on a clean machine now says so in the studio, the
+  command line, the install plan and the agent tools; one that passed the test run says "and a test run".
+- **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
+  `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
+  on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
+- **Add-ons studio UI**: a dedicated Add-ons page linked from Setup lists reviewed add-ons
+  (installed first) with author, summary, links, star rating, Install/Remove and inline tool
+  cards. The Library labels models "made with <add-on>" from their provenance sidecar.
+- **Add-ons for agents**: `list_addons`, `install_addon` and `run_addon` MCP tools call the
+  same studio API as the UI; `install_addon` asks before installing, and `run_addon` returns
+  a run id to poll with `run_status`.
+- **Add-on pictures**: an add-on's card in the studio shows a picture of what it makes, and `list_addons` gives agents the link.
+- **`--unlisted`**: the way to install an add-on that is not on the list (it is marked Unknown). `--unreviewed` still works.
+- **Verified, Listed or Unknown**: every add-on now carries one of three labels, the same words in the studio, the command line, the agent tools and the install plan, and in the licence record of what it makes. The old yes/no "reviewed" flag is gone.
+- **Cloud or on this machine**: every add-on says whether it runs on your machine or uses the cloud. The studio shows a badge, and the install plan says plainly when your models would be sent off this machine.
+- **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
+  add-ons can do, how to test locally, and the rules for being listed.
+
+### Fixed
+- **Add-ons on Linux**: an add-on whose run command names its script by a bare file name (`-P crate.py`) now finds it, so the list's test run can run it.
+- **Add-ons docs**: "Getting listed" now describes the submit page, not a pull request on the list repo (those are closed).
+- Installing an unreviewed add-on no longer fails when its repo name differs from its id.
+- An add-on you installed without review is no longer shown as reviewed just because a listed add-on has the same name.
+- A model made by an add-on now keeps the licence of the model that went into it, including restrictions such as "not licensed in the EU, UK or South Korea". A model with no licence record counts as unverified. The record also holds a fingerprint of the result file.
+- Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+
+## [0.5.11] - 2026-11-17
+
+### Added
+- **Export for Roblox**: a button under a model's stats (and `export_roblox` for agents, and
+  `scripts/export_roblox.py`) makes a copy Roblox Studio imports at the right size, with PNG
+  pictures and the four surface pictures loose for a SurfaceAppearance. It checks the model
+  against Roblox's limits (20,000 triangles per mesh, 4,000 for a wearable item) and says
+  plainly what won't fit. Rigged characters keep their skeleton but stand still: Studio
+  plays our moves wrongly, so they are left out for now.
+- Rig: a **Bone names** choice. **Unity Humanoid** gives the body bones Unity's names (Hips,
+  Spine, ... LeftToes) and keeps at most four weights a vertex, so Unity maps the avatar on its
+  own; hair, capes and gear keep their names under the nearest body bone. Also for agents
+  (`advanced={"bone_names": "unity"}`), and `scripts/name_bones.py` does it for a model rigged
+  before. The names live in `image_to_3dlab/bone_names.py`, one table per engine (#237).
+
+### Fixed
+- The Windows installer's anonymous started / stopped / finished count reaches the site.
+  Its message was split apart on the way to curl, so the site turned every one away.
 - Stable Fast 3D's setup says its real size (about 5.5 GB with the CLIP model), and on AMD a
   Hugging Face refusal says to sign in and accept the terms, not just that setup stopped.
 - Stable Fast 3D models are marked as facing front, so a prop sheet made with it splits in
