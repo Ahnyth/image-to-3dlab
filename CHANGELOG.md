@@ -129,6 +129,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 
 ### Fixed
+- `game_ready.py --glow` no longer glows on paint in the glow's own hue: a figure with dark crimson
+  plates and a few bright red lines glowed, and was painted over in the glow colour, on every thin
+  plate edge, a blotchy bright red. When most of a glow hue's thin lines are clearly darker than
+  its brightest ones, only the bright group glows now (the report's `glow_split` says so); a hue
+  that is mostly bright lines is left as it was.
 - `game_ready.py`'s atlas paints no texel twice: Smart UV Project at its wide angle folded some
   islands onto themselves, and the bake wrote hidden faces from inside over seen ones (a dark,
   faceted patch on a cape's back, after a finer thinning). Only the faces that overlap are now

@@ -114,6 +114,10 @@ FIXED = {
     "feet_splinter_area": 0.002,   # this share of the height past the boot, over this share of the height squared;
                                    # four cut figures set these (two clean cuts reached 1.2 and 1.7 %, two with blades
                                    # 2.4 and 2.8 %; D207 of the AssetFurnace Support notes)
+    "glow_paint_bright_share": 0.25,  # a glow hue whose bright group is at most this share of its texels ...
+    "glow_paint_gap": 0.30,           # ... and this much brighter than the rest is mostly paint: only the bright
+                                      # group glows (the Purpur-Samurai's crimson plates: 20 %, 0.42; 25 figures
+                                      # measured, four such, D207)
 }
 
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
@@ -475,6 +479,46 @@ def push_out(rgb, have, iters: int):
     return rgb, have > 0
 
 
+def brightness_split(values, bins: int = 64) -> dict:
+    """Otsu's split of `values` (0..1) into a dark and a bright group: the threshold, how well it separates (the
+    share of the variance between the groups), both groups' means and the bright group's share."""
+    values = np.asarray(values, dtype=np.float64)
+    hist, edges = np.histogram(values, bins=bins, range=(0.0, 1.0))
+    centres = (edges[:-1] + edges[1:]) / 2
+    p = hist / max(hist.sum(), 1)
+    w0, m0 = np.cumsum(p), np.cumsum(p * centres)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        between = np.nan_to_num((m0[-1] * w0 - m0) ** 2 / (w0 * (1.0 - w0)))
+    best = np.flatnonzero(between >= between.max() * (1 - 1e-9))  # an empty gap gives a plateau: take its middle
+    k = int(best[len(best) // 2])
+    t = float(edges[k + 1])  # the dark group is bins 0..k
+    total = float((p * (centres - m0[-1]) ** 2).sum())
+    dark, bright = values[values < t], values[values >= t]
+    return {"at": round(t, 3), "separation": round(float(between[k]) / max(total, 1e-12), 3),
+            "dark": round(float(dark.mean()), 3) if len(dark) else 0.0,
+            "bright": round(float(bright.mean()), 3) if len(bright) else 0.0,
+            "bright_share": round(len(bright) / max(len(values), 1), 3)}
+
+
+def glow_only_bright(mask, srgb, inside, s: dict | None = None):
+    """`mask` (one glow colour's `accent_mask`) kept only where the texel is bright, when that hue is mostly paint:
+    most texels of the hue clearly darker than its brightest group. A figure painted in the glow's own hue (dark
+    crimson plates with bright red lines, D207 of the AssetFurnace Support notes) otherwise glowed on every thin
+    painted edge and was painted over in the glow colour, a blotchy look. A hue that is mostly bright lines is left as
+    it is. Returns (mask, the split's numbers or None)."""
+    s = s or FIXED
+    v = np.asarray(srgb, dtype=np.float64).max(-1)
+    sel = np.asarray(inside, bool) & (np.asarray(mask) > 0.5)
+    if sel.sum() < 200:
+        return mask, None
+    split = brightness_split(v[sel])
+    split["used"] = bool(split["bright_share"] <= s["glow_paint_bright_share"]
+                         and split["bright"] - split["dark"] >= s["glow_paint_gap"])
+    if not split["used"]:
+        return mask, split
+    return mask * smoothstep(split["at"] - 0.05, split["at"] + 0.05, v), split
+
+
 def thin_only(mask, max_width: float):
     """`mask` without its parts wider than `max_width` texels (0 keeps everything).
 
@@ -500,13 +544,21 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None):
     a_s = to_srgb(alb_lin)
     scale = s["atlas"] / 1024  # widths are given in texels at 1024
     keep = 1.0 if exclude is None else 1.0 - smoothstep(0.2, 0.5, exclude)
-    masks = [thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * scale) * keep for c in s["glow"]]
+    masks, splits = [], {}
+    for c in s["glow"]:
+        # split only what would glow: the thin lines left after the wide parts (a face, a plate) and the head are out
+        m, split = glow_only_bright(thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * scale) * keep,
+                                    a_s, inside, s)
+        if split is not None:
+            splits["#" + "".join(f"{round(x * 255):02x}" for x in c)] = split
+        masks.append(m)
     found = np.max(masks, axis=0) if masks else np.zeros(inside.shape)
     grey = inside & (found < 0.1)
     lum = a_s.mean(-1)
     stats = {"island_share": float(inside.mean()),
              "lightness_before": _percentiles(lum[grey]),
-             "accent_share": float((found[inside] > 0.5).mean()) if inside.any() else 0.0}
+             "accent_share": float((found[inside] > 0.5).mean()) if inside.any() else 0.0,
+             "glow_split": splits}
     t = auto_readability(a_s, grey) if s["readability"] == "auto" else float(s["readability"])
     stats["readability"] = t
     stats["readability_pivot"] = readability_pivot(a_s, grey, t)

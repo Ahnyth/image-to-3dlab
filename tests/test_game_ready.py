@@ -534,6 +534,40 @@ def test_settings_glow_on_the_head_by_default():
     assert gr.settings(["--glow-not-on-head"])["glow_not_on_head"] is True
 
 
+def _stripes(dark_rgb, bright_rgb, bright_every: int, size: int = 64):
+    """An atlas of thin stripes on a grey ground: every `bright_every`-th stripe bright, the others dark."""
+    a = np.full((size, size, 3), 0.25)
+    for i, y in enumerate(range(2, size - 2, 4)):
+        a[y, :] = bright_rgb if i % bright_every == 0 else dark_rgb
+    return a
+
+
+def test_a_glow_hue_that_is_mostly_dark_paint_glows_only_where_bright():
+    # the Purpur-Samurai: dark crimson plate edges and a few bright red lines in the glow's own hue (D207)
+    red = [1.0, 0x2A / 255, 0x3A / 255]
+    atlas = _stripes([0.45, 0.08, 0.12], [0.95, 0.2, 0.25], bright_every=5)
+    inside = np.ones(atlas.shape[:2], bool)
+    mask, split = gr.glow_only_bright(gr.accent_mask(atlas, red) * inside, atlas, inside)
+    assert split["used"] and split["bright_share"] <= 0.25
+    assert mask[2].min() > 0.9                    # a bright red line still glows
+    assert mask[6].max() < 0.05                   # a dark crimson edge no longer does
+
+
+def test_a_glow_hue_that_is_mostly_bright_lines_is_left_alone():
+    cyan = [0x29 / 255, 0xE6 / 255, 1.0]
+    atlas = _stripes([0.1, 0.55, 0.65], [0.15, 0.9, 1.0], bright_every=2)   # lines, some of them dimmer
+    inside = np.ones(atlas.shape[:2], bool)
+    before = gr.accent_mask(atlas, cyan) * inside
+    mask, split = gr.glow_only_bright(before, atlas, inside)
+    assert not split["used"] and np.array_equal(mask, before)
+
+
+def test_the_brightness_split_finds_the_two_groups():
+    found = gr.brightness_split(np.r_[np.full(800, 0.4), np.full(200, 0.9)])
+    assert 0.4 <= found["at"] < 0.9 and found["bright_share"] == pytest.approx(0.2)
+    assert found["dark"] == pytest.approx(0.4, abs=0.01) and found["bright"] == pytest.approx(0.9, abs=0.01)
+
+
 def test_hand_bones_are_both_hands_and_everything_below_them():
     parents, heads, _roles = _humanoid()
     parents, heads = dict(parents), dict(heads)
