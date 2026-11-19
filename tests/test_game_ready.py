@@ -1037,6 +1037,13 @@ def test_a_real_toe_that_thins_only_at_its_rim_is_no_plate():
     assert not gr.plate_faces(v, f, height=1.85)[centre[:, 1] < 0.25].any()   # the toe's core stays in any case
 
 
+def test_a_dense_normal_source_shaded_flat_is_smoothed_and_a_hard_prop_is_not():
+    # Hi3D's 1M-triangle output came without vertex normals, so its facets went into the knight's normal map (D214)
+    assert gr.flat_normal_source(0, 1_000_000)
+    assert not gr.flat_normal_source(990_000, 1_000_000)          # already smooth (a model with normals)
+    assert not gr.flat_normal_source(0, 3_000)                      # a hard-edged low model stays as it is
+
+
 def _provenance(path: Path, record: dict) -> None:
     path.with_name(path.stem + ".provenance.json").write_text(json.dumps(record), encoding="utf-8")
 

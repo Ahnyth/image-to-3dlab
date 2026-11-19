@@ -1050,9 +1050,10 @@ def head_mask_attribute(ob, bones: list[str]) -> str | None:
     return attr.name
 
 
-def import_colour_model(path: str, T, feet: tuple | None = None):
+def import_colour_model(path: str, T, feet: tuple | None = None, smooth_flat: bool = False):
     """The finer painted model, moved by the same rescale as the figure (it shares the figure's coordinates), and by
-    the same feet (`feet`: the plan, the height it was made at and the second rescale)."""
+    the same feet (`feet`: the plan, the height it was made at and the second rescale). With `smooth_flat` (the model
+    the normal map is baked from) a dense mesh that came in shaded flat is shaded smooth (`game_ready.flat_normal_source`)."""
     before = set(bpy.data.objects)
     try:
         bpy.ops.import_scene.gltf(filepath=path, disable_bone_shape=True)
@@ -1073,6 +1074,11 @@ def import_colour_model(path: str, T, feet: tuple | None = None):
             feet_move(o.data, *feet)
         for mod in list(o.modifiers):
             o.modifiers.remove(mod)
+        polys = o.data.polygons
+        if smooth_flat and gr.flat_normal_source(sum(1 for p in polys if p.use_smooth), len(polys)):
+            polys.foreach_set("use_smooth", [True] * len(polys))
+            o.data.update()
+            log(f"{o.name}: no normals in the file, shaded smooth so its facets stay out of the normal map")
     log(f"colour from {Path(path).name}: {sum(len(o.data.polygons) for o in meshes)} faces")
     return meshes
 
@@ -1446,7 +1452,7 @@ def main() -> None:
     normal_objs = None
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
-        normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T, feet)
+        normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T, feet, smooth_flat=True)
     report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs)
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True

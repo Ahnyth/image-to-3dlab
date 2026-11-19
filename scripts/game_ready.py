@@ -118,6 +118,9 @@ FIXED = {
     "feet_plate_thin": 0.0035,     # a plate is thinner than this share of the height (6.5 mm at 1.85 m): the made-up
                                    # shoe's plates are a sheet under 3-6 mm, a real toe is 10-15 mm thick and thins only
                                    # at its rim (#183 of the AssetFurnace Support notes: 1.5 % took the Revolverheld's toe)
+    "normal_source_flat_faces": 20000,  # a finer model this dense with no smooth face is shaded smooth before its
+                                   # normals are baked: a glTF without normals is flat, so a generator's 1M faces
+                                   # would put their facets into the normal map (AssetFurnace Support D214)
     "feet_plate_rise": 0.015,      # a cleared plate takes along what lies on it lower than this (its top and rims, a tip
                                    # tilted up off the floor)
     "glow_paint_bright_share": 0.25,  # a glow hue whose bright group is at most this share of its texels ...
@@ -853,6 +856,14 @@ def nested_caps(polygons: list) -> list[bool]:
         else:
             kept.append(i)
     return inner
+
+
+def flat_normal_source(smooth_faces: int, faces: int, s: dict | None = None) -> bool:
+    """Whether a finer model the normal map is baked from came in shaded flat: no face smooth (a glTF without vertex
+    normals is flat by the spec) and dense enough to be a generator's output rather than a hard-edged prop, so its
+    small facets would be baked as noise; such a model is shaded smooth first."""
+    s = s or FIXED
+    return smooth_faces == 0 and faces >= s["normal_source_flat_faces"]
 
 
 def finish_run_from_provenance(model: Path) -> Path | None:
