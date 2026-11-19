@@ -946,13 +946,75 @@ def test_a_small_thin_tip_of_a_pointed_shoe_is_no_reason_to_press_the_sole():
     assert gr.splintered({"thin_m2": 0.01518, "reach_m": 0.0621}, 2.2)       # Daemonenhexer: pressed flat
 
 
-def test_a_cut_that_left_plates_becomes_a_squash_of_the_same_sole():
+def test_a_cut_chosen_by_itself_clears_its_plates():
     plan = gr.feet_plan([_part(0.065)], height=1.85)
     assert plan["mode"] == "cut" and plan["auto"]
-    squash = gr.squash_instead(plan, 1.85)
-    assert squash["mode"] == "squash" and squash["at"] == plan["at"] and not squash["auto"]
-    assert squash["sole"] == pytest.approx(gr.FIXED["feet_sole_m"] / 1.85, abs=1e-4)
-    assert not gr.feet_plan([_part(0.065)], mode="cut")["auto"]    # a cut asked for by hand is kept
+    assert not gr.feet_plan([_part(0.065)], mode="cut")["auto"]    # a cut asked for by hand is kept as cut
+
+
+def _l_shoe(plate_to=0.35, thick=0.004, x1=0.1):
+    """A boot 25 cm long and 15 cm high whose cut left a plate `thick` thick out in front of its toe, as one connected
+    surface (an L profile in y and z, drawn along x); the faces on the floor face it, the rest any way."""
+    profile = [(0.0, 0.0), (0.25, 0.0), (plate_to, 0.0), (plate_to, thick), (0.25, thick), (0.25, 0.15), (0.0, 0.15)]
+    return _profile_shoe(profile, [(0, 1, 4), (0, 4, 5), (0, 5, 6), (1, 2, 3), (1, 3, 4)], x1)
+
+
+def _profile_shoe(profile, side, x1=0.1):
+    """A closed solid from a profile in y and z drawn along x (its two ends triangulated by `side`), the faces on the
+    floor facing it."""
+    n = len(profile)
+    v = np.array([[x, y, z] for x in (0.0, x1) for y, z in profile], dtype=float)
+    tris = []
+    for i in range(n):
+        j = (i + 1) % n
+        tris += [(i, j, n + j), (i, n + j, n + i)]
+    tris += side + [(n + a, n + c, n + b) for a, b, c in side]
+    f = np.array(tris)
+    t = v[f]
+    nz = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])[:, 2]
+    floor = t[:, :, 2].max(axis=1) == 0.0
+    f[floor & (nz > 0)] = f[floor & (nz > 0)][:, ::-1]
+    return v, f
+
+
+def test_the_plate_in_front_of_the_boot_is_what_goes():
+    v, f = _l_shoe()
+    drop = gr.plate_faces(v, f, height=1.85)
+    centre = v[f].mean(axis=1)
+    assert drop[centre[:, 1] > 0.25].all()           # the plate: its underside, top, front and sides
+    assert not drop[centre[:, 1] < 0.25].any()       # the boot: its sole, walls and top stay
+    assert gr.splinters(v, f, height=1.85)["thin_m2"] > 0
+    assert gr.splinters(v, f[~drop], height=1.85)["thin_m2"] == 0.0
+
+
+def test_a_plate_tip_that_rises_off_the_floor_goes_with_the_plate():
+    # the Daemonenhexer (D210): the made-up shoe's toe tilts up, so its front is no sole on the floor, yet it hangs on the
+    # plate as a spike once the plate is gone
+    profile = [(0.0, 0.0), (0.25, 0.0), (0.35, 0.0), (0.42, 0.004), (0.35, 0.006), (0.25, 0.006), (0.25, 0.15), (0.0, 0.15)]
+    side = [(0, 1, 5), (0, 5, 6), (0, 6, 7), (1, 2, 3), (1, 3, 4), (1, 4, 5)]
+    v, f = _profile_shoe(profile, side)
+    drop = gr.plate_faces(v, f, height=1.85)
+    centre = v[f].mean(axis=1)
+    assert drop[centre[:, 1] > 0.25].all()           # the plate and its tip
+    assert not drop[centre[:, 1] < 0.25].any()
+
+
+def test_a_clean_boot_loses_nothing():
+    v, f = _box(0.0, 0.0, 0.0, 0.1, 0.25, 0.15)
+    assert not gr.plate_faces(v, f, height=1.85).any()
+
+
+def test_a_plate_far_from_the_feet_stays():
+    v, f = _l_shoe()
+    feet = [[0.05, 0.05, 0.08], [0.05, 0.2, 0.02]]    # ankle and toe bones
+    assert gr.plate_faces(v, f, height=1.85, feet=feet).sum() == gr.plate_faces(v, f, height=1.85).sum()
+    far = [[2.0, 2.0, 0.08]]
+    assert not gr.plate_faces(v, f, height=1.85, feet=far).any()
+
+
+def test_a_thick_toe_is_no_plate():
+    v, f = _l_shoe(thick=0.06)                         # a step 6 cm high in front of the boot: a real toe cap
+    assert not gr.plate_faces(v, f, height=1.85).any()
 
 
 def _provenance(path: Path, record: dict) -> None:

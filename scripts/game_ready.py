@@ -22,7 +22,8 @@ the file:
    `--feet-from` (the Finish run the figure was made in) a sole the generator made up below the
    pictures' feet goes first: the outline check (`scripts/outline_check.py`) finds it, a sole
    reaching 4 % of the height or more below them is cut off (a second shoe glued under the real
-   one), a lower one is pressed flat to 2.5 cm (a heel too high), and the figure is stood on its
+   one; thin plates of it the cut leaves in front of the toe are cleared and the toe closed), a lower
+   one is pressed flat to 2.5 cm (a heel too high), and the figure is stood on its
    new soles at its height (`--feet cut|squash|off` decides by hand).
 5. Engine bone names (`--style unity|mixamo|keep`, the names of `unity_humanoid_names.py`);
    `--fingers merge` folds the finger bones into the hands, for figures too small for fingers.
@@ -110,7 +111,7 @@ FIXED = {
                               # AssetFurnace Support notes: cut at 6-7 %, squashed at 3.5 %)
     "feet_floor": 0.01,       # an outline part counts as a sole when it starts this close to the floor ...
     "feet_top": 0.15,         # ... and stays below this share of the height (higher, it is a robe or a cape)
-    "feet_splinter_reach": 0.02,   # --feet auto presses flat instead of cutting when the cut leaves thin plates reaching
+    "feet_splinter_reach": 0.02,   # --feet auto clears the thin plates a cut leaves when they reach
     "feet_splinter_area": 0.002,   # this share of the height past the boot, over this share of the height squared;
                                    # four cut figures set these (two clean cuts reached 1.2 and 1.7 %, two with blades
                                    # 2.4 and 2.8 %; D207 of the AssetFurnace Support notes)
@@ -637,13 +638,6 @@ def feet_plan(parts: list[dict], mode: str = "auto", height: float = 1.8, s: dic
     return {"mode": mode, "at": round(reach, 4), "sole": round(sole, 4), "parts": len(soles), "auto": auto}
 
 
-def squash_instead(plan: dict, height: float = 1.8, s: dict | None = None) -> dict:
-    """The same sole pressed flat instead of cut off: what `--feet auto` does when the cut left thin plates of the
-    made-up shoe lying in front of the boot (`splintered`)."""
-    s = s or FIXED
-    return dict(plan, mode="squash", sole=round(s["feet_sole_m"] / height, 4), auto=False)
-
-
 def splintered(found: dict, height: float = 1.8, s: dict | None = None) -> bool:
     """Whether a cut left plates of the made-up shoe lying out in front (`splinters`' result): enough thin sole that
     reaches far enough past the boot. A boot's own toe can leave a small thin tip (a pointed shoe); the Revolverheld's
@@ -679,16 +673,10 @@ def feet_positions(positions, plan: dict, up: int = 1):
     return out
 
 
-def splinters(vertices, faces, floor: float | None = None, height: float | None = None,
-              thin: float = 0.015, feet=None, radius: float = 0.12) -> dict:
-    """How much of a figure's soles is a thin plate: the soles are the faces facing the floor at the floor (`floor`,
-    else the lowest point), with `feet` (the foot and toe bones' points, x and y) only those within `radius` (a share
-    of the height) of one, so a robe or a cape lying on the floor is no sole; from each, straight up, the first
-    surface it meets. A cut through a boot closes a hollow shell, so above its sole lies the boot's inside, decimetres
-    high; a made-up shoe longer than the boot leaves the front of its toe as a flat plate a few millimetres thick
-    lying out in front (the Revolverheld, D206). Returns the soles' area and the area under which another surface lies
-    closer than `thin` (a share of the height), in square metres, that share, and how far the plates reach past the
-    thick part of the soles (metres)."""
+def _thin_soles(vertices, faces, floor, height, thin, feet, radius):
+    """The soles (faces facing the floor at the floor, near `feet` if given) and, for each, whether another surface
+    lies above it closer than `thin` (a share of the height): (triangles, areas, sole mask, thin mask over the soles,
+    floor, height)."""
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
     z = v[:, 2]
@@ -706,13 +694,11 @@ def splinters(vertices, faces, floor: float | None = None, height: float | None 
         for q in feet:
             near_foot |= ((c2 - q) ** 2).sum(axis=1) <= (radius * height) ** 2
         sole &= near_foot
-    if not sole.any():
-        return {"sole_m2": 0.0, "thin_m2": 0.0, "thin_share": 0.0, "reach_m": 0.0}
     reach = floor + thin * height
     over = tri[~sole & (tri[:, :, 2].min(axis=1) < reach) & (area > 0)]
     points = tri[sole].mean(axis=1)
     hit = np.zeros(len(points), dtype=bool)
-    if len(over):
+    if len(over) and len(points):
         a, b, c = over[:, 0], over[:, 1], over[:, 2]
         d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
         ok = np.abs(d) > 1e-18
@@ -725,6 +711,93 @@ def splinters(vertices, faces, floor: float | None = None, height: float | None 
             zz = w0 * a[:, 2] + w1 * b[:, 2] + w2 * c[:, 2]
             inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
             hit[start:start + 256] = (inside & (zz > p[..., 2] + 1e-4 * height) & (zz < reach)).any(axis=1)
+    return tri, area, sole, hit, floor, height
+
+
+def _raster(tris2d, lo, cell: float, shape) -> np.ndarray:
+    """Which cells of a grid (corner `lo`, square cells `cell` wide, `shape` cells) the triangles (n, 3, 2) cover, grown
+    by one cell all round, so their rims and the crease where they meet something else count as covered."""
+    grid = np.zeros(shape, dtype=bool)
+    for t in tris2d:
+        i0, j0 = np.floor((t.min(axis=0) - lo) / cell).astype(int)
+        i1, j1 = np.floor((t.max(axis=0) - lo) / cell).astype(int)
+        ii, jj = np.meshgrid(np.arange(i0, i1 + 1), np.arange(j0, j1 + 1), indexing="ij")
+        centres = lo + (np.stack([ii.ravel(), jj.ravel()], axis=1) + 0.5) * cell
+        a, b, c = t
+        d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+        if abs(d) > 1e-18:
+            w0 = ((b[1] - c[1]) * (centres[:, 0] - c[0]) + (c[0] - b[0]) * (centres[:, 1] - c[1])) / d
+            w1 = ((c[1] - a[1]) * (centres[:, 0] - c[0]) + (a[0] - c[0]) * (centres[:, 1] - c[1])) / d
+            inside = (w0 >= -1e-9) & (w1 >= -1e-9) & (1.0 - w0 - w1 >= -1e-9)
+            grid[ii.ravel()[inside], jj.ravel()[inside]] = True
+        for p in t:  # a triangle smaller than a cell still marks its own
+            i, j = np.floor((p - lo) / cell).astype(int)
+            grid[i, j] = True
+    grown = grid.copy()
+    grown[1:] |= grid[:-1]
+    grown[:-1] |= grid[1:]
+    grown[:, 1:] |= grid[:, :-1]
+    grown[:, :-1] |= grid[:, 1:]
+    return grown
+
+
+def plate_faces(vertices, faces, floor: float | None = None, height: float | None = None,
+                thin: float = 0.015, feet=None, radius: float = 0.12):
+    """Which faces are the thin plates a cut left of a made-up shoe (`splinters`), to clear them instead of pressing the
+    whole sole flat (Deniz kept the cut Daemonenhexer, splinters and all, over the pressed one, #172 of the AssetFurnace
+    Support notes): the thin soles themselves, every face lower than `thin` (a share of the height) above the floor that
+    lies wholly over them (the plate's top and rims), every face that low whose corners all belong to those, and every
+    face that low which hangs on them out past the boot's own thick sole (a toe of the made-up shoe that tilts up off
+    the floor, so it is no sole, yet stays a spike once the plate is gone; the Daemonenhexer, D210). A boot's walls rise
+    higher and its own sole is thick, so they stay; the hole left at the toe is closed by the caller."""
+    tri, _area, sole, hit, floor, height = _thin_soles(vertices, faces, floor, height, thin, feet, radius)
+    drop = np.zeros(len(tri), dtype=bool)
+    if not hit.any():
+        return drop
+    drop[np.flatnonzero(sole)[hit]] = True
+    cell = max(thin * height / 10.0, 1e-4)
+    flat = tri[:, :, :2].reshape(-1, 2)
+    lo = flat.min(axis=0) - 2 * cell
+    shape = tuple(np.ceil((flat.max(axis=0) + 2 * cell - lo) / cell).astype(int) + 1)
+    plates = _raster(tri[drop][:, :, :2], lo, cell, shape)
+    thick = _raster(tri[np.flatnonzero(sole)[~hit]][:, :, :2], lo, cell, shape)
+
+    def covered(grid, points):
+        ij = np.floor((points - lo) / cell).astype(int)
+        return grid[ij[..., 0], ij[..., 1]]
+
+    low = tri[:, :, 2].max(axis=1) < floor + thin * height
+    corners = np.concatenate([tri[:, :, :2], tri[:, :, :2].mean(axis=1, keepdims=True)], axis=1)
+    drop |= low & covered(plates, corners).all(axis=1)
+    f = np.asarray(faces, dtype=np.int64)
+    used = np.zeros(int(f.max()) + 1, dtype=bool)
+    used[f[drop].ravel()] = True
+    drop |= low & used[f].all(axis=1)
+    # what still hangs on the plates, low and out past the boot's thick sole, goes too (a bounded flood)
+    outside = low & ~covered(thick, corners[:, 3])
+    for _ in range(200):
+        used[f[drop].ravel()] = True
+        more = outside & ~drop & used[f].any(axis=1)
+        if not more.any():
+            break
+        drop |= more
+    return drop
+
+
+def splinters(vertices, faces, floor: float | None = None, height: float | None = None,
+              thin: float = 0.015, feet=None, radius: float = 0.12) -> dict:
+    """How much of a figure's soles is a thin plate: the soles are the faces facing the floor at the floor (`floor`,
+    else the lowest point), with `feet` (the foot and toe bones' points, x and y) only those within `radius` (a share
+    of the height) of one, so a robe or a cape lying on the floor is no sole; from each, straight up, the first
+    surface it meets. A cut through a boot closes a hollow shell, so above its sole lies the boot's inside, decimetres
+    high; a made-up shoe longer than the boot leaves the front of its toe as a flat plate a few millimetres thick
+    lying out in front (the Revolverheld, D206). Returns the soles' area and the area under which another surface lies
+    closer than `thin` (a share of the height), in square metres, that share, and how far the plates reach past the
+    thick part of the soles (metres)."""
+    tri, area, sole, hit, floor, height = _thin_soles(vertices, faces, floor, height, thin, feet, radius)
+    if not sole.any():
+        return {"sole_m2": 0.0, "thin_m2": 0.0, "thin_share": 0.0, "reach_m": 0.0}
+    points = tri[sole].mean(axis=1)
     sole_area = area[sole]
     thin_area = float(sole_area[hit].sum())
     # how far the plates reach past the thick part of the soles (the boot itself), area-weighted 90th percentile
@@ -1271,9 +1344,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
             print("Blender stopped; nothing written")
             return 1
         report = json.loads(report_path.read_text())
-        feet = (report.get("feet") or {}).get("plan", feet)  # a cut that left thin plates was pressed flat instead
-        if (report.get("feet") or {}).get("switched"):
-            print("feet: " + report["feet"]["switched"])
+        feet = (report.get("feet") or {}).get("plan", feet)
+        if (report.get("feet") or {}).get("cleared"):
+            print("feet: " + report["feet"]["cleared"])
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(rename(raw.read_bytes(), names))
     set_glb_generator(args.output)

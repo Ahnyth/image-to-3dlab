@@ -190,12 +190,13 @@ def rescale(arm, ob, height: float, hips: str):
     return S, T
 
 
-def _cut_soles(ob, at: float, height: float, feet=None, refuse_splinters: bool = False) -> dict:
+def _cut_soles(ob, at: float, height: float, feet=None, clear_splinters: bool = False) -> dict:
     """Cuts off everything under the height `at`, closes each cut with a flat sole facing the floor (its corners take
     the colour and material of the shoe beside them), leaves out the inner wall's second cap inside each sole, and
     drops small bits the cut leaves hanging just above it (a strap of the made-up shoe). With `feet` (the foot and
     toe bones' points) it measures what thin plates the cut left in front of the boot (`game_ready.splinters`); with
-    `refuse_splinters` it writes nothing when there are such plates (`game_ready.splintered`) and says so."""
+    `clear_splinters` it drops such plates (`game_ready.splintered`, `game_ready.plate_faces`) and closes the boot's
+    toe where they hung on (`_close_toes`), so the boot keeps its own length."""
     me = ob.data
     bm = bmesh.new()
     bm.from_mesh(me)
@@ -242,14 +243,61 @@ def _cut_soles(ob, at: float, height: float, feet=None, refuse_splinters: bool =
         points = np.array([v.co[:] for v in bm.verts])
         tris = np.array([[lo.vert.index for lo in t] for t in bm.calc_loop_triangles()], dtype=np.int64)
         stats["splinters"] = gr.splinters(points, tris, floor=at, height=height, feet=feet)
-        if refuse_splinters and gr.splintered(stats["splinters"], height):
-            bm.free()
-            stats["refused"] = True
-            return stats
+        if clear_splinters and gr.splintered(stats["splinters"], height):
+            triangles = bm.calc_loop_triangles()
+            drop = gr.plate_faces(points, tris, floor=at, height=height, feet=feet)
+            whole = {}
+            for t, d in zip(triangles, drop):
+                whole[t[0].face] = whole.get(t[0].face, True) and bool(d)
+            gone = [f for f, d in whole.items() if d]
+            bmesh.ops.delete(bm, geom=gone, context="FACES_ONLY")
+            bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+            stats["plates_cleared"] = {"faces": len(gone), "toe_faces": _close_toes(bm)}
+            bm.verts.index_update()
+            points = np.array([v.co[:] for v in bm.verts])
+            tris = np.array([[lo.vert.index for lo in t] for t in bm.calc_loop_triangles()], dtype=np.int64)
+            stats["splinters_after"] = gr.splinters(points, tris, floor=at, height=height, feet=feet)
     bm.to_mesh(me)
     bm.free()
     me.update()
     return stats
+
+
+def _close_toes(bm) -> int:
+    """Closes the holes clearing the plates left at a boot's toe: each loop of open edges becomes faces wound like the
+    surface beside them, with its material, its edges hard, and the colour of one face beside it (the corners it
+    shares with that face keep their UVs there, the others take that face's middle: corners taken from any face
+    around a vertex reached across UV seams into the glow, D210)."""
+    open_edges = [e for e in bm.edges if e.is_boundary]
+    if not open_edges:
+        return 0
+    filled = bmesh.ops.holes_fill(bm, edges=open_edges, sides=0)["faces"]
+    filled = bmesh.ops.triangulate(bm, faces=filled, quad_method="BEAUTY", ngon_method="BEAUTY")["faces"]
+    new = set(filled)
+    layers = list(bm.loops.layers.uv.values())
+    for f in filled:
+        source = None
+        for loop in f.loops:
+            across = next((lo for lo in loop.edge.link_loops if lo.face not in new), None)
+            if across is not None:
+                if across.vert == loop.vert:  # the same direction along the shared edge: wound the other way
+                    f.normal_flip()
+                source = across.face
+                break
+        if source is None:  # a fill face inside a bigger fill: the colour of a face around one of its corners
+            source = next((lo.face for loop in f.loops for lo in loop.vert.link_loops if lo.face not in new), None)
+        f.smooth = False
+        for e in f.edges:
+            e.smooth = False
+        if source is None:
+            continue
+        f.material_index = source.material_index
+        for uv in layers:
+            middle = sum((lo[uv].uv for lo in source.loops), source.loops[0][uv].uv * 0) / len(source.loops)
+            corners = {lo.vert: lo[uv].uv.copy() for lo in source.loops}
+            for loop in f.loops:
+                loop[uv].uv = corners.get(loop.vert, middle)
+    return len(filled)
 
 
 def feet_move(me, plan: dict, height: float, T) -> None:
@@ -267,7 +315,7 @@ def fix_feet(arm, ob, plan: dict, s: dict, hips: str, feet_bones=()):
     """The feet plan of `--feet-from` (`game_ready.feet_plan`), right after the rescale: a made-up sole is cut off or
     pressed flat, the bones go with it (a toe bone that sat in the cut part is laid on the new sole), and the figure is
     stood on its new soles and scaled back to its height. A cut chosen by `--feet auto` that leaves thin plates of the
-    made-up shoe in front of the boot (measured near `feet_bones`) is not made: the sole is pressed flat instead.
+    made-up shoe in front of the boot (measured near `feet_bones`) clears them and closes the toe.
     Returns (stats, the second rescale's T, the bones that moved otherwise than the figure as a whole, which the
     moves' check leaves out, the height it measured the feet at, the plan as done)."""
     me = ob.data
@@ -279,13 +327,10 @@ def fix_feet(arm, ob, plan: dict, s: dict, hips: str, feet_bones=()):
     feet = [p for name in feet_bones if name in arm.data.bones
             for p in (arm.data.bones[name].head_local[:], arm.data.bones[name].tail_local[:])]
     if plan["mode"] == "cut":
-        cut = _cut_soles(ob, at, height, feet or None, refuse_splinters=bool(plan.get("auto")))
-        if cut.pop("refused", False):
-            plan = gr.squash_instead(plan, s["height"])
-            stats.update(mode="squash", splinters=cut.get("splinters"),
-                         switched="the cut left thin plates of the made-up shoe in front of the boot: pressed flat")
-        else:
-            stats.update(cut)
+        cut = _cut_soles(ob, at, height, feet or None, clear_splinters=bool(plan.get("auto")))
+        stats.update(cut)
+        if cut.get("plates_cleared"):
+            stats["cleared"] = "the cut left thin plates of the made-up shoe in front of the boot: cleared"
     if plan["mode"] == "squash":
         stats["sole_m"] = round(plan["sole"] * height, 4)
     feet_move(me, plan, height, Matrix.Identity(4))
