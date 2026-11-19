@@ -946,6 +946,17 @@ def test_a_small_thin_tip_of_a_pointed_shoe_is_no_reason_to_press_the_sole():
     assert gr.splintered({"thin_m2": 0.01518, "reach_m": 0.0621}, 2.2)       # Daemonenhexer: pressed flat
 
 
+def test_with_plates_under_6_5_mm_only_the_daemonenhexers_broad_plates_are_cleared():
+    # measured in Blender right after the cut with plates thinner than 0.35 % of the height (#183, D214 of the
+    # AssetFurnace Support notes): the Daemonenhexer's broad sheet is cleared; the others' thin parts are a real toe's
+    # sloping cap (Arkan-Duellant, Sturmschuetze: clean boots) or a short blade the Revolverheld keeps rather than lose
+    # his toe, as the 1.5 % rule made him
+    assert gr.splintered({"thin_m2": 0.01327, "reach_m": 0.0621}, 2.2)       # Daemonenhexer: cleared
+    assert not gr.splintered({"thin_m2": 0.00692, "reach_m": 0.0171}, 1.85)  # Arkan-Duellant: stays cut
+    assert not gr.splintered({"thin_m2": 0.00486, "reach_m": 0.0195}, 1.85)  # Sturmschuetze: stays cut
+    assert not gr.splintered({"thin_m2": 0.00237, "reach_m": 0.0198}, 1.85)  # Revolverheld: keeps his toe
+
+
 def test_a_cut_chosen_by_itself_clears_its_plates():
     plan = gr.feet_plan([_part(0.065)], height=1.85)
     assert plan["mode"] == "cut" and plan["auto"]
