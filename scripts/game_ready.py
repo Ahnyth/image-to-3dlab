@@ -222,10 +222,15 @@ def _triangles(text: str) -> int:
     return value
 
 
-def _texel(text: str) -> float:
-    value = float(text)
+def _texel(text: str) -> float | str:
+    if text == "auto":
+        return text
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("from 1 to 4, or auto") from None
     if not 1.0 <= value <= 4.0:
-        raise argparse.ArgumentTypeError("from 1 to 4")
+        raise argparse.ArgumentTypeError("from 1 to 4, or auto")
     return value
 
 
@@ -266,7 +271,11 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                              "triangles, the face keeps its nose, chin and eyes; default 0)")
     parser.add_argument("--head-texel", type=_texel, default=1.0,
                         help="1 to 4: the head's share of the atlas, times this (2 = a face twice as sharp, "
-                             "the body a little softer; default 1)")
+                             "the body a little softer; default 1); auto: per figure, as much as its colour source "
+                             "holds on the head at --game-texture, from 1 to 4")
+    parser.add_argument("--game-texture", type=_atlas, default=0, metavar="N",
+                        help="the texture size the game loads, for --head-texel auto (default: the --atlas size); "
+                             "a game that shrinks every map to 1024 sets 1024")
     parser.add_argument("--colour-from", type=Path, default=None, metavar="GLB",
                         help="bake the colour from this model of the same figure where it lies on the surface, "
                              "e.g. the raw model painted by Pixel Match, whose face keeps the picture's eyes; "
@@ -324,6 +333,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
+             game_texture=ns.game_texture,
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
@@ -1065,6 +1075,48 @@ def head_islands(island, share, at_least: float = 0.5) -> set[int]:
     return {int(i) for i in np.nonzero(count)[0] if total[i] / count[i] >= at_least}
 
 
+def head_texel_on(s: dict) -> bool:
+    """Whether the head gets more atlas than the body: a factor above 1, or auto."""
+    return s.get("head_texel") == "auto" or float(s.get("head_texel") or 1.0) > 1.0
+
+
+def texel_density(co, vert_tris, uv, uv_tris, width: int, height: int, pick=None) -> float:
+    """Texels per centimetre of surface a texture of `width` x `height` gives the triangles `pick` (all when None):
+    their texels over their area (positions `co` in metres), then the square root. 0 when nothing is picked."""
+    co, uv = np.asarray(co, float), np.asarray(uv, float)
+    vert_tris, uv_tris = np.asarray(vert_tris, int).reshape(-1, 3), np.asarray(uv_tris, int).reshape(-1, 3)
+    if pick is not None:
+        pick = np.asarray(pick, int)
+        vert_tris, uv_tris = vert_tris[pick], uv_tris[pick]
+    if not len(vert_tris):
+        return 0.0
+    p = co[vert_tris]
+    cm2 = float(np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1).sum() / 2) * 1e4
+    t = uv[uv_tris]
+    cross = (t[:, 1, 0] - t[:, 0, 0]) * (t[:, 2, 1] - t[:, 0, 1]) - (t[:, 1, 1] - t[:, 0, 1]) * (t[:, 2, 0] - t[:, 0, 0])
+    texels = float(np.abs(cross).sum() / 2) * width * height
+    return float(np.sqrt(texels / cm2)) if cm2 > 0 else 0.0
+
+
+def auto_head_factor(source: float, head_at_one: float, head_uv: float, body_uv: float,
+                     low: float = 1.0, high: float = 4.0) -> float:
+    """--head-texel auto: the factor that gives the head `source` texels per cm, when a pack with the head at factor
+    1 gave it `head_at_one` and the islands took `head_uv` (head) and `body_uv` (the rest) of the map.
+
+    Growing the head's islands by f and packing again scales everything by sqrt((h + b) / (f^2 h + b)), so the head
+    ends at head_at_one * f * that; solved for f, kept within `low`..`high` (out of reach: `high`). Never more than the
+    source holds: a face sharper than its picture only costs the body texels."""
+    if source <= 0 or head_at_one <= 0 or head_uv <= 0:
+        return low
+    r2 = (source / head_at_one) ** 2
+    if r2 <= 1.0:
+        return low
+    rest = head_uv * (1.0 - r2) + body_uv
+    if rest <= 0:
+        return high
+    return float(min(high, max(low, np.sqrt(r2 * body_uv / rest))))
+
+
 def scale_islands(uv, island, chosen: set[int], factor: float):
     """Loop UVs with the `chosen` islands grown by `factor` around their own centres, before packing:
     the packer then gives them `factor` times the texels per metre of the rest."""
@@ -1330,7 +1382,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         parser.error(f"--colour-from: not found: {s['colour_from']}")
     if s["mesh_from"] and not Path(s["mesh_from"]).is_file():
         parser.error(f"--mesh-from: not found: {s['mesh_from']}")
-    if (s["head_protect"] > 0 or s["head_texel"] > 1) and "Head" not in unity.values():
+    if (s["head_protect"] > 0 or head_texel_on(s)) and "Head" not in unity.values():
         print("note: no head bone found, so --head-protect and --head-texel change nothing")
     feet = None
     if not s["feet_from"] and s["feet"] != "off":

@@ -671,6 +671,54 @@ def test_head_islands_are_the_islands_mostly_on_the_head():
     assert gr.head_islands(island, share) == {1, 2}
 
 
+# --- --head-texel auto: the face gets what its colour source holds, no more ---------------------------
+
+def test_head_texel_reads_auto_and_the_game_texture():
+    s = gr.settings(["--head-texel", "auto"])
+    assert s["head_texel"] == "auto" and s["game_texture"] == 0     # 0: the size the atlas is baked at
+    s = gr.settings(["--head-texel", "auto", "--game-texture", "1024"])
+    assert s["game_texture"] == 1024
+    assert gr.head_texel_on(s) and gr.head_texel_on(gr.settings(["--head-texel", "2"]))
+    assert not gr.head_texel_on(gr.settings([]))
+
+
+@pytest.mark.parametrize("args", [["--head-texel", "big"], ["--game-texture", "1000"], ["--game-texture", "64"]])
+def test_head_texel_auto_switches_out_of_range_are_refused(args):
+    with pytest.raises(SystemExit):
+        gr.settings(args)
+
+
+def test_texel_density_is_texels_per_cm_over_the_picked_faces():
+    # two 10 cm squares side by side; the first fills a quarter of a 1024 map (512 texels across 10 cm),
+    # the second an eighth of the width (128 texels across 10 cm)
+    co = np.array([[0, 0, 0], [0.1, 0, 0], [0.1, 0.1, 0], [0, 0.1, 0],
+                   [0.2, 0, 0], [0.3, 0, 0], [0.3, 0.1, 0], [0.2, 0.1, 0]], float)
+    vert_tris = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]])
+    uv = np.array([[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5],
+                   [0.5, 0.5], [0.625, 0.5], [0.625, 0.625], [0.5, 0.625]], float)
+    uv_tris = vert_tris.copy()
+    assert gr.texel_density(co, vert_tris, uv, uv_tris, 1024, 1024, pick=[0, 1]) == pytest.approx(51.2)
+    assert gr.texel_density(co, vert_tris, uv, uv_tris, 1024, 1024, pick=[2, 3]) == pytest.approx(12.8)
+    both = gr.texel_density(co, vert_tris, uv, uv_tris, 1024, 1024)
+    assert both == pytest.approx(np.sqrt((51.2 ** 2 + 12.8 ** 2) / 2))   # texels over area, then the root
+    assert gr.texel_density(co, vert_tris, uv, uv_tris, 1024, 1024, pick=[]) == 0.0
+
+
+def test_auto_head_factor_gives_the_face_what_the_source_holds():
+    head_uv, body_uv = 0.1, 0.5          # UV area of head and body after a pack with the head at factor 1
+    f = gr.auto_head_factor(30.0, 15.0, head_uv, body_uv)
+    after = 15.0 * f * np.sqrt((head_uv + body_uv) / (f * f * head_uv + body_uv))   # the head after growing, repacked
+    assert 1.0 < f < 4.0 and after == pytest.approx(30.0, rel=0.01)
+
+
+def test_auto_head_factor_stays_within_one_and_four():
+    assert gr.auto_head_factor(10.0, 15.0, 0.1, 0.5) == 1.0     # the atlas already holds more than the source
+    assert gr.auto_head_factor(200.0, 15.0, 0.1, 0.5) == 4.0    # more than the head can ever take
+    assert gr.auto_head_factor(60.0, 15.0, 0.3, 0.1) == 4.0     # out of reach: the head would need the whole map
+    assert gr.auto_head_factor(30.0, 0.0, 0.0, 0.5) == 1.0      # no head
+    assert gr.auto_head_factor(0.0, 15.0, 0.1, 0.5) == 1.0      # no source measured
+
+
 # --- close-up versions: a normal map from the finer model, soft edges ---------------------------
 
 def test_the_close_up_switches_are_off_by_default():

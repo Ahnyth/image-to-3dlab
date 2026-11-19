@@ -855,6 +855,128 @@ def scale_head_islands(ob, factor: float, head: list[str]):
     return round(area.get(True, 0.0) / total, 4)
 
 
+def material_image_sizes(o) -> list:
+    """Per material slot of `o`, the size of the picture that colours it (the image feeding Base Color, else the
+    largest image in the material), or None."""
+    sizes = []
+    for mat in o.data.materials:
+        best = None
+        if mat and mat.use_nodes and mat.node_tree:
+            nt = mat.node_tree
+            bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            node = bsdf.inputs["Base Color"].links[0].from_node if bsdf and bsdf.inputs["Base Color"].is_linked else None
+            if node is not None and node.type == "TEX_IMAGE" and node.image:
+                images = [node.image]
+            else:
+                images = [n.image for n in nt.nodes if n.type == "TEX_IMAGE" and n.image]
+            for img in images:
+                w, h = (int(c) for c in img.size[:2])
+                if w and h and (best is None or w * h > best[0] * best[1]):
+                    best = (w, h)
+        sizes.append(best)
+    return sizes
+
+
+def mesh_triangles(o):
+    """World positions, triangles as vertex indices and as loop indices (a fan per polygon), the active UVs per
+    loop and each triangle's material slot."""
+    me = o.data
+    nv, nl, npoly = len(me.vertices), len(me.loops), len(me.polygons)
+    co = np.empty(nv * 3)
+    me.vertices.foreach_get("co", co)
+    M = np.array(o.matrix_world)
+    co = co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3]
+    uv = np.zeros(nl * 2)
+    if me.uv_layers.active:
+        me.uv_layers.active.data.foreach_get("uv", uv)
+    loop_vert = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    start, total, mat = (np.empty(npoly, np.int64) for _ in range(3))
+    me.polygons.foreach_get("loop_start", start)
+    me.polygons.foreach_get("loop_total", total)
+    me.polygons.foreach_get("material_index", mat)
+    tris, poly = [], []
+    for k in range(1, int(total.max()) - 1 if npoly else 1):
+        m = total > k + 1
+        s0 = start[m]
+        tris.append(np.stack([s0, s0 + k, s0 + k + 1], 1))
+        poly.append(np.nonzero(m)[0])
+    loop_tris = np.concatenate(tris) if tris else np.zeros((0, 3), np.int64)
+    poly = np.concatenate(poly) if poly else np.zeros(0, np.int64)
+    return co, loop_vert[loop_tris], uv.reshape(-1, 2), loop_tris, mat[poly]
+
+
+def source_head_density(ob, head: list[str], colour_objs=None) -> float:
+    """--head-texel auto: texels per cm the figure's colour source holds on the head. The source is `colour_objs`
+    (--colour-from, the faces whose centre lies in the box around the head's vertices) or the figure itself before
+    its new UVs (its head faces). It stands for what the picture gave: Pixel Match paints the picture into it."""
+    share_v = head_weights(ob, head)
+    if colour_objs:
+        co, _, _, _, _ = mesh_triangles(ob)
+        on = co[share_v >= 0.5]
+        if not len(on):
+            return 0.0
+        lo, hi = on.min(0), on.max(0)
+    texels = cm2 = 0.0
+    for o in colour_objs or [ob]:
+        sizes = material_image_sizes(o)
+        if not o.data.uv_layers or not any(sizes):
+            continue
+        co, vert_tris, uv, loop_tris, mat = mesh_triangles(o)
+        if colour_objs:
+            centre = co[vert_tris].mean(1)
+            picked = np.all((centre >= lo) & (centre <= hi), axis=1)
+        else:
+            picked = share_v[vert_tris].mean(1) >= 0.5
+        p = co[vert_tris]
+        area = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1) / 2 * 1e4
+        for slot, size in enumerate(sizes):
+            pick = np.nonzero(picked & (mat == slot))[0]
+            if size is None or not len(pick):
+                continue
+            d = gr.texel_density(co, vert_tris, uv, loop_tris, size[0], size[1], pick)
+            a = float(area[pick].sum())
+            texels += d * d * a
+            cm2 += a
+    return math.sqrt(texels / cm2) if cm2 else 0.0
+
+
+def pack_uvs(s: dict) -> None:
+    bpy.ops.uv.select_all(action="SELECT")
+    try:
+        bpy.ops.uv.pack_islands(rotate=True, rotate_method="ANY", scale=True, merge_overlap=False,
+                                margin_method="ADD", margin=gr.uv_margin(s), shape_method="CONCAVE")
+    except (TypeError, RuntimeError) as exc:
+        log("concave packing unavailable, plain packing:", exc)
+        bpy.ops.uv.pack_islands(rotate=True, margin=gr.uv_margin(s))
+
+
+def auto_head_texel(ob, s: dict, head: list[str], auto: dict) -> float:
+    """--head-texel auto, in edit mode after unwrapping: pack once with the head at factor 1, measure the head's
+    texels per cm at the texture size the game loads, and pick the factor that gives it what the colour source
+    holds (`game_ready.auto_head_factor`). The real pack follows with the head grown by it."""
+    pack_uvs(s)
+    share_v = head_weights(ob, head)
+    bm = bmesh.from_edit_mesh(ob.data)
+    uvl = bm.loops.layers.uv.active
+    uv_area = {True: 0.0, False: 0.0}
+    head_cm2 = 0.0
+    for f in bm.faces:
+        pts = [lp[uvl].uv for lp in f.loops]
+        a = sum(abs((pts[k] - pts[0]).cross(pts[k + 1] - pts[0])) for k in range(1, len(pts) - 1)) / 2
+        on = bool(np.mean([share_v[v.index] for v in f.verts]) >= 0.5)
+        uv_area[on] += a
+        if on:
+            head_cm2 += f.calc_area() * 1e4
+    size = s.get("game_texture") or s["atlas"]
+    at_one = math.sqrt(uv_area[True] * size * size / head_cm2) if head_cm2 else 0.0
+    factor = round(gr.auto_head_factor(auto["source_texels_per_cm"], at_one, uv_area[True], uv_area[False]), 2)
+    auto.update(game_texture=size, head_texels_per_cm_at_1=round(at_one, 2), factor=factor)
+    log(f"head texel auto: the colour source holds {auto['source_texels_per_cm']:.1f} texels per cm on the head, "
+        f"a {size} map gives it {at_one:.1f} at factor 1, so x{factor:g}")
+    return factor
+
+
 def pin_source_uvs(me) -> None:
     """Make every texture read the old UVs by name, before the new layout becomes the active one."""
     me.uv_layers[0].name = "src"
@@ -928,8 +1050,11 @@ def unfold_overlaps(bpy, me, angle: float, margin: float, rounds: int = rb.UV_RO
         settings.mesh_select_mode = mode
 
 
-def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
+def new_uvs(ob, s: dict, head: list[str] | None = None, colour_objs: list | None = None) -> dict:
     me = ob.data
+    auto = None
+    if s.get("head_texel") == "auto" and head:
+        auto = {"source_texels_per_cm": round(source_head_density(ob, head, colour_objs), 2)}
     pin_source_uvs(me)
     layer = me.uv_layers.new(name="UVMap")
     me.uv_layers.active = layer
@@ -940,14 +1065,11 @@ def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
     overlapping = unfold_overlaps(bpy, me, math.radians(s["uv_angle"]), gr.uv_margin(s))
-    head_uv_share = scale_head_islands(ob, s.get("head_texel", 1.0), head or [])
-    bpy.ops.uv.select_all(action="SELECT")
-    try:
-        bpy.ops.uv.pack_islands(rotate=True, rotate_method="ANY", scale=True, merge_overlap=False,
-                                margin_method="ADD", margin=gr.uv_margin(s), shape_method="CONCAVE")
-    except (TypeError, RuntimeError) as exc:
-        log("concave packing unavailable, plain packing:", exc)
-        bpy.ops.uv.pack_islands(rotate=True, margin=gr.uv_margin(s))
+    factor = s.get("head_texel", 1.0)
+    if factor == "auto":
+        factor = auto_head_texel(ob, s, head or [], auto) if auto else 1.0
+    head_uv_share = scale_head_islands(ob, factor, head or [])
+    pack_uvs(s)
     bpy.ops.object.mode_set(mode="OBJECT")
 
     bm = bmesh.new()
@@ -1001,6 +1123,8 @@ def new_uvs(ob, s: dict, head: list[str] | None = None) -> dict:
     out = {"uv_islands": islands, **atlas, "hard_edges": hard, "uv_overlapping_faces": overlapping}
     if head_uv_share is not None:
         out["head_uv_share"] = head_uv_share
+    if auto:
+        out["head_texel_auto"] = auto
     return out
 
 
@@ -1447,8 +1571,8 @@ def main() -> None:
                                     job.get("pose_picture")))
     elif s.get("decimate_to"):
         report.update(decimate_with_head(ob, s, head))
-    report.update(new_uvs(ob, s, head))
     colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
+    report.update(new_uvs(ob, s, head, colour_objs))
     normal_objs = None
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
