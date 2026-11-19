@@ -115,6 +115,11 @@ FIXED = {
     "feet_splinter_area": 0.002,   # this share of the height past the boot, over this share of the height squared;
                                    # four cut figures set these (two clean cuts reached 1.2 and 1.7 %, two with blades
                                    # 2.4 and 2.8 %; D207 of the AssetFurnace Support notes)
+    "feet_plate_thin": 0.0035,     # a plate is thinner than this share of the height (6.5 mm at 1.85 m): the made-up
+                                   # shoe's plates are a sheet under 3-6 mm, a real toe is 10-15 mm thick and thins only
+                                   # at its rim (#183 of the AssetFurnace Support notes: 1.5 % took the Revolverheld's toe)
+    "feet_plate_rise": 0.015,      # a cleared plate takes along what lies on it lower than this (its top and rims, a tip
+                                   # tilted up off the floor)
     "glow_paint_bright_share": 0.25,  # a glow hue whose bright group is at most this share of its texels ...
     "glow_paint_gap": 0.30,           # ... and this much brighter than the rest is mostly paint: only the bright
                                       # group glows (the Purpur-Samurai's crimson plates: 20 %, 0.42; 25 figures
@@ -742,20 +747,24 @@ def _raster(tris2d, lo, cell: float, shape) -> np.ndarray:
 
 
 def plate_faces(vertices, faces, floor: float | None = None, height: float | None = None,
-                thin: float = 0.015, feet=None, radius: float = 0.12):
+                thin: float | None = None, feet=None, radius: float = 0.12, rise: float | None = None):
     """Which faces are the thin plates a cut left of a made-up shoe (`splinters`), to clear them instead of pressing the
     whole sole flat (Deniz kept the cut Daemonenhexer, splinters and all, over the pressed one, #172 of the AssetFurnace
     Support notes): the thin soles themselves, every face lower than `thin` (a share of the height) above the floor that
     lies wholly over them (the plate's top and rims), every face that low whose corners all belong to those, and every
     face that low which hangs on them out past the boot's own thick sole (a toe of the made-up shoe that tilts up off
     the floor, so it is no sole, yet stays a spike once the plate is gone; the Daemonenhexer, D210). A boot's walls rise
-    higher and its own sole is thick, so they stay; the hole left at the toe is closed by the caller."""
+    higher and its own sole is thick, so they stay; the hole left at the toe is closed by the caller. `thin` (a plate,
+    default `feet_plate_thin`) and `rise` (what lies on it, default `feet_plate_rise`) are shares of the height: a real
+    toe is thicker than a plate and thins only at its rim, so its core counts as boot and the flood stops there (#183)."""
+    thin = FIXED["feet_plate_thin"] if thin is None else thin
+    rise = FIXED["feet_plate_rise"] if rise is None else rise
     tri, _area, sole, hit, floor, height = _thin_soles(vertices, faces, floor, height, thin, feet, radius)
     drop = np.zeros(len(tri), dtype=bool)
     if not hit.any():
         return drop
     drop[np.flatnonzero(sole)[hit]] = True
-    cell = max(thin * height / 10.0, 1e-4)
+    cell = max(rise * height / 10.0, 1e-4)
     flat = tri[:, :, :2].reshape(-1, 2)
     lo = flat.min(axis=0) - 2 * cell
     shape = tuple(np.ceil((flat.max(axis=0) + 2 * cell - lo) / cell).astype(int) + 1)
@@ -766,7 +775,7 @@ def plate_faces(vertices, faces, floor: float | None = None, height: float | Non
         ij = np.floor((points - lo) / cell).astype(int)
         return grid[ij[..., 0], ij[..., 1]]
 
-    low = tri[:, :, 2].max(axis=1) < floor + thin * height
+    low = tri[:, :, 2].max(axis=1) < floor + rise * height
     corners = np.concatenate([tri[:, :, :2], tri[:, :, :2].mean(axis=1, keepdims=True)], axis=1)
     drop |= low & covered(plates, corners).all(axis=1)
     f = np.asarray(faces, dtype=np.int64)
@@ -785,7 +794,7 @@ def plate_faces(vertices, faces, floor: float | None = None, height: float | Non
 
 
 def splinters(vertices, faces, floor: float | None = None, height: float | None = None,
-              thin: float = 0.015, feet=None, radius: float = 0.12) -> dict:
+              thin: float | None = None, feet=None, radius: float = 0.12) -> dict:
     """How much of a figure's soles is a thin plate: the soles are the faces facing the floor at the floor (`floor`,
     else the lowest point), with `feet` (the foot and toe bones' points, x and y) only those within `radius` (a share
     of the height) of one, so a robe or a cape lying on the floor is no sole; from each, straight up, the first
@@ -793,7 +802,8 @@ def splinters(vertices, faces, floor: float | None = None, height: float | None 
     high; a made-up shoe longer than the boot leaves the front of its toe as a flat plate a few millimetres thick
     lying out in front (the Revolverheld, D206). Returns the soles' area and the area under which another surface lies
     closer than `thin` (a share of the height), in square metres, that share, and how far the plates reach past the
-    thick part of the soles (metres)."""
+    thick part of the soles (metres). `thin` defaults to `feet_plate_thin`."""
+    thin = FIXED["feet_plate_thin"] if thin is None else thin
     tri, area, sole, hit, floor, height = _thin_soles(vertices, faces, floor, height, thin, feet, radius)
     if not sole.any():
         return {"sole_m2": 0.0, "thin_m2": 0.0, "thin_share": 0.0, "reach_m": 0.0}

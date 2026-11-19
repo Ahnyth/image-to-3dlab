@@ -1017,6 +1017,26 @@ def test_a_thick_toe_is_no_plate():
     assert not gr.plate_faces(v, f, height=1.85).any()
 
 
+def _tapered_toe():
+    """A boot cut through low: 15 cm high at the back, its toe 1.5 cm high from 15 to 25 cm, then thinning to its rim
+    at 27 cm, as the Revolverheld's real toe after his cut (#183 of the AssetFurnace Support notes: 10-15 mm thick, thin
+    only at its rim)."""
+    profile = [(0.0, 0.0), (0.15, 0.0), (0.25, 0.0), (0.265, 0.0), (0.27, 0.0), (0.265, 0.00375), (0.25, 0.015),
+               (0.15, 0.015), (0.15, 0.15), (0.0, 0.15)]
+    side = [(0, 1, 8), (0, 8, 9), (1, 2, 6), (1, 6, 7), (2, 3, 5), (2, 5, 6), (3, 4, 5)]
+    return _profile_shoe(profile, side)
+
+
+def test_a_real_toe_that_thins_only_at_its_rim_is_no_plate():
+    # the Revolverheld (#183): the old rule took everything under 2.8 cm for a plate and cut his real toe off
+    v, f = _tapered_toe()
+    found = gr.splinters(v, f, height=1.85)
+    assert found["thin_m2"] <= 0.0006 and found["reach_m"] < 0.02
+    assert not gr.splintered(found, 1.85)
+    centre = v[f].mean(axis=1)
+    assert not gr.plate_faces(v, f, height=1.85)[centre[:, 1] < 0.25].any()   # the toe's core stays in any case
+
+
 def _provenance(path: Path, record: dict) -> None:
     path.with_name(path.stem + ".provenance.json").write_text(json.dumps(record), encoding="utf-8")
 

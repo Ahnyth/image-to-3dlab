@@ -123,7 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each new sole near the feet; a sole with another surface a few millimetres above it is such a
   blade, and when they reach well past the boot those blades are cleared and the toe is closed,
   so the boot keeps its own length, and the report says so. On four figures with platform shoes
-  two cuts were clean and two left blades.
+  two cuts were clean and two left blades. A blade is thinner than 0.35 % of the height (6.5 mm on a
+  1.85 m figure): a real toe left by the cut is 1-1.5 cm thick and thins only at its rim, so it stays
+  (a first rule at 1.5 % took a gunslinger's whole toe for a blade).
 - `game_ready.py --glow-not-on-hands` keeps the glow off the hands and fingers (glowing hands read
   as too big at a game's camera), as `--glow-not-on-head` does for the head.
 - **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
