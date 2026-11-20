@@ -269,10 +269,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--head-protect", type=_fraction, default=0.0,
                         help="0 to 1: how strongly the head resists --decimate-to (1 = the body gives up the "
                              "triangles, the face keeps its nose, chin and eyes; default 0)")
-    parser.add_argument("--head-texel", type=_texel, default=1.0,
-                        help="1 to 4: the head's share of the atlas, times this (2 = a face twice as sharp, "
-                             "the body a little softer; default 1); auto: per figure, as much as its colour source "
-                             "holds on the head at --game-texture, from 1 to 4")
+    parser.add_argument("--head-texel", type=_texel, default="auto",
+                        help="auto (default): per figure, the head's share of the atlas grown as far as its colour "
+                             "source holds on the head at --game-texture, from 1 to 4; or a fixed 1 to 4 (2 = a face "
+                             "twice as sharp, the body a little softer; 1 = no extra share)")
     parser.add_argument("--game-texture", type=_atlas, default=0, metavar="N",
                         help="the texture size the game loads, for --head-texel auto (default: the --atlas size); "
                              "a game that shrinks every map to 1024 sets 1024")
@@ -1382,7 +1382,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         parser.error(f"--colour-from: not found: {s['colour_from']}")
     if s["mesh_from"] and not Path(s["mesh_from"]).is_file():
         parser.error(f"--mesh-from: not found: {s['mesh_from']}")
-    if (s["head_protect"] > 0 or head_texel_on(s)) and "Head" not in unity.values():
+    if (s["head_protect"] > 0 or (s["head_texel"] != "auto" and head_texel_on(s))) and "Head" not in unity.values():
         print("note: no head bone found, so --head-protect and --head-texel change nothing")
     feet = None
     if not s["feet_from"] and s["feet"] != "off":

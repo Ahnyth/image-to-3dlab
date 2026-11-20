@@ -22,10 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--decimate-to 8000 --head-protect 1` thin it here: the body gives up the triangles, the head
   keeps them. `--colour-from` paints the result from a finer model of the same figure, such as
   the raw model after Pixel Match (`photo_paint.py`), whose face keeps the picture's eyes;
-  `--head-texel 2` gives the head twice the texture. `--head-texel auto` picks the factor per figure
-  (1 to 4): as much as the colour source holds on the head at the texture size the game loads
+  `--head-texel` gives the head more of the texture: by default (`auto`) as much as the colour
+  source holds on the head at the texture size the game loads, from 1 to 4 times its share
   (`--game-texture 1024` for a game that shrinks every map to 1024; the atlas size otherwise), so
-  a face never takes texels from the body that its picture cannot fill.
+  a face never takes texels from the body that its picture cannot fill; a fixed `--head-texel 2`
+  or `1` (no extra share) as before.
   `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
   the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
   misses the legs or the spine).

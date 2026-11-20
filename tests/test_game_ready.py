@@ -610,9 +610,11 @@ def test_compose_keeps_the_glow_off_an_excluded_area():
 
 # --- the face: thin with the head kept, a sharper head, colour from a finer paint ----------------
 
-def test_the_head_switches_are_off_by_default():
+def test_the_head_switches_are_off_by_default_but_the_head_texel_is_auto():
     s = gr.settings([])
-    assert s["decimate_to"] == 0 and s["head_protect"] == 0.0 and s["head_texel"] == 1.0
+    assert s["decimate_to"] == 0 and s["head_protect"] == 0.0
+    assert s["head_texel"] == "auto"     # D224: a figure's face gets what its colour source holds, never more
+    assert gr.settings(["--head-texel", "1"])["head_texel"] == 1.0     # the old behaviour on request
     assert s["colour_from"] is None and s["mesh_from"] is None
 
 
@@ -679,7 +681,8 @@ def test_head_texel_reads_auto_and_the_game_texture():
     s = gr.settings(["--head-texel", "auto", "--game-texture", "1024"])
     assert s["game_texture"] == 1024
     assert gr.head_texel_on(s) and gr.head_texel_on(gr.settings(["--head-texel", "2"]))
-    assert not gr.head_texel_on(gr.settings([]))
+    assert not gr.head_texel_on(gr.settings(["--head-texel", "1"]))
+    assert gr.head_texel_on(gr.settings([]))     # auto is the default
 
 
 @pytest.mark.parametrize("args", [["--head-texel", "big"], ["--game-texture", "1000"], ["--game-texture", "64"]])
