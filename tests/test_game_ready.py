@@ -319,7 +319,21 @@ def test_atlas_density_reads_uvs_by_corner():
 
 def test_atlas_density_of_nothing():
     m = gr.atlas_density(np.zeros((0, 3)), np.zeros((0, 2)), np.zeros((0, 3), int), np.zeros((0, 3), int), 512)
-    assert m == {"texels_per_cm": 0.0, "atlas_covered": 0.0, "texels_twice": 0.0}
+    assert m == {"texels_per_cm": 0.0, "body_texels_per_cm": 0.0, "atlas_covered": 0.0, "texels_twice": 0.0}
+
+
+def test_the_body_density_is_the_bulk_of_the_surface_not_a_grown_face():
+    """A face grown to a quarter of the atlas raises the figure's average density; the body's own (the density of
+    most of the surface) is what a glow line's width in texels depends on (AssetFurnace Support D232)."""
+    body, _, body_tris = _square(1.0)                 # 10,000 cm2 on a quarter of the atlas: 5 texels per cm
+    face = body * 0.1 + [0, 0, 1]                     # 100 cm2 on another quarter: 50 texels per cm
+    co = np.concatenate([body, face])
+    uv = np.concatenate([np.array([[0, 0], [0.5, 0], [0, 0.5], [0.5, 0.5]]),
+                         np.array([[0.5, 0.5], [1, 0.5], [0.5, 1], [1, 1]])])
+    tris = np.concatenate([body_tris, body_tris + 4])
+    m = gr.atlas_density(co, uv, tris, tris, 1000)
+    assert m["texels_per_cm"] == pytest.approx((500000 / 10100) ** 0.5, rel=1e-3)
+    assert m["body_texels_per_cm"] == pytest.approx(5.0, rel=1e-3)
 
 
 def test_engine_vertices_count_each_split_once():
@@ -1181,3 +1195,43 @@ def test_head_zone_is_the_face_by_default_and_the_whole_head_on_request():
     assert gr.settings(["--head-zone", "head"])["head_zone"] == "head"
     with pytest.raises(SystemExit):
         gr.settings(["--head-zone", "hat"])
+
+
+# --- the glow gate counts widths in centimetres -----------------------------------------------
+
+def _glow_lines(k: int):
+    """Columns of one glow hue on grey, `k` texels per unit: thin lines (2 units) bright and dark, and medium dark
+    lines (4 units). At k = 1 a fifth of the thin-enough hue is bright, so only the bright lines are paint to glow."""
+    hue = np.array([0.16, 0.9, 1.0])
+    cols = []
+    for _ in range(6):
+        cols += [None] * 4 + [0.98] * 2 + [None] * 4 + [0.45] * 2 + [None] * 4 + [0.45] * 2 + [None] * 4 + [0.45] * 4
+    srgb = np.full((48, len(cols), 3), 0.3)
+    for x, v in enumerate(cols):
+        if v is not None:
+            srgb[:, x] = hue * v
+    srgb = srgb.repeat(k, axis=0).repeat(k, axis=1)
+    return gr.to_linear(srgb), np.ones(srgb.shape[:2]), np.ones(srgb.shape[:2])
+
+
+def test_the_glow_gate_does_not_flip_when_the_body_is_packed_denser():
+    """A face grown into the atlas packs the body denser (the Sturmklinge's v18a: 7.0 texels per cm against 3.6),
+    and widths counted in texels then left out lines that had counted, so her jacket's light blue glowed whole
+    (AssetFurnace Support D231). Counted against the body's density, the same figure gives the same gate."""
+    s = gr.settings(["--glow", "#29e6ff", "--glow-max-width", "4", "--no-shade"])
+    splits = []
+    for k in (1, 2):
+        alb, lit, cov = _glow_lines(k)
+        s["body_texels_per_cm"] = s["glow_ref_texels_per_cm"] * k
+        _, _, stats = gr.compose(alb, lit, cov, s)
+        splits.append(stats["glow_split"]["#29e6ff"])
+    assert splits[0]["used"] and splits[1]["used"]
+    assert splits[1]["bright_share"] == pytest.approx(splits[0]["bright_share"], abs=0.02)
+
+
+def test_without_a_measured_body_the_gate_counts_texels_as_before():
+    s = gr.settings(["--glow", "#29e6ff", "--glow-max-width", "4", "--no-shade"])
+    s.pop("body_texels_per_cm", None)
+    alb, lit, cov = _glow_lines(1)
+    _, _, stats = gr.compose(alb, lit, cov, s)
+    assert stats["glow_split"]["#29e6ff"]["used"]

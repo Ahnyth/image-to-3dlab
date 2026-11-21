@@ -146,6 +146,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plate edge, a blotchy bright red. When most of a glow hue's thin lines are clearly darker than
   its brightest ones, only the bright group glows now (the report's `glow_split` says so); a hue
   that is mostly bright lines is left as it was.
+- `game_ready.py --glow-max-width` judges a line's width in centimetres, not in texels: a face
+  grown into the atlas packed a figure's body twice as dense, its light blue jacket lines grew too
+  wide to count as lines, and the check above flipped and lit the whole jacket. The width now
+  follows the body's own texel density (the report's `body_texels_per_cm`), so the same figure
+  gives the same glow however the atlas is packed; on 22 glowing figures every glow colour keeps
+  the decision it had.
 - `game_ready.py`'s atlas paints no texel twice: Smart UV Project at its wide angle folded some
   islands onto themselves, and the bake wrote hidden faces from inside over seen ones (a dark,
   faceted patch on a cape's back, after a finer thinning). Only the faces that overlap are now

@@ -1639,6 +1639,7 @@ def main() -> None:
         report.update(decimate_with_head(ob, s, head))
     colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
     report.update(new_uvs(ob, s, head, colour_objs, arm))
+    s["body_texels_per_cm"] = report.get("body_texels_per_cm") or None  # the glow gate's widths in centimetres
     normal_objs = None
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
