@@ -1197,6 +1197,18 @@ def test_head_zone_is_the_face_by_default_and_the_whole_head_on_request():
         gr.settings(["--head-zone", "hat"])
 
 
+# --- look: how much the material shines, and which parts are metal ----------------------------
+
+def test_the_look_sets_how_much_a_figure_shines():
+    assert gr.settings([])["look"] == "stylized"
+    assert gr.settings([])["specular"] == pytest.approx(0.5)  # the glTF default: every surface mirrors 4 %
+    for look in ("clean",):
+        s = gr.settings(["--look", look])
+        assert s["look"] == look
+        # a fifth of the sheen: a bright room no longer lays a grey veil over dark cloth
+        assert s["specular"] == pytest.approx(0.1)
+
+
 # --- the glow gate counts widths in centimetres -----------------------------------------------
 
 def _glow_lines(k: int):

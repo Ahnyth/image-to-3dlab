@@ -139,6 +139,12 @@ FIXED = {
                                # (five figures measured, D230 of the AssetFurnace Support notes)
 }
 
+# --look: how much of a bright room every surface mirrors (the glTF Specular IOR Level, exported as
+# KHR_materials_specular; 0.5 is the default 4 %). Measured on the Revolverheld and the Zauberer (AssetFurnace Support
+# D232): under a bright room the default sheen lays a grey veil over dark cloth (the darkest tones 7 -> 29 of 255,
+# half the saturation), a fifth of it keeps the picture's blacks and colour.
+LOOKS = {"stylized": 0.5, "clean": 0.1}
+
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
 # drop (D190 of the AssetFurnace Support notes); each figure's next try is aimed by what its own drop left.
 FIRST_GROWTH = 22000 / 14000
@@ -273,6 +279,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-influences", type=_influences, default=4, help="bones per vertex (default 4)")
     parser.add_argument("--smooth", type=int, default=2, help="weight smoothing passes (default 2)")
     parser.add_argument("--roughness", type=_fraction, default=0.8, help="material roughness (default 0.8)")
+    parser.add_argument("--look", choices=tuple(LOOKS), default="stylized",
+                        help="stylized (default): the usual material, every surface mirrors a little of a bright "
+                             "room; clean: a fifth of that sheen, so dark cloth stays dark and colours stay "
+                             "full")
     parser.add_argument("--decimate-to", type=_triangles, default=0, metavar="N",
                         help="thin the mesh to about N triangles first (default 0, keep); rig a finer Finish "
                              "(say 40k) and thin it here, so --head-protect can keep the face")
@@ -345,7 +355,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
              glow_not_on_head=ns.glow_not_on_head, glow_not_on_hands=ns.glow_not_on_hands,
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
-             smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
+             smooth_iters=max(0, ns.smooth), roughness=ns.roughness, look=ns.look, specular=LOOKS[ns.look],
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
              head_zone=ns.head_zone, game_texture=ns.game_texture,
              colour_from=str(ns.colour_from) if ns.colour_from else None,

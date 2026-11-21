@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
   the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
   misses the legs or the spine).
+- `game_ready.py --look clean` takes the grey veil off a figure: by default every surface mirrors
+  about 4 % of a bright room, and on a dark coat under a studio light that lifted the darkest
+  tones from 7 to 29 (of 255) and halved the colour (measured against the picture it was painted
+  from). `clean` mirrors a fifth of that (`KHR_materials_specular`), so dark cloth stays dark and
+  colours stay full in engines and viewers that light with a bright environment; `stylized`, the
+  default, is the material as before.
 - `game_ready.py --normal-from <raw model>` gives a close-up version of a figure (a menu, a hero
   stage) a normal map baked from the fine raw model, so the engine lights its nose, lips and folds
   on the coarse mesh. Costs a second texture of the atlas's size.

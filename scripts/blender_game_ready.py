@@ -1536,6 +1536,8 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
     bsdf.inputs["Roughness"].default_value = s["roughness"]
     bsdf.inputs["Metallic"].default_value = 0.0
+    # --look: how much of a bright room the surface mirrors; exported as KHR_materials_specular when not 0.5
+    bsdf.inputs["Specular IOR Level"].default_value = s.get("specular", 0.5)
     mat.use_backface_culling = True
     me.materials.append(mat)
     stats["bake_device"] = device
