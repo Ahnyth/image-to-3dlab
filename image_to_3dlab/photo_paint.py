@@ -277,7 +277,8 @@ class Settings:
     # Match locally rather than with one shift for the whole model: the gap between the
     # model's paint and the picture is measured spot by spot where the picture is trusted,
     # spread smoothly over the surface, and added everywhere. Sides then meet each picture
-    # in colour (a robe's side next to a pale back, a belt beside a dark front). Falls back
+    # in colour (a robe's side next to a pale back, a belt beside a dark front), and a part
+    # no picture reaches takes the gap its own colour needed where it was seen. Falls back
     # to the global match when too little of the picture is trusted.
     local_colour: bool = True
     # Nudge each picture onto the model before painting (see view_align): the cut-out onto
@@ -423,20 +424,20 @@ def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np
     the mesh's vertices (welded across UV seams so it flows over them), and spread to the
     rest by a smooth interpolation over the mesh's edges: a graph Laplacian with the
     measured vertices held loosely (`smooth`). What is spread is each spot's difference
-    from the typical gap, so a part no measurement can reach (a loose piece) still gets
-    the typical gap rather than none. A gap far from the typical one (more than
-    `outlier` x the median absolute deviation) is a mismatched feature, such as a rope the
-    model painted as robe, not colour drift, and is left out so it cannot smear.
+    from the gap its own colour is expected to need (`expected_gap`: what the trusted texels
+    of a similar colour needed), so a part no measurement can reach (a loose piece, the top
+    of a hat's brim) still gets the gap of its own paint rather than none, or its
+    neighbour's. A gap far from the expected one (more than `outlier` x the median absolute
+    deviation) is a mismatched feature, such as a rope the model painted as robe, not
+    colour drift, and is left out so it cannot smear.
     Returns None when too little is trusted to measure.
     """
     mask = weight >= trusted
     if mask.sum() < min_texels:
         return None
     gap = photo - own
-    typical = np.median(gap[mask], axis=0)
-    deviation = np.linalg.norm(gap - typical, axis=1)
-    limit = max(np.median(deviation[mask]) * 1.4826 * outlier, 1.0)
-    mask &= deviation <= limit
+    expected, mask = expected_gap(own, gap, mask, outlier=outlier)
+    rest = gap - expected
 
     _, weld = np.unique(np.round(positions, 6), axis=0, return_inverse=True)
     weld = weld.reshape(-1)
@@ -448,10 +449,10 @@ def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np
         vertex = corners[texel_face[mask], k]
         share = texel_bary[mask, k]
         np.add.at(seen, vertex, share)
-        np.add.at(total, vertex, share[:, None] * gap[mask])
+        np.add.at(total, vertex, share[:, None] * rest[mask])
     known = seen > 0.5
     target = np.zeros((count, 3))
-    target[known] = total[known] / seen[known][:, None] - typical
+    target[known] = total[known] / seen[known][:, None]
 
     edges = np.concatenate([corners[:, [0, 1]], corners[:, [1, 2]], corners[:, [2, 0]]])
     adjacency = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(count, count))
@@ -463,7 +464,50 @@ def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np
     for channel in range(3):
         field[:, channel], _ = cg(system, hold * target[:, channel], M=precondition,
                                   maxiter=3000, rtol=1e-6)
-    return typical + (texel_bary[:, :, None] * field[corners[texel_face]]).sum(axis=1)
+    return expected + (texel_bary[:, :, None] * field[corners[texel_face]]).sum(axis=1)
+
+
+def expected_gap(own: np.ndarray, gap: np.ndarray, mask: np.ndarray, cells: int = 16,
+                 spread: float = 1.0, outlier: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+    """The gap (picture - own) each texel is expected to need, from its own colour.
+
+    What the trusted texels (`mask`) of a similar own colour needed: their gaps are summed on a
+    `cells`^3 grid over RGB, sums and counts are blurred alike (a Gaussian of `spread` cells),
+    and each cell's expectation is the blurred sum over the blurred count. A shade nobody
+    measured takes the nearest measured shades, the more texels and the closer the more, and
+    neighbouring shades blend without a step (the grid is read with trilinear interpolation).
+    One gap for the whole model was the gap of whatever the pictures show most: on a wizard
+    whose light hat band is seen and whose dark brim top is not, the band's correction took
+    the brim from dark violet to grey-green. Measured twice: the second pass leaves out the
+    gaps far from the first expectation (more than `outlier` x their median absolute
+    deviation), mismatched features rather than colour drift.
+    Returns (the expected gap per texel, the trusted texels kept).
+    """
+    from scipy.ndimage import gaussian_filter, map_coordinates
+
+    own = np.asarray(own, dtype=np.float64)
+    fallback = np.median(gap[mask], axis=0)
+    idx = np.clip((own / 256.0 * cells).astype(int), 0, cells - 1)
+    key = (idx[:, 0] * cells + idx[:, 1]) * cells + idx[:, 2]
+    coords = np.clip(own / 256.0 * cells - 0.5, 0, cells - 1).T
+    # Far enough that every cell hears from the nearest measured shade, however far.
+    blur = {"sigma": spread, "mode": "constant", "truncate": 2.0 * cells / spread}
+    kept = mask
+    for _ in range(2):
+        count = gaussian_filter(np.bincount(key[kept], minlength=cells ** 3).astype(np.float64)
+                                .reshape((cells,) * 3), **blur)
+        grid = np.empty((cells,) * 3 + (3,))
+        for c in range(3):
+            sums = np.bincount(key[kept], weights=gap[kept, c], minlength=cells ** 3)
+            grid[..., c] = gaussian_filter(sums.reshape((cells,) * 3), **blur)
+        heard = count > count.max() * 1e-200
+        grid = np.where(heard[..., None], grid / np.where(heard, count, 1.0)[..., None], fallback)
+        expected = np.stack([map_coordinates(grid[..., c], coords, order=1, mode="nearest")
+                             for c in range(3)], axis=1)
+        deviation = np.linalg.norm(gap - expected, axis=1)
+        limit = max(np.median(deviation[mask]) * 1.4826 * outlier, 1.0)
+        kept = mask & (deviation <= limit)
+    return expected, kept
 
 
 def fit_colour_match(own: np.ndarray, photo: np.ndarray, weight: np.ndarray,

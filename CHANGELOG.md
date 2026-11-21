@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Pixel Match: a part no picture sees keeps a colour of its own family.** Where no picture looks (the top of a hat's
+  brim, the inside of a cape), the model's own paint is shifted toward the pictures by the correction that paint
+  needed where it was seen, read by colour: a dark part takes what the other dark parts needed. Before, one
+  correction for the whole model plus its nearest neighbour's spread across: a wizard's dark violet brim, seen by no
+  picture, took the correction of the light blue hat band beside it and came out grey-green. Texels a picture sees
+  are painted as before.
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
   "Access is denied", and each planned or failed install kept its `.<id>-install-*` folder; every removal of a cloned

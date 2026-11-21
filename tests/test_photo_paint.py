@@ -540,6 +540,42 @@ def test_one_mismatched_patch_does_not_smear_into_the_unseen_part():
     assert abs(int(out[64, 64, 0]) - 120) <= 10
 
 
+def _band_and_brim_photo(size: int, band: int, brim: int) -> np.ndarray:
+    """The top half (a light hat band) seen whole; the bottom half (a dark brim) seen only on
+    its left 40 %, like a brim whose top no picture shows."""
+    photo = np.zeros((size, size, 4), dtype=np.uint8)
+    photo[: size // 2, :, :3] = band
+    photo[size // 2:, :, :3] = brim
+    photo[: size // 2, :, 3] = 255
+    photo[size // 2:, : int(size * 0.4), 3] = 255
+    return photo
+
+
+def test_an_unseen_part_takes_the_gap_of_its_own_paint_not_its_neighbours():
+    # The band's paint needed -60 to meet the picture, the seen part of the brim +10. The
+    # unseen rest of the brim keeps +10: one gap for the whole model (the band's, since more
+    # of it is seen) took a wizard's dark violet brim to grey-green.
+    positions, faces, uvs = _grid()
+    texture = np.full((128, 128, 3), 200, dtype=np.uint8)
+    texture[64:] = 30
+    view = _camera(size=768, image=_band_and_brim_photo(768, band=140, brim=40))
+    out, weight = pp.paint_texture(texture, positions, uvs, faces, [view], frame=IDENTITY)
+    assert weight[110, 110] == 0.0
+    assert abs(int(out[110, 110, 0]) - 40) <= 8
+
+
+def test_the_expected_gap_follows_the_models_own_colour_smoothly():
+    own = np.array([[30.0, 30, 30]] * 400 + [[200.0, 200, 200]] * 400 + [[115.0, 115, 115]])
+    gap = np.array([[10.0, 10, 10]] * 400 + [[-60.0, -60, -60]] * 400 + [[0.0, 0, 0]])
+    trusted = np.arange(len(own)) < 800  # the mid grey is not measured
+    expected, kept = pp.expected_gap(own, gap, trusted)
+    assert np.allclose(expected[:400], 10, atol=0.5)
+    assert np.allclose(expected[400:800], -60, atol=0.5)
+    # Between the two measured paints the expectation blends, with no step.
+    assert -60 < expected[800, 0] < 10
+    assert kept[:800].all()
+
+
 def test_local_colour_can_fall_back_to_the_global_match():
     positions, faces, uvs = _grid()
     texture = np.full((128, 128, 3), 100, dtype=np.uint8)
