@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source holds on the head at the texture size the game loads, from 1 to 4 times its share
   (`--game-texture 1024` for a game that shrinks every map to 1024; the atlas size otherwise), so
   a face never takes texels from the body that its picture cannot fill; a fixed `--head-texel 2`
-  or `1` (no extra share) as before.
+  or `1` (no extra share) as before. Only the face grows (`--head-zone face`, the default: the
+  head's front from the chin to the brows, between the temples), so a ponytail reaching the waist
+  or a tall hat keeps the body's texels; a figure whose ponytail took 76 % of the map had the
+  thin lines on its back plate melt into one blob. `--head-zone head` grows the whole head.
   `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
   the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
   misses the legs or the spine).

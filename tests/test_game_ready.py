@@ -1129,3 +1129,55 @@ def test_no_finish_run_without_a_provenance_or_when_the_run_is_gone(tmp_path):
     assert gr.finish_run_from_provenance(rigged) is None
     _provenance(rigged, {"source_record": {"operation": "pixal3d", "output": {"path": str(rigged)}}})
     assert gr.finish_run_from_provenance(rigged) is None
+
+
+# --- the face zone: only the face grows, hair and hats keep the body's texels (TODO 148 of the AssetFurnace
+# Support notes: the Leerenklinge's ponytail took 76 % of the map and her back plate's rune melted into a blob) ---
+
+def _face_case():
+    """Seven faces of a 1.8 m figure whose head joint stands at 1.5 m, x = 0, facing -Y; all but the last on the head."""
+    centres = np.array([[0.0, -0.1, 1.55],     # 0 the face: between the temples, in the band, facing the front
+                        [0.05, -0.1, 1.52],    # 1 a cheek, still between the temples
+                        [0.0, -0.1, 1.70],     # 2 a hat's front, above the band
+                        [0.1, 0.0, 1.55],      # 3 the side of the head (an ear), facing +X
+                        [0.0, 0.1, 1.55],      # 4 the back of the head
+                        [0.0, -0.1, 1.40],     # 5 a collar under the chin, below the band
+                        [0.0, -0.1, 1.55]])    # 6 a face-like spot on the body (a mask on the chest)
+    normals = np.array([[0, -1, 0], [0.3, -0.95, 0], [0, -0.9, 0.44], [1, 0, 0], [0, 1, 0], [0, -1, 0], [0, -1, 0]],
+                       float)
+    share = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+    return centres, normals, share
+
+
+def test_the_face_zone_is_the_heads_front_from_the_chin_to_the_brows():
+    centres, normals, share = _face_case()
+    zone = gr.face_zone(centres, normals, share, head_joint=(0.0, 0.0, 1.5), height=1.8)
+    assert zone.tolist() == [True, True, False, False, False, False, False]
+
+
+def test_the_face_zone_follows_the_head_sideways_and_its_own_settings():
+    centres, normals, share = _face_case()
+    moved = centres + [0.4, 0.0, 0.0]                   # the figure stands 40 cm to the side
+    assert gr.face_zone(moved, normals, share, (0.4, 0.0, 1.5), 1.8).tolist()[:2] == [True, True]
+    s = dict(gr.FIXED, face_above=0.12)                 # a band reaching higher takes the hat's front too
+    assert gr.face_zone(centres, normals, share, (0.0, 0.0, 1.5), 1.8, s)[2]
+
+
+def test_zone_islands_split_the_face_off_its_island_before_it_grows():
+    # one island of eight loops (two quads); the second quad is the face
+    uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [1, 0], [2, 0], [2, 1], [1, 1]], float)
+    island = np.zeros(8, int)
+    in_zone = np.array([False] * 4 + [True] * 4)
+    split, chosen = gr.zone_islands(island, in_zone)
+    assert chosen == {0}
+    assert set(split[:4]).isdisjoint(chosen)            # the hair's quad is no longer part of a chosen island
+    out = gr.scale_islands(uv, split, chosen, 2.0)
+    assert out[:4] == pytest.approx(uv[:4])             # hair keeps the body's texels
+    assert out[4:] == pytest.approx(np.array([[0.5, -0.5], [2.5, -0.5], [2.5, 1.5], [0.5, 1.5]]))
+
+
+def test_head_zone_is_the_face_by_default_and_the_whole_head_on_request():
+    assert gr.settings([])["head_zone"] == "face"
+    assert gr.settings(["--head-zone", "head"])["head_zone"] == "head"
+    with pytest.raises(SystemExit):
+        gr.settings(["--head-zone", "hat"])

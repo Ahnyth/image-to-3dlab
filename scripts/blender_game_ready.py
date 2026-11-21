@@ -807,9 +807,48 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | 
     return out
 
 
-def scale_head_islands(ob, factor: float, head: list[str]):
-    """In edit mode, after unwrapping and before packing: the head's islands grow by `factor`.
-    Returns the head's share of the UV area afterwards, or None when nothing changed."""
+def grown_faces(ob, s: dict, head: list[str], arm=None):
+    """Per polygon, whether --head-texel grows it: with --head-zone face the face from the chin to the brows
+    (`game_ready.face_zone`, from the head bone's joint); None for the whole head's islands as before (--head-zone
+    head, a rig without the head bone, or a face zone that finds nothing, a figure not facing -Y)."""
+    me = ob.data
+    share_v = head_weights(ob, head)
+    n = len(me.polygons)
+    vidx = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", vidx)
+    start, total = np.empty(n, np.int64), np.empty(n, np.int64)
+    me.polygons.foreach_get("loop_start", start)
+    me.polygons.foreach_get("loop_total", total)
+    owner = np.repeat(np.arange(n), total)
+    mean_share = np.bincount(owner, weights=share_v[vidx], minlength=n) / np.maximum(total, 1)
+    whole = mean_share >= 0.5
+    if s.get("head_zone", "face") != "face" or arm is None or not head or head[0] not in arm.data.bones:
+        return None
+    M = ob.matrix_world
+    R = M.to_3x3()
+    centres = np.empty(n * 3)
+    normals = np.empty(n * 3)
+    me.polygons.foreach_get("center", centres)
+    me.polygons.foreach_get("normal", normals)
+    centres = centres.reshape(-1, 3) @ np.array(M)[:3, :3].T + np.array(M)[:3, 3]
+    normals = normals.reshape(-1, 3) @ np.array(R).T
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    z = (co.reshape(-1, 3) @ np.array(M)[:3, :3].T + np.array(M)[:3, 3])[:, 2]
+    joint = tuple(arm.matrix_world @ arm.data.bones[head[0]].head_local)
+    zone = gr.face_zone(centres, normals, mean_share, joint, float(z.max() - z.min()), s)
+    if not zone.any():
+        log("head zone: no face found in front of the head bone, the whole head grows")
+        return None
+    log(f"head zone: the face, {int(zone.sum())} of the head's {int(whole.sum())} faces")
+    return zone
+
+
+def scale_head_islands(ob, factor: float, head: list[str], grown=None):
+    """In edit mode, after unwrapping and before packing: the head's islands grow by `factor`; with `grown` (per
+    polygon, from `grown_faces`) only those faces, cut off their islands. Returns the grown part's share of the UV
+    area afterwards, or None when nothing changed."""
     if factor <= 1.0 or not head:
         return None
     me = ob.data
@@ -838,8 +877,11 @@ def scale_head_islands(ob, factor: float, head: list[str]):
                         stack.append(other.face)
         n += 1
     uv = np.array([lp[uvl].uv[:] for lp in loops])
-    share = np.array([share_v[lp.vert.index] for lp in loops])
-    chosen = gr.head_islands(island, share)
+    if grown is None:
+        share = np.array([share_v[lp.vert.index] for lp in loops])
+        chosen = gr.head_islands(island, share)
+    else:
+        island, chosen = gr.zone_islands(island, [bool(grown[lp.face.index]) for lp in loops])
     out = gr.scale_islands(uv, island, chosen, factor)
     for lp, (u, v) in zip(loops, out):
         lp[uvl].uv = (u, v)
@@ -848,10 +890,11 @@ def scale_head_islands(ob, factor: float, head: list[str]):
     for f in bm.faces:
         pts = [lp[uvl].uv for lp in f.loops]
         a = sum(abs((pts[k] - pts[0]).cross(pts[k + 1] - pts[0])) for k in range(1, len(pts) - 1)) / 2
-        head_face = np.mean([share_v[v.index] for v in f.verts]) >= 0.5
-        area[head_face] = area.get(head_face, 0.0) + a
+        on = bool(grown[f.index]) if grown is not None else np.mean([share_v[v.index] for v in f.verts]) >= 0.5
+        area[on] = area.get(on, 0.0) + a
     total = sum(area.values()) or 1.0
-    log(f"head islands: {len(chosen)} grown x{factor:g}, the head now takes {area.get(True, 0.0) / total * 100:.1f} % of the texels")
+    what = "face" if grown is not None else "head"
+    log(f"{what} islands: {len(chosen)} grown x{factor:g}, the {what} now takes {area.get(True, 0.0) / total * 100:.1f} % of the texels")
     return round(area.get(True, 0.0) / total, 4)
 
 
@@ -906,14 +949,32 @@ def mesh_triangles(o):
     return co, loop_vert[loop_tris], uv.reshape(-1, 2), loop_tris, mat[poly]
 
 
-def source_head_density(ob, head: list[str], colour_objs=None) -> float:
-    """--head-texel auto: texels per cm the figure's colour source holds on the head. The source is `colour_objs`
-    (--colour-from, the faces whose centre lies in the box around the head's vertices) or the figure itself before
-    its new UVs (its head faces). It stands for what the picture gave: Pixel Match paints the picture into it."""
+def triangle_polygons(o) -> np.ndarray:
+    """Per triangle of `mesh_triangles(o)`, the polygon it comes from (the same fan order)."""
+    me = o.data
+    npoly = len(me.polygons)
+    total = np.empty(npoly, np.int64)
+    me.polygons.foreach_get("loop_total", total)
+    poly = [np.nonzero(total > k + 1)[0] for k in range(1, int(total.max()) - 1 if npoly else 1)]
+    return np.concatenate(poly) if poly else np.zeros(0, np.int64)
+
+
+def source_head_density(ob, head: list[str], colour_objs=None, grown=None) -> float:
+    """--head-texel auto: texels per cm the figure's colour source holds on the head (on the face, with `grown` from
+    `grown_faces`). The source is `colour_objs` (--colour-from, the faces whose centre lies in the box around the
+    head's, or the face's, vertices) or the figure itself before its new UVs (its head or face polygons). It stands
+    for what the picture gave: Pixel Match paints the picture into it."""
     share_v = head_weights(ob, head)
+    if grown is not None:
+        poly_on = np.asarray(grown, bool)
     if colour_objs:
         co, _, _, _, _ = mesh_triangles(ob)
-        on = co[share_v >= 0.5]
+        if grown is not None:
+            me = ob.data
+            verts = sorted({v for p in me.polygons if poly_on[p.index] for v in p.vertices})
+            on = co[verts]
+        else:
+            on = co[share_v >= 0.5]
         if not len(on):
             return 0.0
         lo, hi = on.min(0), on.max(0)
@@ -926,6 +987,8 @@ def source_head_density(ob, head: list[str], colour_objs=None) -> float:
         if colour_objs:
             centre = co[vert_tris].mean(1)
             picked = np.all((centre >= lo) & (centre <= hi), axis=1)
+        elif grown is not None:
+            picked = poly_on[triangle_polygons(o)]
         else:
             picked = share_v[vert_tris].mean(1) >= 0.5
         p = co[vert_tris]
@@ -951,20 +1014,21 @@ def pack_uvs(s: dict) -> None:
         bpy.ops.uv.pack_islands(rotate=True, margin=gr.uv_margin(s))
 
 
-def auto_head_texel(ob, s: dict, head: list[str], auto: dict) -> float:
+def auto_head_texel(ob, s: dict, head: list[str], auto: dict, grown=None) -> float:
     """--head-texel auto, in edit mode after unwrapping: pack once with the head at factor 1, measure the head's
-    texels per cm at the texture size the game loads, and pick the factor that gives it what the colour source
-    holds (`game_ready.auto_head_factor`). The real pack follows with the head grown by it."""
+    (the face's, with `grown`) texels per cm at the texture size the game loads, and pick the factor that gives it
+    what the colour source holds (`game_ready.auto_head_factor`). The real pack follows with it grown by that."""
     pack_uvs(s)
     share_v = head_weights(ob, head)
     bm = bmesh.from_edit_mesh(ob.data)
     uvl = bm.loops.layers.uv.active
+    bm.faces.ensure_lookup_table()
     uv_area = {True: 0.0, False: 0.0}
     head_cm2 = 0.0
     for f in bm.faces:
         pts = [lp[uvl].uv for lp in f.loops]
         a = sum(abs((pts[k] - pts[0]).cross(pts[k + 1] - pts[0])) for k in range(1, len(pts) - 1)) / 2
-        on = bool(np.mean([share_v[v.index] for v in f.verts]) >= 0.5)
+        on = bool(grown[f.index]) if grown is not None else bool(np.mean([share_v[v.index] for v in f.verts]) >= 0.5)
         uv_area[on] += a
         if on:
             head_cm2 += f.calc_area() * 1e4
@@ -1050,11 +1114,12 @@ def unfold_overlaps(bpy, me, angle: float, margin: float, rounds: int = rb.UV_RO
         settings.mesh_select_mode = mode
 
 
-def new_uvs(ob, s: dict, head: list[str] | None = None, colour_objs: list | None = None) -> dict:
+def new_uvs(ob, s: dict, head: list[str] | None = None, colour_objs: list | None = None, arm=None) -> dict:
     me = ob.data
     auto = None
+    grown = grown_faces(ob, s, head or [], arm) if head and gr.head_texel_on(s) else None
     if s.get("head_texel") == "auto" and head:
-        auto = {"source_texels_per_cm": round(source_head_density(ob, head, colour_objs), 2)}
+        auto = {"source_texels_per_cm": round(source_head_density(ob, head, colour_objs, grown), 2)}
     pin_source_uvs(me)
     layer = me.uv_layers.new(name="UVMap")
     me.uv_layers.active = layer
@@ -1067,8 +1132,8 @@ def new_uvs(ob, s: dict, head: list[str] | None = None, colour_objs: list | None
     overlapping = unfold_overlaps(bpy, me, math.radians(s["uv_angle"]), gr.uv_margin(s))
     factor = s.get("head_texel", 1.0)
     if factor == "auto":
-        factor = auto_head_texel(ob, s, head or [], auto) if auto else 1.0
-    head_uv_share = scale_head_islands(ob, factor, head or [])
+        factor = auto_head_texel(ob, s, head or [], auto, grown) if auto else 1.0
+    head_uv_share = scale_head_islands(ob, factor, head or [], grown)
     pack_uvs(s)
     bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -1122,7 +1187,8 @@ def new_uvs(ob, s: dict, head: list[str] | None = None, colour_objs: list | None
         f"{'unchecked' if overlapping is None else overlapping} faces overlapping")
     out = {"uv_islands": islands, **atlas, "hard_edges": hard, "uv_overlapping_faces": overlapping}
     if head_uv_share is not None:
-        out["head_uv_share"] = head_uv_share
+        out["head_uv_share"] = head_uv_share   # the grown part's share: the face's with --head-zone face
+        out["head_zone"] = "face" if grown is not None else "head"
     if auto:
         out["head_texel_auto"] = auto
     return out
@@ -1572,7 +1638,7 @@ def main() -> None:
     elif s.get("decimate_to"):
         report.update(decimate_with_head(ob, s, head))
     colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
-    report.update(new_uvs(ob, s, head, colour_objs))
+    report.update(new_uvs(ob, s, head, colour_objs, arm))
     normal_objs = None
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()

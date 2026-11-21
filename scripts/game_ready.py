@@ -127,6 +127,11 @@ FIXED = {
     "glow_paint_gap": 0.30,           # ... and this much brighter than the rest is mostly paint: only the bright
                                       # group glows (the Purpur-Samurai's crimson plates: 20 %, 0.42; 25 figures
                                       # measured, four such, D207)
+    "face_half_width": 0.034,  # --head-zone face (the default): the faces on the head bones that face the front
+    "face_below": 0.02,        # (normal toward -Y at least `face_facing`), lie within this share of the height of
+    "face_above": 0.06,        # the head bone sideways and from this far below its joint to this far above it: the
+    "face_facing": 0.5,        # face from the chin to the brows; a hat's front, the hair and the ears lie outside
+                               # (five figures measured, D230 of the AssetFurnace Support notes)
 }
 
 # --drop-hidden thins to this many times the budget first: the Wachter, thinned to 22,000, kept 15,275 after the
@@ -273,6 +278,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
                         help="auto (default): per figure, the head's share of the atlas grown as far as its colour "
                              "source holds on the head at --game-texture, from 1 to 4; or a fixed 1 to 4 (2 = a face "
                              "twice as sharp, the body a little softer; 1 = no extra share)")
+    parser.add_argument("--head-zone", choices=("face", "head"), default="face",
+                        help="what --head-texel grows: face (default) the face from the chin to the brows, so a "
+                             "long ponytail or a tall hat keeps the body's texels; head everything on the head bones "
+                             "(hair, hats, horns), as before")
     parser.add_argument("--game-texture", type=_atlas, default=0, metavar="N",
                         help="the texture size the game loads, for --head-texel auto (default: the --atlas size); "
                              "a game that shrinks every map to 1024 sets 1024")
@@ -333,7 +342,7 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness,
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
-             game_texture=ns.game_texture,
+             head_zone=ns.head_zone, game_texture=ns.game_texture,
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
              normal_from=str(ns.normal_from) if ns.normal_from else None,
@@ -1073,6 +1082,31 @@ def head_islands(island, share, at_least: float = 0.5) -> set[int]:
     total = np.bincount(island, weights=share)
     count = np.bincount(island)
     return {int(i) for i in np.nonzero(count)[0] if total[i] / count[i] >= at_least}
+
+
+def face_zone(centres, normals, share, head_joint, height: float, s: dict | None = None):
+    """Per face: whether it is the figure's face, the part --head-texel grows with --head-zone face. `centres` and
+    `normals` per face in metres (the figure faces -Y), `share` its mean weight on the head bones, `head_joint` where
+    the head bone starts, `height` the figure's height. A head that reaches the waist (a ponytail) or carries a tall
+    hat then costs the body nothing: only the eyes, nose and mouth need the picture's sharpness."""
+    s = s or FIXED
+    c = np.asarray(centres, float).reshape(-1, 3)
+    n = np.asarray(normals, float).reshape(-1, 3)
+    x, _, z = (float(v) for v in head_joint)
+    return ((np.asarray(share, float) >= 0.5) & (-n[:, 1] >= s["face_facing"])
+            & (np.abs(c[:, 0] - x) <= s["face_half_width"] * height)
+            & (c[:, 2] >= z - s["face_below"] * height) & (c[:, 2] <= z + s["face_above"] * height))
+
+
+def zone_islands(island, in_zone):
+    """Islands for growing only a zone: a loop in the zone keeps its island's number, a loop outside gets a number
+    of its own island's that no chosen island uses. Returns (the numbers, the chosen islands); `scale_islands` then
+    grows each island's zone part about its own centre, which cuts it off the rest of its island."""
+    island = np.asarray(island, int)
+    in_zone = np.asarray(in_zone, bool)
+    chosen = {int(i) for i in np.unique(island[in_zone])}
+    out = np.where(in_zone, island, -1 - island)
+    return out, chosen
 
 
 def head_texel_on(s: dict) -> bool:
