@@ -564,6 +564,39 @@ def test_an_unseen_part_takes_the_gap_of_its_own_paint_not_its_neighbours():
     assert abs(int(out[110, 110, 0]) - 40) <= 8
 
 
+def test_a_gap_flows_along_a_gradual_shade_into_the_unseen_part():
+    # Hair seen in front and running unseen round the side, its own paint darkening on the way;
+    # a separate coat of the side's shade needed the opposite. The side hair keeps the hair's
+    # +40 (it is the same paint, shading gradually), not the coat's -40 (the wizard's side hair
+    # turned dark when the gap was read by colour alone).
+    n = 40
+    positions, faces, uvs = _grid(n)
+    top = positions[:, 1] > 0
+    hair = positions.copy()
+    hair[:, 1] = 0.02 + (positions[:, 1] + 0.5) * 0.48          # the top half
+    coat = positions.copy()
+    coat[:, 1] = -0.5 + (positions[:, 1] + 0.5) * 0.48          # the bottom half, not joined
+    positions = np.concatenate([hair, coat])
+    faces = np.concatenate([faces, faces + len(hair)])
+    uvs = np.column_stack([positions[:, 0] + 0.5, 0.5 - positions[:, 1]])
+    assert top.any()
+    size, texels = 768, 128
+    shade = 180 - 60 * np.arange(texels) / (texels - 1)            # the hair's own paint, left to right
+    texture = np.empty((texels, texels, 3), dtype=np.uint8)
+    texture[: texels // 2] = np.rint(shade)[None, :, None]
+    texture[texels // 2:] = 120
+    photo = np.zeros((size, size, 4), dtype=np.uint8)
+    column = 180 - 60 * np.arange(size) / (size - 1) + 40
+    photo[: size // 2, :, :3] = np.rint(column)[None, :, None]
+    photo[: size // 2, : int(size * 0.4), 3] = 255               # the hair seen on its left only
+    photo[size // 2:, :, :3] = 80
+    photo[size // 2:, :, 3] = 255                                # the coat seen whole
+    out, weight = pp.paint_texture(texture, positions, uvs, faces, [_camera(size=size, image=photo)],
+                                   frame=IDENTITY)
+    assert weight[20, 120] == 0.0
+    assert abs(int(out[20, 120, 0]) - int(round(shade[120] + 40))) <= 10
+
+
 def test_the_expected_gap_follows_the_models_own_colour_smoothly():
     own = np.array([[30.0, 30, 30]] * 400 + [[200.0, 200, 200]] * 400 + [[115.0, 115, 115]])
     gap = np.array([[10.0, 10, 10]] * 400 + [[-60.0, -60, -60]] * 400 + [[0.0, 0, 0]])

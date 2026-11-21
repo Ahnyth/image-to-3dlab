@@ -417,19 +417,23 @@ def paint_texture(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray,
 def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np.ndarray,
                         texel_bary: np.ndarray, own: np.ndarray, photo: np.ndarray,
                         weight: np.ndarray, trusted: float = 0.9, min_texels: int = 500,
-                        smooth: float = 0.05, outlier: float = 3.0) -> np.ndarray | None:
+                        smooth: float = 0.05, outlier: float = 3.0, paint_edge: float = 24.0,
+                        reach: float = 1e-5) -> np.ndarray | None:
     """Per-texel colour offset taking the model's own paint towards the pictures, locally.
 
     The gap (picture - own) is measured where a picture is fully trusted, splatted onto
     the mesh's vertices (welded across UV seams so it flows over them), and spread to the
     rest by a smooth interpolation over the mesh's edges: a graph Laplacian with the
-    measured vertices held loosely (`smooth`). What is spread is each spot's difference
-    from the gap its own colour is expected to need (`expected_gap`: what the trusted texels
-    of a similar colour needed), so a part no measurement can reach (a loose piece, the top
-    of a hat's brim) still gets the gap of its own paint rather than none, or its
-    neighbour's. A gap far from the expected one (more than `outlier` x the median absolute
-    deviation) is a mismatched feature, such as a rope the model painted as robe, not
-    colour drift, and is left out so it cannot smear.
+    measured vertices held loosely (`smooth`). An edge carries the gap less the more the
+    model's own paint differs at its two ends (a Gaussian of `paint_edge`, RGB 0-255), so a
+    gap flows along one paint, shading included, and stops where the paint changes: a light
+    hat band's gap no longer crosses into the dark brim beside it. Every vertex is also held,
+    very loosely (`reach`), to the gap its own colour is expected to need (`expected_gap`:
+    what the trusted texels of a similar colour needed), which is what a part no measured
+    paint of its own reaches (the top of a brim, a loose piece) ends up with. A gap far from
+    the expected one (more than `outlier` x the median absolute deviation) is a mismatched
+    feature, such as a rope the model painted as robe, not colour drift, and is left out so
+    it cannot smear.
     Returns None when too little is trusted to measure.
     """
     mask = weight >= trusted
@@ -437,7 +441,6 @@ def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np
         return None
     gap = photo - own
     expected, mask = expected_gap(own, gap, mask, outlier=outlier)
-    rest = gap - expected
 
     _, weld = np.unique(np.round(positions, 6), axis=0, return_inverse=True)
     weld = weld.reshape(-1)
@@ -445,26 +448,43 @@ def local_colour_offset(positions: np.ndarray, faces: np.ndarray, texel_face: np
     corners = weld[faces]
     total = np.zeros((count, 3))
     seen = np.zeros(count)
+    paint = np.zeros((count, 3))
+    hoped = np.zeros((count, 3))
+    painted = np.zeros(count)
     for k in range(3):
         vertex = corners[texel_face[mask], k]
         share = texel_bary[mask, k]
         np.add.at(seen, vertex, share)
-        np.add.at(total, vertex, share[:, None] * rest[mask])
+        np.add.at(total, vertex, share[:, None] * gap[mask])
+        every = corners[texel_face, k]
+        np.add.at(painted, every, texel_bary[:, k])
+        np.add.at(paint, every, texel_bary[:, k, None] * own)
+        np.add.at(hoped, every, texel_bary[:, k, None] * expected)
     known = seen > 0.5
     target = np.zeros((count, 3))
     target[known] = total[known] / seen[known][:, None]
+    has_paint = painted > 1e-9
+    paint[has_paint] /= painted[has_paint][:, None]
+    hoped[has_paint] /= painted[has_paint][:, None]
+    hoped[~has_paint] = np.median(gap[mask], axis=0)
 
     edges = np.concatenate([corners[:, [0, 1]], corners[:, [1, 2]], corners[:, [2, 0]]])
-    adjacency = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(count, count))
-    adjacency = ((adjacency + adjacency.T) > 0).astype(np.float64)
-    hold = known * smooth
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    differ = np.linalg.norm(paint[edges[:, 0]] - paint[edges[:, 1]], axis=1)
+    carry = np.exp(-((differ / paint_edge) ** 2))
+    carry[~(has_paint[edges[:, 0]] & has_paint[edges[:, 1]])] = 1.0  # no paint to compare: no border
+    adjacency = coo_matrix((np.concatenate([carry, carry]),
+                            (np.concatenate([edges[:, 0], edges[:, 1]]),
+                             np.concatenate([edges[:, 1], edges[:, 0]]))), shape=(count, count)).tocsr()
+    hold = known * smooth + reach
     system = (diags(np.asarray(adjacency.sum(axis=1)).ravel() + hold) - adjacency).tocsr()
     precondition = diags(1.0 / system.diagonal())
     field = np.zeros((count, 3))
     for channel in range(3):
-        field[:, channel], _ = cg(system, hold * target[:, channel], M=precondition,
-                                  maxiter=3000, rtol=1e-6)
-    return expected + (texel_bary[:, :, None] * field[corners[texel_face]]).sum(axis=1)
+        rhs = known * smooth * target[:, channel] + reach * hoped[:, channel]
+        field[:, channel], _ = cg(system, rhs, M=precondition, maxiter=3000, rtol=1e-6)
+    return (texel_bary[:, :, None] * field[corners[texel_face]]).sum(axis=1)
 
 
 def expected_gap(own: np.ndarray, gap: np.ndarray, mask: np.ndarray, cells: int = 16,
