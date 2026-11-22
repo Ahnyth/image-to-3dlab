@@ -515,6 +515,14 @@ def main(argv: list[str] | None = None) -> int:
         stage(run, "clean", f"Cleaning up {label}")
         clean = clean_part(run, raw, args.part_faces, folder)
         fine = clean_part(run, raw, args.fine_faces, folder) if args.also and args.fine_faces else raw
+        touching = hp.edge_faults(hh.read_part(raw.read_bytes())[2])["share"]
+        if args.also and touching > FAULT_SHARE:
+            # a build that touches itself kept it in the bigger clean-up too (the Zauberer's boot: 5,839 such edges at
+            # 150,000 faces, 1,715 at 20,000), and the game-ready step thinned the finer model it went into to 81,000
+            # triangles and dropped half the figure; at the smaller size it made its 14,000
+            fine = clean
+            run.flag(f"{raw.name} touches itself on {touching:.2%} of its edges: the finer models get its "
+                     f"{args.part_faces}-face clean-up too")
         clean_part_dict, hard_clean = built_part(clean, args.hard, run, folder / f"{clean.stem}_hard.glb")
         raw_part_dict, hard_raw = built_part(fine, args.hard, run, folder / f"{fine.stem}_hard.glb")
         built[source] = {"clean": clean_part_dict, "raw": raw_part_dict, "clean_path": clean, "raw_path": raw,
