@@ -76,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,
   through the camera the figure was built with (found through its licence record) and past the coat in front of it,
   and by its own build elsewhere, moved to the picture's tones; the finer models a game-ready step bakes from get the
-  same parts (`--also`). The check counts each part's pieces, the edges left open round it, and a boot's sole against
+  same parts (`--also`), cleaned up to 150,000 faces (`--fine-faces`: two raw boots of a million faces each kept the
+  game-ready step on one core for over thirteen minutes). The check counts each part's pieces, the edges left open round it, and a boot's sole against
   the picture's feet (the foot rule). `--hard` makes a hard part's nearly flat pieces flat and their edges sharp (a
   pistol, a buckle; never a face or cloth): planes are found on the build's smoothed normals, a strip of a tube or the
   facets of a round surface stay smooth, a plane's points go onto it and its edge splits the shading.
