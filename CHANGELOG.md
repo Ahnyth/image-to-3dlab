@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as finely as its old one (the 40k rigged model's took 3,200 triangles instead of 47,000). A rigged figure keeps
   its skeleton and the new face moves as the old one did. The finer models a game-ready step bakes paint and bumps from get the same face (`--also`). A
   figure with its Hero hands on (two parts) is read as it is.
+- **Hero head under the brim** (`scripts/hero_face.py --region head`): for a figure with a hat brim, and best with a
+  high collar, the whole head between the brim's underside and the collar is built again instead of the face alone:
+  face, ears, side strands and the hair under the brim. With the face alone, the coarse old head stayed all round it:
+  a seam from the eye down the cheek, a thick side strand between ear and face, and under the brim open shells of old
+  hair with gaps through which the hat's inside showed. The head is unrolled round an axis through skull and neck;
+  the brim's tilted underside is read from below, the collar told from the neck by where the air between them opens to
+  the outside (a collar's own wall is hollow too), and the neck followed down to where it fuses with the collar. The
+  old head goes, hat and collar stay whole; the new head is the build's outermost surface (its own brim and collar
+  left out), as wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
+  stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
+  round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels) and
+  by the build's own paint elsewhere, moved to the figure's tone. head.png shows the region unrolled.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone

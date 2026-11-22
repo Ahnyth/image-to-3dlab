@@ -29,9 +29,17 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
               showed). A rigged figure keeps its skeleton; the new face takes the old face's skin weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
               frame) gets the same face.
 
-Writes <out>/<model>_face.glb (and <out>/<also>_face.glb), with face.json (every number), window.png and a licence
-record. Every step skips when its output exists, so a rerun picks up after a fix. Where the code is unsure the log
-says UNSURE: that is where a human should look.
+With --region head (a figure with a hat brim, and best with a high collar) the whole head under the brim is built
+again instead of the face alone: the face's seam ran down the cheek, a thick side strand of the old head hung between
+ear and face, and under the brim the old hair tips were open shells with gaps to the hat's inside (the Zauberer,
+2026-11-22). The crop takes the head between the brim and the collar; the new head is laid out round an axis through
+head and neck, from just above where the neck meets the collar up into the hat; the old head goes, the hat and the
+collar stay whole; the new head is stitched to the figure's own neck inside the collar and capped inside the hat, and
+every outline the cut leaves is closed, so the seam is watertight. head.png shows the region unrolled round the head.
+
+Writes <out>/<model>_face.glb (and <out>/<also>_face.glb; _head.glb with --region head), with face.json (every
+number), window.png and a licence record. Every step skips when its output exists, so a rerun picks up after a fix.
+Where the code is unsure the log says UNSURE: that is where a human should look.
 """
 from __future__ import annotations
 
@@ -56,6 +64,8 @@ CROP_SIZE = 1024
 LICENCES = [{"component": "Real-ESRGAN x4plus", "license": "BSD-3-Clause", "purpose": "face crop upscale"}]
 FIT_LIMIT = 0.03            # a new face whose points lie further than this share of the head's width from the old
                             # face (the closest three quarters of them, on average) was put somewhere else
+HEAD_CROP_PAD = 1.4         # the head's crop is this many times the head's own size (some brim and collar round it)
+HEAD_COARSEST = 4           # a model's new head is laid out at most this many of the region's pixels apart
 
 
 def fresh(run: Run, name: str) -> None:
@@ -110,9 +120,143 @@ def _png(path: Path) -> bytes:
     return buffer.getvalue()
 
 
+def head_bounds(zone: dict) -> tuple[float, float, float, float]:
+    """(x0, x1, y0, y1) of the head under the brim seen from the front: its old outermost surface inside the region,
+    from the stitch up to the brim's underside."""
+    import numpy as np
+
+    from image_to_3dlab import hero_head as hd
+
+    frame = zone["frame"]
+    outer = zone["outer"]
+    heights = hd.row_heights(frame)
+    keep = np.isfinite(outer) & (outer < zone["limit"]) & (heights[:, None] >= zone["bottom"])
+    rows, cols = np.nonzero(keep)
+    points = hd.unpolar(frame, hd.column_angles(frame)[cols], outer[keep], heights[rows])
+    top = hd.plane_height(zone["plane"], points[:, 0], points[:, 2])
+    points = points[points[:, 1] < top]
+    return (float(points[:, 0].min()), float(points[:, 0].max()), zone["bottom"], float(points[:, 1].max()))
+
+
+def head_step(parts: list[dict], zone: dict, most: int = HEAD_COARSEST) -> float:
+    """How finely a model's new head is laid out: half the median edge of the model's own old head (in the region), at
+    least the region's pixel and at most MOST of them, as `hero_face.relief_step` lays out a face: the 40k rigged
+    model's head had edges of 7 to 10 pixels, the finer models a game-ready step bakes from keep a finer one."""
+    import numpy as np
+
+    from image_to_3dlab import hero_head as hd
+
+    pixel = zone["pixel"]
+    lengths = []
+    for part in parts:
+        p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
+        inside = (hd.zone_values(zone, p)[f] > 0).all(axis=1) if len(f) else np.zeros(0, bool)
+        if inside.any():
+            t = p[f[inside]]
+            lengths.append(np.linalg.norm(t - np.roll(t, 1, axis=1), axis=2).ravel())
+    if not lengths:
+        return pixel
+    return float(np.clip(np.median(np.concatenate(lengths)) / 2, pixel, most * pixel))
+
+
 def build_face(run: Run, cutout: Path, raw: Path, seed: int) -> None:
     if run.step(f"build: Pixal3D on the face, seed {seed}", raw):
         run.run([PYTHON, "-u", GENERATE, cutout, raw, "--seed", str(seed)])
+
+
+def front_depth(parts: list[dict], zone: dict) -> tuple:
+    """(depth, box, pixel): the front view's nearest surface of PARTS round the head (what the picture shows in front
+    of the new head: a brim, a collar)."""
+    import numpy as np
+
+    from image_to_3dlab import hero_face as hf
+    from image_to_3dlab import hero_head as hd
+
+    frame = zone["frame"]
+    x, _ = hd.centre(zone["axis"], np.array([zone["bottom"], frame["y_hi"]]))
+    r = 1.5 * zone["reach"]
+    box = (float(x.min() - r), float(x.max() + r), frame["y_lo"], frame["y_hi"])
+    vertices = np.concatenate([p["positions"] for p in parts])
+    offsets = np.cumsum([0] + [len(p["positions"]) for p in parts])
+    faces = np.concatenate([np.asarray(p["faces"]) + o for p, o in zip(parts, offsets)])
+    return hf.depth_map(vertices, faces, box, zone["pixel"])[0], box, zone["pixel"]
+
+
+def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Path, face_cutout: Path, full_frame,
+               raw: Path, placement: dict) -> None:
+    """5. with --region head: the new head laid out from the placed build, painted, and set into every model."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from image_to_3dlab import hero_face as hf
+    from image_to_3dlab import hero_hands as hh
+    from image_to_3dlab import hero_head as hd
+    from image_to_3dlab.provenance import read_model_record, write_derived_sidecar
+
+    stage(run, "graft", "Setting the head in")
+    fresh(run, "graft")
+    new = hd.build_radius(zone, placed["positions"], placed["faces"])
+    radius = hd.tube_radius(zone, new)
+    run.say(f"graft: the build shows its head in {new['known'].mean():.0%} of the region's pixels (the rest is under "
+            f"its own brim, or past its crop: the figure's own head stands in there)")
+    if new["known"].mean() < 0.5:
+        run.flag(f"the build shows its head in only {new['known'].mean():.0%} of the region: check head.png")
+    record = read_model_record(args.model)
+    upscaled = {"license": {"name": "BSD-3-Clause"}, "classification": "commercial-clear", "components": LICENCES}
+    face_record = read_model_record(raw)
+    summary = {"model": str(args.model), "picture": str(args.picture), "region": "head", "crop": list(box),
+               "head": {"axis": zone["axis"], "stitch": zone["bottom"], "chin": zone["chin"], "brim_plane": {
+                   k: zone["plane"][k] for k in ("a", "b", "c", "below", "spread")}, "cut": zone["cut"],
+                   "collar_share": float(zone["collar"].any(axis=0).mean()),
+                   "build_shows": float(new["known"].mean())}, "placement": placement, "models": {}}
+    crop_rgb = np.asarray(Image.open(up).convert("RGB"), dtype=np.float64)
+    alpha = np.asarray(Image.open(face_cutout).convert("RGBA"))[..., 3] / 255.0
+    paint = hf.part_paint(placed)
+    on_skin = np.unique(np.asarray(placed["faces"])[new["skin"]])
+    build = None if paint is None else {"positions": placed["positions"][on_skin], "uvs": placed["uvs"][on_skin],
+                                        "paint": paint}
+    circumference = 2 * np.pi * float(np.median(radius))
+    span = float(zone["frame"]["y_hi"] - zone["bottom"])
+    size = (max(64, int(round(hd.PICTURE_WIDTH * span / circumference))), hd.PICTURE_WIDTH)
+    points, normals = hd.tube_points(zone, radius, size)
+    picture = None
+    for model in [args.model, *args.also]:
+        target_path = out / f"{model.stem}_head.glb"
+        data = model.read_bytes()
+        _, _, model_parts = hf.read_parts(data)
+        step = head_step(model_parts, zone)
+        cut_parts, head_part, report = hd.graft_head(model_parts, zone, radius, step)
+        if picture is None:            # the figure's own front shows what stands before the new head (brim, collar)
+            picture = hd.tube_paint(points, normals, crop_rgb, alpha, box, full_frame, build,
+                                    front_depth(cut_parts, zone), zone["width"])
+        shifted, offset = hd.figure_paint(picture, points, model_parts[report["body_part"]], {**zone, "radius": radius})
+        buffer = io.BytesIO()
+        Image.fromarray(np.clip(np.round(shifted), 0, 255).astype(np.uint8), "RGB").save(buffer, format="PNG")
+        head_part["material"] = hf.picture_material(buffer.getvalue(), name="HeroHead")
+        report["paint_offset"] = None if offset is None else [round(float(v), 1) for v in offset]
+        report["layout_step_pixels"] = round(step / zone["pixel"], 2)
+        written = [hh.finish_part(p) for p in cut_parts] + [hh.finish_part(head_part, smooth=True)]
+        target_path.write_bytes(hh.regraft_glb(data, written))
+        run.say(f"graft: {target_path.name}: {report}")
+        summary["models"][model.name] = {"result": str(target_path), **report}
+        if not report["stitched"]:
+            run.flag(f"{model.name}: the new neck found no outline of the old one to be stitched to: it ends open "
+                     "inside the collar")
+        if report["open_edges_near"]:
+            run.flag(f"{model.name}: {report['open_edges_near']} edges stay open round the head")
+        write_derived_sidecar(model, target_path, operation="hero_head",
+                              source_record=record if model == args.model else None,
+                              component_records=[r for r in (face_record, upscaled) if r])
+        del data, model_parts, cut_parts, head_part
+    Image.fromarray(np.clip(np.round(np.nan_to_num(picture)), 0, 255).astype(np.uint8), "RGB").save(
+        out / "head_paint.png")
+    summary["unsure"] = run.unsure
+    (out / "face.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    run.say(f"done: {out / (args.model.stem + '_head.glb')}; numbers in {out / 'face.json'}")
+    for note in run.unsure:
+        run.say(f"  to check: {note}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="more models of the figure in the same frame (the finer ones a game-ready step bakes "
                              "paint and bumps from): each gets the same face")
     parser.add_argument("--seed", type=int, default=SEED, help="Pixal3D's seed for the face")
+    parser.add_argument("--region", choices=("face", "head"), default="face",
+                        help="what is built again: the face alone, or the whole head under a hat's brim down into "
+                             "its collar (ears, side hair, the hair under the brim)")
     args = parser.parse_args(argv)
 
     missing = [name for name, path in needed_parts().items() if not Path(path).exists()]
@@ -139,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     from image_to_3dlab import hero, matte, photo_paint
     from image_to_3dlab import hero_face as hf
     from image_to_3dlab import hero_hands as hh
+    from image_to_3dlab import hero_head as hd
     from image_to_3dlab.provenance import read_model_record, write_derived_sidecar
 
     out = (args.out or REPO / "output" / "hero_face" / args.model.stem[:60]).resolve()
@@ -163,6 +311,20 @@ def main(argv: list[str] | None = None) -> int:
         run.flag("no hat brim found above the face: the seam's top follows the hairline's reach; check window.png")
     for doubt in hf.window_doubts(window):
         run.flag(f"{doubt}; check window.png")
+    zone = None
+    if args.region == "head":
+        try:
+            zone = hd.head_zone(body["positions"], body["faces"], window)
+        except ValueError as error:
+            raise SystemExit(f"[hero] the head under the brim cannot be set in: {error}") from None
+        hd.zone_picture(zone).save(out / "head.png")
+        bounds = head_bounds(zone)
+        run.say(f"measure: the head under the brim: axis {zone['axis']}, stitch at {zone['bottom']:.4f} "
+                f"({zone['chin'] - zone['bottom']:.4f} under the chin), brim plane {zone['plane']}, cut "
+                f"{zone['cut']:.4f} under it, collar round {zone['collar'].any(axis=0).mean():.0%} of the head "
+                f"(head.png)")
+        if not zone["collar"].any():
+            run.flag("no collar found round the neck: the stitch under the chin may show; check head.png")
 
     # 2. crop
     stage(run, "crop", "Cropping and upscaling the face")
@@ -174,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     full_frame = hero.frame(every, hero.picture_box(picture))
     corners = np.array([[bounds[0], bounds[2], 0.0], [bounds[1], bounds[3], 0.0]])
     px, py = hero.project(corners, full_frame)
-    box = hf.crop_box(px, py, picture.width, picture.height)
+    box = hf.crop_box(px, py, picture.width, picture.height, HEAD_CROP_PAD if zone else hf.CROP_PAD)
     run.say(f"crop: {box} ({box[2] - box[0]} px)")
     if box[2] - box[0] < 64:
         run.flag(f"the face's crop is only {box[2] - box[0]} px: it holds little detail")
@@ -234,6 +396,11 @@ def main(argv: list[str] | None = None) -> int:
     if cost > FIT_LIMIT * window["width"]:
         run.flag(f"the new face lies far from the old ({cost / window['width']:.1%} of the head's width): check the "
                  "crop and window.png")
+
+    if zone is not None:
+        graft_head(run, args, out, zone, placed, box, up, face_cutout, full_frame, raw,
+                   {"apart_from_old_face": cost, "scale": scale, "transform": tf.tolist()})
+        return 0
 
     # 5. graft
     stage(run, "graft", "Setting the face in")
