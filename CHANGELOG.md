@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one surface: no overlapping skins at the seam (the Hero face's fault in #229). The figure keeps its skeleton and every
   body weight; the new hand moves as the old one did. The finer models a game-ready step bakes paint and bumps from get
   the same hands (`--also`).
+- **Hero face** (`scripts/hero_face.py`): a figure's face built again on its own and set in between its hat brim and
+  its collar. A face is a few dozen pixels of a full-body picture, so a thin hair strand can come out fat and in front
+  of an eye, and Pixel Match then paints the eye's glow onto it. The face is cropped from the picture, upscaled and
+  built alone (both eyes free), lined up on the figure's face and set in along a seam a little inside what the front
+  view shows of the face: under a brim, above a collar, inside the temples and above the chin, found on the figure's
+  front depth map with no hand-drawn box. Only the face is swapped, so hat and collar stay the figure's own (the Hero
+  route's whole-head swap left loose slabs at a big hat); the new face is eased to meet the figure's surface and
+  stitched to it as one surface. A rigged figure keeps its skeleton; the new face moves as the old one did. The finer
+  models a game-ready step bakes paint and bumps from get the same face (`--also`). A figure with its Hero hands on
+  (two parts) is read as it is.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone

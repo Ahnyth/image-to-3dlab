@@ -1012,7 +1012,6 @@ def read_part(data: bytes) -> tuple[dict, bytes, dict]:
 
     Node transforms are refused: every model of a figure has to share one frame for a plan to fit them all."""
     from image_to_3dlab.glb_turn import parse_glb
-    from image_to_3dlab.hero import _accessor
 
     doc, binary = parse_glb(data)
     nodes = [n for n in doc.get("nodes", []) if "mesh" in n]
@@ -1022,7 +1021,13 @@ def read_part(data: bytes) -> tuple[dict, bytes, dict]:
                          "body and head, is not supported: put the hands on before the head)")
     if any(key in nodes[0] for key in ("matrix", "translation", "rotation", "scale")):
         raise ValueError("the model's mesh is moved by its node; expected a model in the figure's own frame")
-    primitive = primitives[0]
+    return doc, binary, primitive_part(doc, binary, primitives[0])
+
+
+def primitive_part(doc: dict, binary: bytes, primitive: dict) -> dict:
+    """One primitive of a parsed GLB as a part (`read_part`)."""
+    from image_to_3dlab.hero import _accessor
+
     attributes = primitive["attributes"]
     part = {"positions": _accessor(doc, binary, attributes["POSITION"]).astype(np.float64),
             "faces": _accessor(doc, binary, primitive["indices"]).reshape(-1, 3).astype(np.int64)}
@@ -1038,7 +1043,7 @@ def read_part(data: bytes) -> tuple[dict, bytes, dict]:
                                       len(doc["skins"][0]["joints"]))
     if "material" in primitive:
         part["material"] = (doc, binary, primitive["material"])
-    return doc, binary, part
+    return part
 
 
 def finish_part(part: dict, smooth: bool = False) -> dict:
