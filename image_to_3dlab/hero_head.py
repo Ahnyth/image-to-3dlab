@@ -995,9 +995,11 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     picture nor the build reaches: under the build's own brim, where the figure's own head stands in) moved to the
     model's own tone (`paint_offset`), and its empty texels and its neck (`neck_band`: the stitch then shows no change
     of paint) painted from the model's own old head nearest each one (POINTS, the texels' places), else from the
-    nearest painted texel. A model with no paint keeps the picture as it is, those texels filled the same way."""
+    nearest painted texel; up the neck that paint eases into the head's just over it. A model with no paint keeps the
+    picture as it is, those texels filled the same way."""
     out = np.array(picture, dtype=np.float64)
-    out[neck_band(points, zone)] = np.nan
+    band = neck_band(points, zone)
+    out[band] = np.nan
     empty = ~np.isfinite(out[..., 0])
     offset = paint_offset(part, zone, out)
     if offset is not None:
@@ -1017,6 +1019,14 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     known = np.isfinite(out[..., 0])
     if not known.all() and known.any():
         out = np.stack([fill_nearest(np.nan_to_num(out[..., k]), known) for k in range(3)], axis=-1)
+    # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
+    # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
+    rows, cols = band.shape
+    top = np.clip(rows - 1 - band.sum(axis=0), 0, rows - 1)          # the texel just over the neck, column by column
+    height = points[..., 1]
+    over = height[top, np.arange(cols)][None, :]
+    ease = np.clip((height - zone["bottom"]) / np.maximum(over - zone["bottom"], 1e-12), 0, 1)[..., None]
+    out = np.where(band[..., None], (1 - ease) * out + ease * out[top, np.arange(cols)][None, :, :], out)
     return np.clip(out, 0, 255), offset
 
 

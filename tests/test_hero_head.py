@@ -421,13 +421,17 @@ def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_bu
     assert np.allclose(picture[8, 0], [70, 70, 220], atol=3)        # the back: the build's paint, moved as its face was
 
 
-def painted(colour):
+def painted(colour, right=None):
+    """A material of one COLOUR, or COLOUR on its left half (u < 0.5) and RIGHT on its right."""
     import io
 
     from PIL import Image
 
+    image = Image.new("RGB", (4, 4), tuple(int(c) for c in colour))
+    if right is not None:
+        image.paste(tuple(int(c) for c in right), (2, 0, 4, 4))
     buffer = io.BytesIO()
-    Image.new("RGB", (4, 4), tuple(int(c) for c in colour)).save(buffer, format="PNG")
+    image.save(buffer, format="PNG")
     return hf.picture_material(buffer.getvalue())
 
 
@@ -446,9 +450,12 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
     turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
     rings = [(0.021, y) for y in np.arange(-0.0395, -0.034, 0.001)] + [(0.041, y) for y in np.arange(-0.033, 0.02, 0.002)]
     old = np.concatenate([hd.unpolar(frame, turn, np.full(90, r), np.full(90, y)) for r, y in rings])
-    part = {"positions": old, "faces": np.zeros((0, 3), np.int64), "uvs": np.full((len(old), 2), 0.5),
-            "material": painted([190, 160, 160])}               # the figure's own paint, a little darker
+    uvs = np.where((np.hypot(old[:, 0], old[:, 2]) < 0.03)[:, None], [0.75, 0.5], [0.25, 0.5])
+    part = {"positions": old, "faces": np.zeros((0, 3), np.int64), "uvs": uvs,    # the figure's own paint: its face
+            "material": painted([190, 160, 160], right=[120, 90, 90])}          # a little darker, its neck shaded
     out, offset = hd.figure_paint(picture, points, part, zone)
     assert np.allclose(offset, [-10, -10, 0], atol=1)           # the tone read on the face, not on the dark throat
-    assert np.allclose(out[-1], [190, 160, 160], atol=2)        # the neck: the figure's own paint
+    assert 118 <= out[-1, :, 0].min() and out[-1, :, 0].max() <= 140    # at the stitch: the figure's own neck ...
+    under_chin = (points[..., 1] < -0.034) & (points[..., 1] > -0.0365)
+    assert out[under_chin][:, 0].min() > 160                    # ... eased to the chin's own skin under its edge
     assert np.allclose(out[lips], [210, 110, 120], atol=2)      # the chin above it keeps the picture
