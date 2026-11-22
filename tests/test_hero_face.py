@@ -288,6 +288,58 @@ def test_face_relief_takes_the_skin_of_a_hollow_build_and_nothing_behind_it():
     assert seen == pytest.approx(np.pi * 0.035 ** 2, rel=0.03)                     # one layer: no wall behind it
 
 
+def roof(half=0.04, step=0.001, height=0.05):
+    """A build whose front is a sharp ridge down the middle, as the Zauberer's nose came out built alone: z = HEIGHT -
+    |x|, two planes meeting at 90 degrees along x = 0."""
+    xs = np.arange(-half, half + step / 2, step)
+    x, y = np.meshgrid(xs, xs)
+    v = np.stack([x.ravel(), y.ravel(), height - np.abs(x.ravel())], axis=1)
+    n = len(xs)
+    i = np.arange(n * n).reshape(n, n)
+    a, b, c, d = i[:-1, :-1], i[:-1, 1:], i[1:, :-1], i[1:, 1:]
+    f = np.concatenate([np.stack([c, d, b], -1).reshape(-1, 3), np.stack([c, b, a], -1).reshape(-1, 3)])
+    return v, f
+
+
+def sharpest_turn(points, row_y, pixel):
+    """The most the surface's slope turns (degrees) from one pixel to the next along the row at ROW_Y."""
+    row = points[np.abs(points[:, 1] - row_y) < pixel / 2]
+    row = row[np.argsort(row[:, 0])]
+    angle = np.degrees(np.arctan2(np.diff(row[:, 2]), np.diff(row[:, 0])))
+    return float(np.abs(np.diff(angle)).max())
+
+
+def test_round_relief_rounds_a_crease_keeps_planes_and_does_not_reach_across_a_cliff():
+    x = np.arange(80) - 39.5
+    ridge = np.tile(-np.abs(x), (60, 1))                              # pixel units: 90 degrees at the middle
+    out = hf.round_relief(ridge, np.ones(ridge.shape, bool), 3.0)
+    angle = np.degrees(np.arctan(np.diff(out[30])))
+    assert np.abs(np.diff(angle)).max() < 20.0                        # the crease is a curve now
+    far = (np.abs(x) > 15) & (np.abs(x) < 25)                         # the planes away from it and from the edge
+    assert np.allclose(out[20:40][:, far], ridge[20:40][:, far], atol=1e-6)
+    step = np.zeros((60, 40))
+    step[30:] = 10.0                                                  # a brim's edge: a cliff, not a crease
+    out = hf.round_relief(step, np.ones(step.shape, bool), 3.0, jump=5.0)
+    assert np.allclose(out, step, atol=1e-9)
+    holes = np.where(np.arange(40)[None, :] < 5, -np.inf, step)
+    out = hf.round_relief(holes, np.ones(step.shape, bool), 3.0, jump=5.0)
+    assert np.isneginf(out[:, :5]).all() and np.allclose(out[:, 5:], step[:, 5:], atol=1e-9)
+
+
+def test_face_relief_rounds_a_build_made_of_crisp_planes():
+    v, f = roof()
+    window = disk_window(0.03, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    frame = (np.zeros(3), 0.001, np.array([500.0, 500.0]))
+    sharp = hf.face_relief({"positions": v, "faces": f}, window, (400, 400, 600, 600), 1024, frame, rounding=0.0)
+    face = hf.face_relief({"positions": v, "faces": f}, window, (400, 400, 600, 600), 1024, frame)
+    middle = face["positions"][np.argmin(np.abs(face["positions"][:, 1]))][1]
+    assert sharpest_turn(sharp["positions"], middle, window["pixel"]) > 40.0        # the build as it is
+    assert sharpest_turn(face["positions"], middle, window["pixel"]) < 20.0         # no hard line down the ridge
+    flank = ((np.abs(np.abs(face["positions"][:, 0]) - 0.012) < 0.002)               # the planes keep their place
+             & (np.abs(face["positions"][:, 1]) < 0.015))
+    assert np.allclose(face["positions"][flank, 2], 0.05 - np.abs(face["positions"][flank, 0]), atol=1e-5)
+
+
 def test_relief_puts_two_triangles_on_every_square_of_kept_pixels():
     depth = np.zeros((4, 5))
     keep = np.ones((4, 5), bool)

@@ -51,6 +51,11 @@ BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this sh
 EASE_SHARE = 0.05      # ... toward the front by at most this share of it (`tuck`)
 SKIRT_PIXELS = 3       # the new face reaches this many pixels past the seam, under the figure's cut edge ...
 TUCK_SHARE = 0.01      # ... and lies this share of the head's width behind the figure's surface there
+ROUND_SHARE = 0.0125   # the new face's relief is rounded over this share of the head's width (`round_relief`): built
+                       # alone, the Zauberer's face came out in crisp planes, its nose a ridge 60 degrees sharp within
+                       # two pixels, and the game figure's decimation kept the planes: a hard line down the nose, its
+                       # far flank and the tip's underside dark facets (round 22, F7). At 3 pixels of 240 a head the
+                       # sharpest one per cent of its creases turn 11 degrees a pixel, the old face's 26
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
                        # Pixal3D builds a head and not a mask (the Zauberer's 174 px crop round an 85 px face)
 SOFT_EDGE_PX = 2       # the face crop's cut-out keeps its soft alpha only this close to its outline (`solid_cutout`)
@@ -587,6 +592,29 @@ def relief(depth: np.ndarray, box, pixel: float, keep: np.ndarray) -> dict:
     return {"positions": positions, "faces": faces}
 
 
+def round_relief(depth: np.ndarray, keep: np.ndarray, sigma: float, jump: float | None = None) -> np.ndarray:
+    """DEPTH (a front depth map) rounded over SIGMA pixels within KEEP: every kept pixel becomes the Gaussian-weighted
+    mean of the kept pixels round it, so a crease turns into a curve while a plane stays a plane. A cliff (a step of
+    JUMP or more within CLIFF_PIXELS, `cliffs`) splits the map into pieces that are rounded each on its own, and its
+    own pixels stay, so a brim's edge does not drag the brow up to it. Empty pixels stay empty."""
+    depth = np.asarray(depth, dtype=np.float64)
+    ok = np.asarray(keep, dtype=bool) & np.isfinite(depth)
+    if jump is not None:
+        ok &= ~cliffs(np.where(np.isfinite(depth), depth, np.nan), jump)
+    out = depth.copy()
+    if sigma <= 0 or not ok.any():
+        return out
+    label, count = ndimage.label(ok)
+    for piece in range(1, count + 1):
+        mine = label == piece
+        if mine.sum() < MIN_SLICE_POINTS:
+            continue
+        num = ndimage.gaussian_filter(np.where(mine, depth, 0.0), sigma, mode="constant")
+        den = ndimage.gaussian_filter(mine.astype(np.float64), sigma, mode="constant")
+        out[mine] = num[mine] / den[mine]
+    return out
+
+
 def picture_uvs(points: np.ndarray, crop: tuple[int, int, int, int], crop_size: int, frame) -> np.ndarray:
     """glTF texture coordinates (u right, v down) in the upscaled crop of the figure's model points (x, y): the inverse
     of `crop_to_figure`, so the crop paints the face where the picture shows it."""
@@ -614,11 +642,14 @@ def picture_material(png: bytes, name: str = "HeroFace", roughness: float = 0.8)
 
 
 def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_size: int, frame,
-                material: tuple[dict, bytes, int] | None = None, step: float | None = None) -> dict:
+                material: tuple[dict, bytes, int] | None = None, step: float | None = None,
+                rounding: float | None = None) -> dict:
     """The placed new FACE (a build in the figure's frame) as a relief over the window and a little beyond it
-    (`relief`), every STEP (default the window's pixel), painted by the crop picture (`picture_uvs`)."""
+    (`relief`), every STEP (default the window's pixel), rounded over ROUNDING (default ROUND_SHARE of the head's
+    width, `round_relief`) and painted by the crop picture (`picture_uvs`)."""
     box, pixel = window["box"], window["pixel"]
     step = pixel if step is None else step
+    rounding = ROUND_SHARE * window["width"] if rounding is None else rounding
     p = np.asarray(face["positions"], dtype=np.float64)
     f = np.asarray(face["faces"], dtype=np.int64)
     middle = p[f].mean(axis=1)
@@ -628,6 +659,7 @@ def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_
     grid = np.stack(np.meshgrid(box[0] + (np.arange(cols) + 0.5) * step, box[3] - (np.arange(rows) + 0.5) * step),
                     axis=-1).reshape(-1, 2)
     inside = window_values(window, np.c_[grid, np.zeros(len(grid))]).reshape(rows, cols) > -(NEAR_PIXELS + 1) * pixel
+    depth = round_relief(depth, inside, rounding / step, JUMP_SHARE * window["width"])
     out = relief(depth, box, step, inside)
     out["uvs"] = picture_uvs(out["positions"], crop, crop_size, frame)
     if material is not None:

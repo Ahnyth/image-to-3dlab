@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chin, found on the figure's front depth map with no hand-drawn box. Only the face is swapped, so hat and collar stay
   the figure's own (the Hero route's whole-head swap left loose slabs at a big hat). The new face is the build's skin
   as seen from the front, painted by the crop itself, so the eyes are the picture's own pixels; it reaches a little
-  past the seam, tucked just behind the figure's surface, so the figure's cut edge lies over it. A rigged figure keeps
+  past the seam, tucked just behind the figure's surface, so the figure's cut edge lies over it. Its creases are
+  rounded a little: built alone, a face can come out in crisp planes, and a game figure's decimation turned them into
+  a hard line down the nose with dark facets beside it and under its tip. A rigged figure keeps
   its skeleton and the new face moves as the old one did. The finer models a game-ready step bakes paint and bumps from get the same face (`--also`). A
   figure with its Hero hands on (two parts) is read as it is.
 
