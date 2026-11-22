@@ -71,8 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crack opens, and every outline the cut leaves is closed; the part moves rigidly with the bones the slab followed.
   `--boots` finds the legs from the rig, draws each boot from its outer side, stands it on the figure's floor with
   its sole laid flat and turned as the old foot was, as tall as the picture shows it (`--top`: where its shaft ends),
-  cuts the leg straight across just under its top and closes the cut inside it; the boot takes the old leg's weights
-  point by point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,
+  cuts the leg straight across under its rim's lowest point, closes the cut and tucks the old leg inside it up to its
+  top (the old boot's wider top showed over the new rim as a ledge); the boot takes the old leg's weights point by
+  point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,
   through the camera the figure was built with (found through its licence record) and past the coat in front of it,
   and by its own build elsewhere, moved to the picture's tones; the finer models a game-ready step bakes from get the
   same parts (`--also`). The check counts each part's pieces, the edges left open round it, and a boot's sole against
