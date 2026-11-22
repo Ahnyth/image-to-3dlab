@@ -165,9 +165,18 @@ def clip(vertices: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np
     Returns (vertices, faces, attributes, rim): RIM holds the cut's outline as edges between new vertices,
     oriented as boundary edges of the kept faces.
     """
+    return clip_values(vertices, faces, _signed(vertices, origin, normal), cuttable, attributes)
+
+
+def clip_values(vertices: np.ndarray, faces: np.ndarray, values: np.ndarray, cuttable: np.ndarray | None = None,
+                attributes: tuple[np.ndarray, ...] = ()):
+    """`clip` by any smooth value per vertex instead of a plane: the mesh is cut where VALUES pass zero (linearly
+    along each edge) and the side where they are at most zero is kept. A plane's signed distance is one such
+    value; a face's outline seen from the front (`hero_face`) is another."""
     vertices = np.asarray(vertices, dtype=np.float64)
     faces = np.asarray(faces, dtype=np.int64)
-    d = _signed(vertices, origin, normal)
+    d = np.array(values, dtype=np.float64)
+    d[np.abs(d) < 1e-12] = -1e-12            # a vertex exactly on the cut counts as kept
     out = d > 0
     chosen = np.ones(len(faces), bool) if cuttable is None else np.asarray(cuttable, dtype=bool)
     outs = out[faces].sum(axis=1)
@@ -516,9 +525,14 @@ ATTRIBUTES = ("normals", "uvs", "dense", "marks")   # marks: which arm a vertex 
 def cut_part(part: dict, origin: np.ndarray, normal: np.ndarray, cuttable: np.ndarray | None = None):
     """(PART cut by the plane, keeping the side NORMAL points away from; the cut's rim edges in its numbering).
     A part is a dict of positions and faces with any of normals, uvs and dense skin weights."""
+    return cut_part_values(part, _signed(part["positions"], origin, normal), cuttable)
+
+
+def cut_part_values(part: dict, values: np.ndarray, cuttable: np.ndarray | None = None):
+    """`cut_part` where VALUES (one per vertex) pass zero, keeping where they are at most zero (`clip_values`)."""
     present = [k for k in ATTRIBUTES if part.get(k) is not None]
-    vertices, faces, attributes, rim = clip(part["positions"], part["faces"], origin, normal, cuttable,
-                                            tuple(part[k] for k in present))
+    vertices, faces, attributes, rim = clip_values(part["positions"], part["faces"], values, cuttable,
+                                                   tuple(part[k] for k in present))
     vertices, faces, attributes, remap = compact(vertices, faces, attributes)
     out = {**part, "positions": vertices, "faces": faces, **dict(zip(present, attributes))}
     rim = remap[rim]
@@ -651,35 +665,48 @@ def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, p
                                              hand_loop.mean(axis=0), body_loop.mean(axis=0), ratio,
                                              blend * plan["length"])}
     hand_loop = hand["positions"][hand_ids]
-    alike = turn_of(body_loop, axis) == turn_of(hand_loop, axis)
-    triangles = bridge(body_loop, hand_loop, axis)
+    out, stitched, alike = join_rims(body, body_ids, hand, hand_ids, axis)
+    band = np.linalg.norm(body_loop.mean(axis=0) - hand_loop.mean(axis=0))
+    report = {"wrist_ratio": round(ratio, 3), "rim_points": [len(body_ids), len(hand_ids)],
+              "stitch_faces": stitched, "band_length": float(band), "rims_turn_alike": bool(alike)}
+    return out, report
+
+
+def join_rims(body: dict, body_ids: np.ndarray, part: dict, part_ids: np.ndarray,
+              normal: np.ndarray) -> tuple[dict, int, bool]:
+    """PART with a band of triangles added that joins its rim to BODY's: (the part, the band's face count, whether
+    the two rims turn alike seen along NORMAL, which says one side faces inward).
+
+    BODY_IDS and PART_IDS are each rim's vertices in walking order (`rim_loop`). Every band triangle has corners of
+    its own, at the rim points it joins (an engine or Blender welds them on import), with the body's or the part's
+    skin weights as the corner lies, and all three painted from one point of the part's rim (`stitch`)."""
+    body_loop, part_loop = body["positions"][body_ids], part["positions"][part_ids]
+    alike = turn_of(body_loop, normal) == turn_of(part_loop, normal)
+    triangles = bridge(body_loop, part_loop, normal)
     on_body = triangles[:, :, 0] == 0
     index = triangles[:, :, 1]
     from_body = body_ids[np.where(on_body, index, 0)]
-    from_hand = hand_ids[np.where(on_body, 0, index)]
-    anchor = from_hand[np.arange(len(triangles)), np.argmax(~on_body, axis=1)]   # each has a hand corner
+    from_part = part_ids[np.where(on_body, 0, index)]
+    anchor = from_part[np.arange(len(triangles)), np.argmax(~on_body, axis=1)]   # each has a corner on the part
 
     def corners(key):
-        values = np.where(on_body[..., None], body[key][from_body], hand[key][from_hand])
+        values = np.where(on_body[..., None], body[key][from_body], part[key][from_part])
         return values.reshape(-1, values.shape[-1])
 
     added = {"positions": corners("positions")}
-    if hand.get("uvs") is not None:
-        added["uvs"] = np.repeat(hand["uvs"][anchor], 3, axis=0)
-    if hand.get("normals") is not None:
+    if part.get("uvs") is not None:
+        added["uvs"] = np.repeat(part["uvs"][anchor], 3, axis=0)
+    if part.get("normals") is not None:
         added["normals"] = (corners("normals") if body.get("normals") is not None
-                            else np.repeat(hand["normals"][anchor], 3, axis=0))
-    if hand.get("dense") is not None:
+                            else np.repeat(part["normals"][anchor], 3, axis=0))
+    if part.get("dense") is not None:
         added["dense"] = corners("dense")
-    faces = len(hand["positions"]) + np.arange(3 * len(triangles)).reshape(-1, 3)
-    out = dict(hand)
+    faces = len(part["positions"]) + np.arange(3 * len(triangles)).reshape(-1, 3)
+    out = dict(part)
     for key, values in added.items():
-        out[key] = np.concatenate([hand[key], values])
-    out["faces"] = np.concatenate([hand["faces"], faces])
-    band = np.linalg.norm(body_loop.mean(axis=0) - hand_loop.mean(axis=0))
-    report = {"wrist_ratio": round(ratio, 3), "rim_points": [len(body_ids), len(hand_ids)],
-              "stitch_faces": int(len(faces)), "band_length": float(band), "rims_turn_alike": bool(alike)}
-    return out, report
+        out[key] = np.concatenate([part[key], values])
+    out["faces"] = np.concatenate([part["faces"], faces])
+    return out, int(len(faces)), bool(alike)
 
 
 def merge_parts(parts: list[dict]) -> dict:
