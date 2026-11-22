@@ -548,3 +548,37 @@ def test_local_colour_can_fall_back_to_the_global_match():
                               settings=pp.Settings(local_colour=False))
     # The global fit sees a zero average gap, so the unseen halves stay alike.
     assert abs(int(out[20, 64, 0]) - int(out[108, 64, 0])) < 20
+
+
+# --- a crop of a picture, and surfaces that only hide --------------------------------------------
+
+
+def test_a_view_with_its_own_focal_and_centre_projects_like_a_crop_of_the_picture():
+    # A part's paint comes from an upscaled crop of the figure's picture: the same camera, its focal length and
+    # principal point carried into the crop's pixels, so a point lands where it lands in the whole picture.
+    view = _camera(size=64)
+    points = np.array([[0.1, 0.2, 0.0], [-0.3, 0.05, 0.4], [0.25, -0.2, -0.3]])
+    x, y, depth = pp.project(points, view)
+    x0, y0, k = 20.0, 12.0, 4.0                       # the crop's corner in the picture, and its upscale
+    crop = pp.View(np.zeros((128, 128, 4), np.uint8), view.cam_to_world, view.fov_x, "crop",
+                   focal=k * view.focal_px, centre=(k * (32.0 - x0), k * (32.0 - y0)))
+    cx, cy, cdepth = pp.project(points, crop)
+    assert np.allclose(cx, (x - x0) * k) and np.allclose(cy, (y - y0) * k)
+    assert np.allclose(cdepth, depth)
+    assert crop.focal_px == pytest.approx(k * view.focal_px)
+
+
+def test_an_occluder_hides_what_lies_behind_it_and_is_not_painted():
+    # A part set onto a figure: the figure's coat in front of the part's left half must keep the picture's coat
+    # colour off it, though the coat is not what is painted.
+    positions, faces, uvs = _quad(z=-0.2)
+    coat = np.array([[-0.8, -0.8, 0.3], [0.0, -0.8, 0.3], [0.0, 0.8, 0.3], [-0.8, 0.8, 0.3]])
+    texture = np.full((32, 32, 3), 128, dtype=np.uint8)
+    view = _camera(size=64, image=_split_photo(64))
+    settings = pp.Settings(match_colour=False)
+    _, alone = pp.paint_texture(texture, positions, uvs, faces, [view], frame=IDENTITY, settings=settings)
+    out, hidden = pp.paint_texture(texture, positions, uvs, faces, [view], frame=IDENTITY, settings=settings,
+                                   occluders=(coat, np.array([[0, 1, 2], [0, 2, 3]])))
+    assert alone[16, 6] > 0.9 and hidden[16, 6] == 0.0          # behind the coat: its own paint
+    assert tuple(out[16, 6]) == (128, 128, 128)
+    assert hidden[16, 26] == pytest.approx(alone[16, 26])      # beside it: the picture as before

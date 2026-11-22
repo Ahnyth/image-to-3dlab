@@ -59,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collar's dark inside). Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
   head's paint.
+- **Pixel Match through a crop**: a view can carry its own focal length and principal point, so an upscaled crop of a
+  run's picture paints where the whole picture would, only sharper; `occluders` are surfaces that hide what lies
+  behind them without being painted (the rest of a figure a part was built for).
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone

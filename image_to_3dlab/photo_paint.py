@@ -50,9 +50,15 @@ class View:
     cam_to_world: np.ndarray   # 4 x 4; the camera looks down its own -Z
     fov_x: float               # horizontal field of view, radians
     name: str = "view"
+    # A crop of a bigger picture (a part's upscaled crop) keeps that picture's camera: its focal length and its
+    # principal point, both in the crop's own pixels. None: the image is the whole picture, centred on the axis.
+    focal: float | None = None
+    centre: tuple[float, float] | None = None
 
     @property
     def focal_px(self) -> float:
+        if self.focal is not None:
+            return float(self.focal)
         return (self.image.shape[1] / 2.0) / np.tan(self.fov_x / 2.0)
 
     @property
@@ -92,8 +98,9 @@ def project(points: np.ndarray, view: View) -> tuple[np.ndarray, np.ndarray, np.
     depth = -cam[:, 2]
     safe = np.where(np.abs(depth) < 1e-9, 1e-9, depth)
     height, width = view.image.shape[:2]
-    x = view.focal_px * cam[:, 0] / safe + width / 2.0
-    y = -view.focal_px * cam[:, 1] / safe + height / 2.0
+    cx, cy = view.centre if view.centre is not None else (width / 2.0, height / 2.0)
+    x = view.focal_px * cam[:, 0] / safe + cx
+    y = -view.focal_px * cam[:, 1] / safe + cy
     return x, y, depth
 
 
@@ -345,12 +352,17 @@ def view_weights(texel_points: np.ndarray, texel_normals: np.ndarray, view: View
 def paint_texture(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray,
                   faces: np.ndarray, views: list[View], mesh_scale: float = 1.0,
                   frame=PIXAL3D_FRAME, settings: Settings | None = None,
-                  align_reports: list | None = None) -> tuple[np.ndarray, np.ndarray]:
+                  align_reports: list | None = None,
+                  occluders: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Blend the views' pixels into `texture` (H x W x 3 or 4, uint8).
 
     `uvs` follow glTF: (0, 0) is the image's top-left corner. Returns the new texture and
     the per-texel weight actually applied (0..1), which is the debug map worth looking at.
     Pass a list as `align_reports` to get one view_align.AlignReport per view.
+
+    `occluders` (positions, faces in the model's own frame) are surfaces that hide what lies
+    behind them from a view without being painted: the rest of a figure a part was built for
+    (its coat in front of a holster), so the part takes the coat's colour nowhere.
     """
     settings = settings or DEFAULT_SETTINGS
     if settings.align:
@@ -378,8 +390,13 @@ def paint_texture(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray,
     colour = np.zeros((len(points), 3))
     strongest = np.zeros(len(points))
     outward = outward_sign(view_pos, faces)
+    seen_pos, seen_faces = view_pos, faces
+    if occluders is not None and len(occluders[1]):
+        seen_pos = np.concatenate([view_pos, to_view_space(np.asarray(occluders[0], dtype=np.float64), frame,
+                                                           mesh_scale)])
+        seen_faces = np.concatenate([faces, np.asarray(occluders[1], dtype=np.int64) + len(view_pos)])
     for view in views:
-        weight, rgb = view_weights(points, texel_n, view, view_pos, faces, settings, outward)
+        weight, rgb = view_weights(points, texel_n, view, seen_pos, seen_faces, settings, outward)
         total_w += weight
         colour += weight[:, None] * rgb
         strongest = np.maximum(strongest, weight)
