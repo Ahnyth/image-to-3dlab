@@ -102,6 +102,17 @@ def test_depth_map_sees_the_nearest_surface_and_who_made_it():
     assert np.isfinite(few).sum() > 0.6 * np.isfinite(many).sum()
 
 
+def test_pixel_hits_reports_every_layer_not_only_the_nearest():
+    back = box((-1, -1, -0.2), (1, 1, 0.0))
+    front = box((-0.5, -0.5, 0.3), (0.5, 0.5, 0.5))
+    v, f = joined(back, front)
+    pixel_id, z, face = hf.pixel_hits(v, f, (-2, 2, -2, 2), 0.05)
+    rows, cols = hf.canvas((-2, 2, -2, 2), 0.05)
+    middle = (rows // 2) * cols + cols // 2
+    assert sorted(np.round(z[pixel_id == middle], 6)) == [-0.2, 0.0, 0.3, 0.5]   # both boxes, front and back
+    assert len(pixel_id) == len(z) == len(face) and hf.pixel_hits(v, f[:0], (-2, 2, -2, 2), 0.05)[0].size == 0
+
+
 def test_face_outline_crosses_a_strand_but_stops_at_a_brim_and_a_chin():
     depth = np.zeros((60, 40))
     depth[:10] = 1.0                       # a brim, far in front, above

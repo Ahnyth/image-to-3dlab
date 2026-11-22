@@ -137,11 +137,30 @@ def to_pixels(points: np.ndarray, box, pixel: float) -> tuple[np.ndarray, np.nda
 
 def depth_map(vertices: np.ndarray, faces: np.ndarray, box, pixel: float) -> tuple[np.ndarray, np.ndarray]:
     """(depth, owner): the model seen straight from the front over BOX, as the nearest surface's Z in every pixel
-    (-inf where nothing is) and the triangle that is nearest there (-1 where nothing is). Every pixel whose centre
-    lies in a triangle counts; small triangles are drawn together, larger ones one by one."""
+    (-inf where nothing is) and the triangle that is nearest there (-1 where nothing is)."""
+    rows, cols = canvas(box, pixel)
+    pixel_id, z, face = pixel_hits(vertices, faces, box, pixel)
+    depth = np.full(rows * cols, -np.inf)
+    owner = np.full(rows * cols, -1, dtype=np.int64)
+    if len(pixel_id):
+        order = np.lexsort((-z, pixel_id))                 # by pixel, nearest first
+        pixel_id, z, face = pixel_id[order], z[order], face[order]
+        first = np.r_[True, pixel_id[1:] != pixel_id[:-1]]
+        depth[pixel_id[first]] = z[first]
+        owner[pixel_id[first]] = face[first]
+    return depth.reshape(rows, cols), owner.reshape(rows, cols)
+
+
+def pixel_hits(vertices: np.ndarray, faces: np.ndarray, box, pixel: float) -> tuple[np.ndarray, np.ndarray,
+                                                                                     np.ndarray]:
+    """(pixel id, Z, triangle) of every crossing of a straight-on view over BOX with the model: one entry per pixel
+    and triangle whose centre lies in it, every layer, nearest or not (row-major pixel ids). Small triangles are drawn
+    together, larger ones one by one."""
     rows, cols = canvas(box, pixel)
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
+    if not len(f):
+        return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
     px, py = to_pixels(v, box, pixel)
     tx, ty, tz = px[f], py[f], v[f][:, :, 2]
     lo_x, hi_x = np.ceil(tx.min(1) - 0.5), np.floor(tx.max(1) - 0.5)
@@ -180,16 +199,7 @@ def depth_map(vertices: np.ndarray, faces: np.ndarray, box, pixel: float) -> tup
         found_pixel.append((r[inside] * cols + c[inside]).astype(np.int64))
         found_z.append(z[inside])
         found_face.append(np.full(int(inside.sum()), i))
-    depth = np.full(rows * cols, -np.inf)
-    owner = np.full(rows * cols, -1, dtype=np.int64)
-    if found_pixel:
-        pixel_id, z, face = (np.concatenate(found_pixel), np.concatenate(found_z), np.concatenate(found_face))
-        order = np.lexsort((-z, pixel_id))                 # by pixel, nearest first
-        pixel_id, z, face = pixel_id[order], z[order], face[order]
-        first = np.r_[True, pixel_id[1:] != pixel_id[:-1]]
-        depth[pixel_id[first]] = z[first]
-        owner[pixel_id[first]] = face[first]
-    return depth.reshape(rows, cols), owner.reshape(rows, cols)
+    return np.concatenate(found_pixel), np.concatenate(found_z), np.concatenate(found_face)
 
 
 def sample(grid: np.ndarray, box, pixel: float, points: np.ndarray, outside: float = -np.inf,
