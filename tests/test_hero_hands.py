@@ -96,6 +96,43 @@ def built_hand(double=True):
     return {"positions": v, "faces": np.concatenate(faces), "uvs": v[:, :2].copy()}
 
 
+def touching_walls(profile, touch, shrink=0.9, squash=(1.0, 0.5), ring=24):
+    """Pixal3D's double wall, as the Waechter's gauntlet build has it: an inner skin SHRINK times the outer one,
+    facing inward, joined to the outer at the open top. Between the heights TOUCH (high, low) its side at angle 0
+    lies on the outer skin, so the two walls share a line there and a section's walk can run round both in one go
+    (their turns cancel). PROFILE is (y, radius) from the top down, the last radius 0 (a tip)."""
+    def rings(scale, shifted):
+        out = []
+        for y, r in profile[:-1]:
+            a = np.linspace(0, 2 * np.pi, ring, endpoint=False)
+            x0 = (1 - scale) * r * squash[0] if shifted and touch[1] <= y <= touch[0] else 0.0
+            out.append(np.stack([x0 + scale * r * np.cos(a) * squash[0], np.full(ring, y),
+                                 scale * r * np.sin(a) * squash[1]], 1))
+        return out
+
+    outer, inner = rings(1.0, False), rings(shrink, True)
+    n = len(outer)
+    tip_y = profile[-1][0]
+    v = np.concatenate([*outer, *inner, [[0.0, tip_y, 0.0]], [[0.0, tip_y + 0.01, 0.0]]])
+    o, i = 0, n * ring                                       # first ids of the outer and inner rings
+    tip_o, tip_i = 2 * n * ring, 2 * n * ring + 1
+    faces = []
+    for k in range(n - 1):
+        for j in range(ring):
+            j1 = (j + 1) % ring
+            a, b, c, d = o + k * ring + j, o + k * ring + j1, o + (k + 1) * ring + j, o + (k + 1) * ring + j1
+            faces += [[a, b, c], [b, d, c]]
+            a, b, c, d = i + k * ring + j, i + k * ring + j1, i + (k + 1) * ring + j, i + (k + 1) * ring + j1
+            faces += [[a, c, b], [b, c, d]]                  # the inner skin faces inward
+    for j in range(ring):
+        j1 = (j + 1) % ring
+        faces.append([o + (n - 1) * ring + j, o + (n - 1) * ring + j1, tip_o])
+        faces.append([i + (n - 1) * ring + j1, i + (n - 1) * ring + j, tip_i])
+        a, b, c, d = o + j, o + j1, i + j, i + j1             # the open top joins the two skins
+        faces += [[a, c, b], [b, c, d]]
+    return {"positions": v, "faces": np.array(faces), "uvs": v[:, :2].copy()}
+
+
 # --- mesh pieces --------------------------------------------------------------------------------------------
 
 def test_weld_groups_joins_vertices_at_one_place():
@@ -196,6 +233,128 @@ def test_pieces_counts_outlines_side_by_side_not_one_inside_another_nor_specks()
     assert hh.pieces([ring(0, 1.0), ring(0, 0.98)], axis) == 1          # a double wall: one piece
     assert hh.pieces([ring(-3, 0.5), ring(-1, 0.5), ring(1, 0.5), ring(3, 0.5)], axis) == 4   # four fingers
     assert hh.pieces([ring(0, 1.0), ring(2.5, 0.01)], axis) == 1        # a speck beside the wrist
+
+
+def shuffled(part, seed):
+    """PART with its faces in another order: where two walls share a line, the order decides whether a section's
+    walk switches walls there, as it does in a real build."""
+    order = np.random.default_rng(seed).permutation(len(part["faces"]))
+    return {**part, "faces": part["faces"][order]}
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_a_sections_area_is_what_its_outer_wall_encloses_however_the_walls_touch(seed):
+    # the Waechter's gauntlet build: where its two walls touch, one walk ran round both and their areas cancelled
+    # (0.009 where the outline enclosed about 0.05), elsewhere the inner wall's area was added; the wrist was taken
+    # at such a false valley, on the knuckle plate
+    tube = shuffled(touching_walls([(0.3, 0.1), (0.2, 0.1), (0.1, 0.1), (0.0, 0.1), (-0.1, 0.0)], touch=(0.3, 0.0),
+                                   squash=(1.0, 1.0), ring=48), seed)
+    points, faces, _ = hh.weld(tube["positions"], tube["faces"])
+    areas, counts = hh.profile(points, faces, [0, 0.3, 0], [0, -1, 0], np.linspace(0.05, 0.25, 5))
+    assert np.allclose(areas, np.pi * 0.1 ** 2, rtol=0.05), areas
+    assert counts.tolist() == [1] * 5
+
+
+def arc(mask, centre, radius, start, end, thickness=3):
+    """A thin open shell's section drawn into MASK: a circle's arc from START to END degrees."""
+    import cv2
+
+    cv2.ellipse(mask, centre, (radius, radius), 0, start, end, 1, thickness)
+    return mask
+
+
+def test_a_lip_hanging_round_the_wrist_is_not_a_piece_of_its_own():
+    # the Waechter's build: the cuff's lip hangs round the wrist, open on one side; it took the wrist's section to
+    # two pieces, and the one-piece rule skipped the real wrist
+    import cv2
+
+    mask = np.zeros((200, 200), np.uint8)
+    cv2.circle(mask, (100, 100), 40, 1, -1)
+    arc(mask, (100, 100), 60, 30, 330)
+    found = hh.mask_pieces(mask.astype(bool))
+    assert len(found["areas"]) == 1 and found["areas"][0] == pytest.approx(np.pi * 40 ** 2, rel=0.05)
+    assert not found["hollow"].any()
+
+
+def test_a_shell_open_toward_a_hollow_counts_as_what_it_encloses():
+    # the Waechter's build: its knuckle plate is a shell open toward an empty palm; filled from outside it read a
+    # tenth of the hand's width, and the wrist was taken there
+    mask = arc(np.zeros((200, 200), np.uint8), (100, 100), 60, 30, 330)
+    found = hh.mask_pieces(mask.astype(bool))
+    assert len(found["areas"]) == 1 and found["areas"][0] > 0.8 * np.pi * 60 ** 2
+    assert found["hollow"].tolist() == [True]
+
+
+def c_shell(y_top, y_bottom, radius, thickness=0.01, gap_deg=80, steps=24):
+    """A closed shell whose sections are a C: a palm built as a plate round an empty inside, open on one side."""
+    a = np.radians(np.linspace(gap_deg / 2, 360 - gap_deg / 2, steps))
+    ring = np.concatenate([np.stack([radius * np.cos(a), radius * np.sin(a)], 1),
+                           np.stack([(radius - thickness) * np.cos(a[::-1]), (radius - thickness) * np.sin(a[::-1])],
+                                    1)])
+    n = len(ring)
+    top = np.stack([ring[:, 0], np.full(n, y_top), ring[:, 1]], 1)
+    bottom = np.stack([ring[:, 0], np.full(n, y_bottom), ring[:, 1]], 1)
+    faces = []
+    for j in range(n):                                       # the walls, facing out of the C's outline
+        j1 = (j + 1) % n
+        faces += [[j, n + j, j1], [j1, n + j, n + j1]]
+    for j in range(steps - 1):                               # the ends, as a strip between the two arcs
+        o0, o1, i0, i1 = j, j + 1, n - 1 - j, n - 2 - j
+        faces += [[o0, o1, i0], [o1, i1, i0], [n + o0, n + i0, n + o1], [n + o1, n + i0, n + i1]]
+    return np.concatenate([top, bottom]), np.array(faces)
+
+
+def hand_with_palm(hollow):
+    """A built hand fingers down: a cuff and a wrist turned in one piece, a palm (HOLLOW: a C-shaped shell round an
+    empty inside, as the Waechter's gauntlet build had it; else solid) and four fingers."""
+    import trimesh
+
+    v, f = turned([(0.50, 0.20), (0.30, 0.20), (0.299, 0.12), (0.17, 0.12), (0.169, 0.0)], ring=48)
+    parts = [trimesh.Trimesh(v, f, process=False)]
+    if hollow:
+        parts.append(trimesh.Trimesh(*c_shell(0.16, -0.10, 0.16), process=False))
+    else:
+        parts.append(trimesh.creation.cylinder(0.16, 0.26, sections=48,
+                                               transform=trimesh.transformations.rotation_matrix(np.pi / 2,
+                                                                                                 (1, 0, 0))))
+        parts[-1].apply_translation((0, 0.03, 0))
+    for x in (-0.12, -0.04, 0.04, 0.12):
+        parts.append(trimesh.creation.box((0.06, 0.28, 0.06),
+                                          trimesh.transformations.translation_matrix((x, -0.25, 0))))
+    hand = trimesh.util.concatenate(parts)
+    return np.asarray(hand.vertices), np.asarray(hand.faces)
+
+
+def test_a_lip_beside_the_cut_or_a_fingertip_cap_is_not_a_hollow_palm():
+    # the Waechter's second gauntlet build (drawing 3, seed 7) was turned away at 10 %: its open shells were a thin
+    # strip of the cuff's lip beside the solid hand at the cut, and a fingertip's cap; its palm is solid
+    import trimesh
+
+    v, f = hand_with_palm(False)
+    lip_v, lip_f = c_shell(0.16, 0.10, 0.20, gap_deg=300)                     # a 60 degree strip beside the palm
+    cap_v, cap_f = c_shell(-0.39, -0.41, 0.03, thickness=0.004)               # a fingertip's open cap
+    cap_v[:, 0] += 0.12
+    hand = trimesh.util.concatenate([trimesh.Trimesh(v, f, process=False),
+                                     trimesh.Trimesh(lip_v, lip_f, process=False),
+                                     trimesh.Trimesh(cap_v, cap_f, process=False)])
+    own = hh.hand_wrist(np.asarray(hand.vertices), np.asarray(hand.faces))
+    assert own["hollow"] <= hh.HOLLOW_LIMIT, own["hollow"]
+
+
+def test_hand_wrist_tells_a_palm_built_hollow():
+    # Pixal3D built the Waechter's gauntlet palm as a plate round an empty inside, and the hole showed on the
+    # figure's palm; such a build has open shells in its sections below the wrist, a good one none
+    for hollow in (True, False):
+        own = hh.hand_wrist(*hand_with_palm(hollow))
+        assert own["found"] and 0.10 < own["cut"][1] < 0.299
+        assert (own["hollow"] > hh.HOLLOW_LIMIT) == hollow, own["hollow"]
+
+
+@pytest.mark.parametrize("seed", [2, 3, 4, 5])
+def test_hand_wrist_finds_the_cuff_when_the_walls_touch_in_the_palm(seed):
+    hand = shuffled(touching_walls(HAND, touch=(0.10, -0.10)), seed)
+    own = hh.hand_wrist(hand["positions"], hand["faces"])
+    assert own["found"] and 0.15 < own["cut"][1] < 0.299      # below the cuff, not in the palm
 
 
 def test_seam_index_keeps_a_wrist_one_section_wide():
@@ -306,6 +465,49 @@ def test_graft_model_leaves_one_closed_surface_with_no_gap_and_no_overlap():
         (hands["positions"][:, 1] < 0.0).sum())
 
 
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_a_hand_whose_walls_touch_at_the_cut_is_stitched_to_its_outer_wall(seed):
+    # the Waechter's gauntlet build (drawing 3, seed 7) has its two walls fused all down the hand: the cut's rim
+    # walked into the inner wall and broke into seven loops, the arm was stitched to one a tenth the wrist's size and
+    # the wrist eased 3.1x
+    arm = figure_arm()
+    bone = arm["dense"].argmax(1)
+    plan = hh.figure_wrist(arm["positions"], arm["faces"], bone, 1, [2], np.array([-0.2, 0.30, 0]),
+                           np.array([-0.2, 0.12, 0]), "right")
+    hand = shuffled(touching_walls(HAND, touch=(0.50, -0.30)), seed)
+    own = hh.hand_wrist(hand["positions"], hand["faces"])
+    tf = hh.placement(own["centre"], own["fingers"], own["back"], own["length"],
+                      plan["centre"], plan["fingers"], plan["back"], plan["length"])
+    _, _, report = hh.graft_model(arm, bone, {"right": plan}, {"right": {"part": hand, "tf": tf}})
+    assert 0.7 < report["right"]["wrist_ratio"] < 1.4, report["right"]
+    assert report["right"]["rim_share"] > 0.9, report["right"]
+
+
+def test_rim_share_tells_a_wrist_of_open_plates_from_a_tube():
+    # the Waechter's gauntlet build (drawing 3, seed 7): at the figure's cut its wrist was overlapping open plates,
+    # the rim closed a seventh of the section, and the arm was stitched to that seventh, eased 3.5x
+    import trimesh
+
+    arm = figure_arm()
+    bone = arm["dense"].argmax(1)
+    plan = hh.figure_wrist(arm["positions"], arm["faces"], bone, 1, [2], np.array([-0.2, 0.30, 0]),
+                           np.array([-0.2, 0.12, 0]), "right")
+    shares = {}
+    for plates in (True, False):
+        v, f = hand_with_palm(False)
+        if plates:                                            # the wrist's tube replaced by an open plate
+            keep = ~((v[f].mean(axis=1)[:, 1] > 0.17) & (v[f].mean(axis=1)[:, 1] < 0.30))
+            mesh = trimesh.Trimesh(v, f[keep], process=False)
+            plate_v, plate_f = c_shell(0.30, 0.17, 0.12, gap_deg=140)
+            mesh = trimesh.util.concatenate([mesh, trimesh.Trimesh(plate_v, plate_f, process=False)])
+            v, f = np.asarray(mesh.vertices), np.asarray(mesh.faces)
+        hand = {"positions": v, "faces": f}
+        tf = hh.placement(np.array([0.0, 0.25, 0.0]), np.array([0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 0.65,
+                          plan["centre"], plan["fingers"], plan["back"], plan["length"])
+        shares[plates] = hh.rim_share(hand, tf, plan, hh.GAP_SHARE * plan["length"])
+    assert shares[False] > hh.RIM_LIMIT and shares[True] < 0.5, shares
+
+
 def test_a_mirrored_hand_on_the_left_arm_also_closes_and_faces_out():
     arm = figure_arm(x=0.2)                                   # the figure's left arm, at +x
     bone = arm["dense"].argmax(1)
@@ -322,6 +524,32 @@ def test_a_mirrored_hand_on_the_left_arm_also_closes_and_faces_out():
     v = np.concatenate([body["positions"], hands["positions"]])
     f = np.concatenate([body["faces"], hands["faces"] + len(body["positions"])])
     assert closed_edges(v, f) == (0, 0) and not report["left"]["rims_turn_alike"]
+
+
+def test_the_arms_inner_skin_cut_at_the_wrist_is_dropped():
+    # the Waechter's shape model has an inner skin a few millimetres inside its outer one (Finish's remesh); cut at the
+    # wrist, the forearm's part of it came loose as a piece of its own, its open edge just inside the stitch, and the
+    # game figure showed bits of it on the forearm above each new hand
+    arm = figure_arm()
+    v, f = turned([(y, 0.85 * r) for y, r in ARM])                # the inner skin, facing inward, open at the
+    f = f[(f != 0).all(axis=1)]                                    # top: it meets the outer skin at the tip alone
+    v[v[:, 1] < 0.12, 0] *= 0.6
+    v[:, 0] += -0.2
+    inner = {"positions": v, "faces": f[:, ::-1], "uvs": v[:, :2].copy(),
+             "dense": np.eye(3)[np.where(v[:, 1] < 0.12, 2, 1)]}
+    body = {k: np.concatenate([arm[k], inner[k] if k != "faces" else inner[k] + len(arm["positions"])])
+            for k in ("positions", "faces", "uvs", "dense")}
+    bone = body["dense"].argmax(1)
+    plan = hh.figure_wrist(arm["positions"], arm["faces"], arm["dense"].argmax(1), 1, [2],
+                           np.array([-0.2, 0.30, 0]), np.array([-0.2, 0.12, 0]), "right")
+    hand = built_hand(double=False)
+    own = hh.hand_wrist(hand["positions"], hand["faces"])
+    tf = hh.placement(own["centre"], own["fingers"], own["back"], own["length"],
+                      plan["centre"], plan["fingers"], plan["back"], plan["length"])
+    out, _, report = hh.graft_model(body, bone, {"right": plan}, {"right": {"part": hand, "tf": tf}})
+    labels = hh.components(out["faces"], hh.weld_groups(out["positions"]))
+    assert labels.max() == 0                                       # the outer arm alone, the inner skin gone
+    assert report["right"]["inner_dropped"] > 0
 
 
 def test_graft_model_cuts_only_the_arm_it_was_told():
@@ -355,6 +583,50 @@ def test_arm_stub_takes_the_cuff_above_the_cut_and_not_the_limb_beside_it():
     assert len(stub["faces"]) and above.max() <= 1e-9
     assert above.min() > -hh.FOREARM_SHARE * plan["length"] - 0.02
     assert (np.abs(stub["positions"][:, 0] + 0.2) < 0.05).all()   # all on this arm
+
+
+def test_wrist_density_is_the_arms_faces_per_area_round_its_seam():
+    arm = figure_arm()
+    bone = arm["dense"].argmax(1)
+    plan = hh.figure_wrist(arm["positions"], arm["faces"], bone, 1, [2], np.array([-0.2, 0.30, 0]),
+                           np.array([-0.2, 0.12, 0]), "right")
+    near = hh.arm_faces(arm["positions"], arm["faces"], bone, plan)
+    expected = near.sum() / hh.surface_area(arm["positions"], arm["faces"][near])
+    assert hh.wrist_density(arm["positions"], arm["faces"], bone, {"right": plan}) == pytest.approx(expected)
+    # the same arm with every triangle split in four is four times as dense
+    v, f = arm["positions"], arm["faces"]
+    mids = {}
+
+    def mid(a, b):
+        key = (min(a, b), max(a, b))
+        if key not in mids:
+            mids[key] = len(v) + len(mids)
+        return mids[key]
+
+    finer = []
+    for a, b, c in f:
+        ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+        finer += [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
+    points = np.concatenate([v, [(v[a] + v[b]) / 2 for a, b in mids]])
+    bone4 = np.concatenate([bone, [bone[a] for a, _ in mids]])
+    # (within 10 %: the region round the seam takes a face by its middle, and halves change which ones fall in)
+    assert hh.wrist_density(points, np.array(finer), bone4, {"right": plan}) == pytest.approx(4 * expected, rel=0.1)
+
+
+def test_spread_area_sizes_a_clean_up_by_where_its_faces_land():
+    # the Waechter's first sized hands came out twice as fine as the figure: a clean-up of the whole build spends
+    # more of its faces on the curved fingers than on the flat cuff the cut takes away
+    area = hh.spread_area(below_faces=6000, below_area=0.02, total_faces=18000)
+    assert area == pytest.approx(0.06)                               # a third of the faces below the cut
+    assert hh.hand_faces(35000, area) * 6000 / 18000 == pytest.approx(35000 * 0.02, rel=0.25)
+
+
+def test_hand_faces_make_the_hand_as_fine_as_the_figure_round_it():
+    # the Waechter's shape model (35,000 triangles a unit of area) took a raw hand at 10 million: game_ready's thinning
+    # stopped at 37,887 triangles instead of 14,000
+    assert hh.hand_faces(35000, 0.08) == 3000                      # 2,800 rounded up to 500s
+    assert hh.hand_faces(35000, 0.08, detail=2) == 6000
+    assert hh.hand_faces(100, 0.08) == hh.LEAST_HAND_FACES         # never so few that the fingers melt
 
 
 # --- skin weights -------------------------------------------------------------------------------------------
@@ -515,6 +787,43 @@ def test_a_thumb_on_the_side_the_editor_was_not_told_fails():
 def test_five_fingers_in_a_row_have_no_thumb():
     result = hh.digit_count(flat_hand(thumb=None, fingers=5))
     assert result["thumbs"] == 0 and not result["ok"]
+
+
+def test_plated_fingers_count_as_fingers():
+    # a gauntlet's fingers are rows of plates: the outline narrows at every joint and widens at every plate's rim
+    import cv2
+
+    mask = flat_hand()
+    for x in (183, 221, 259, 297):                                            # each finger's middle
+        for y in (235, 270):                                                  # two joints a finger
+            cv2.rectangle(mask, (x - 13, y - 2), (x - 10, y + 2), 0, -1)      # a notch on each side ...
+            cv2.rectangle(mask, (x + 10, y - 2), (x + 13, y + 2), 0, -1)
+            cv2.rectangle(mask, (x - 16, y + 4), (x + 16, y + 7), 1, -1)      # ... and a plate's rim below it
+    result = hh.digit_count(mask)
+    assert (result["digits"], result["thumbs"], result["ok"]) == (5, 1, True)
+
+
+def test_count_built_counts_plated_fingers_from_all_round():
+    # the Waechter's builds: each finger three plates round a thinner under-glove, a gap at every joint
+    import trimesh
+
+    move = trimesh.transformations.translation_matrix
+    parts = [trimesh.creation.box((0.30, 0.20, 0.08), move((0, 0.1, 0))),
+             trimesh.creation.box((0.34, 0.12, 0.06), move((0, 0.26, 0)))]
+    for k, x in enumerate((-0.12, -0.04, 0.04, 0.12)):
+        length = 0.30 if k in (1, 2) else 0.24
+        parts.append(trimesh.creation.box((0.035, length, 0.035), move((x, -length / 2, 0))))      # the under-glove
+        plate = length / 3
+        for j in range(3):
+            parts.append(trimesh.creation.box((0.055, plate - 0.012, 0.05),
+                                              move((x, -(j + 0.5) * plate, 0.006))))           # a plate, a gap
+    thumb = trimesh.creation.box((0.05, 0.16, 0.05))
+    thumb.apply_transform(trimesh.transformations.rotation_matrix(0.7, (0, 0, 1)))
+    thumb.apply_translation((0.21, 0.02, 0))
+    parts.append(thumb)
+    hand = trimesh.util.concatenate(parts)
+    result = hh.count_built(hand.vertices, hand.faces, [0, -1, 0])
+    assert result["ok"], result
 
 
 def test_views_count_takes_the_views_that_see_the_most_digits():
