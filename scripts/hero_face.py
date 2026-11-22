@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Give a figure a sharper face: the face built again on its own and set in between its hat brim and its collar.
+"""Give a figure a sharper face, or its whole head under a hat brim: built again on its own and set in above its collar.
 
     .venv/bin/python scripts/hero_face.py model.glb front.png [--out output/hero_face/NAME] [--rig rigged.glb]
         [--also finer.glb ...] [--seed 42]
