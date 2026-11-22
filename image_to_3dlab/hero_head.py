@@ -52,14 +52,16 @@ CUT_GAP_PIXELS = 2      # the old head is cut this many pixels under the brim's 
 COVER_BAND_SHARE = 0.2  # under the brim, in a band this share of the head's width deep under the cut, the old head is
                         # measured all round ...
 COVER_MARGIN_SHARE = 0.015   # ... and the new head is at least this much wider there, so the cut lies inside it
-COVER_SPREAD = 3        # ... and a column takes the widest of its neighbours this many columns either side
+COVER_SPREAD = 3        # ... and a column takes the widest of its neighbours this many columns either side ...
+COVER_SMOOTH = 40       # ... and the new head is as wide as the widest of it this many columns either side, softened
 SIDE_LIMIT = 0.7        # a surface whose normal points this much up or down is a plate (a brim), not a head's side
 STAND_SHARE = 0.06      # a collar's top edge stands out at least this share of the head's width from the head above it
 BRIM_RING = (0.75, 1.1)  # the brim's underside is read in this ring round the axis (shares of the head's width) ...
 BRIM_RING_NEAR = (0.62, 0.85)  # ... or this one, for a build from a crop that cut its brim short
 BRIM_LEAST = 0.4        # at least this share of the ring must hold a brim, or there is none to set the head under
 BRIM_KEEP = 0.75        # the plane is fitted on the closest three quarters (a strand hanging into the ring is no brim)
-BRIM_DIP = 0.005        # the cut stays under all but this share of the brim's underside where it dips below the plane
+BRIM_DIP = 0.0          # the cut stays under all but this share of the brim's underside where it dips below the plane
+                        # (a cut brim's dip, closed by a cap, stood out under the brim as a fin)
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
 MIN_COLUMNS = 16
 AXIS_CELLS = 6          # this many cells round the axis count as solid in a column's section ...
@@ -71,8 +73,8 @@ BUILD_PAINT_SHARE = 0.05    # the build's paint is read within this share of the
 PICTURE_WIDTH = 2048    # the new head's picture is this many texels round
 OFFSET_SHARE = 0.05     # the build's paint is moved to the picture's by offsets spread this share of the way round
 OFFSET_NEAR_SHARE = 0.02    # the figure's tone is read where its old head lay this close to the new one
-BLEND_ROWS = 6          # the new head eases from the build into the figure's own head over this many rows ...
-NECK_EASE_ROWS = 1      # ... and onto the figure's neck at the stitch over this many
+BLEND_ROWS = 6          # the head's picture reaches this many rows below the stitch
+NECK_EASE_ROWS = 1      # the new head eases onto the figure's neck at the stitch over this many rows
 ROUND_SHARE = hf.ROUND_SHARE      # creases rounded over this share of the head's width, as the face's ...
 ROUND_JUMP_SHARE = 0.1  # ... but not across a step of this share of it (an ear's rim, the nose's and chin's underside)
 
@@ -523,6 +525,10 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     cover = ndimage.maximum_filter1d(cover, 2 * COVER_SPREAD + 1, mode="wrap")
     if (cover > 0).any():
         cover[cover <= 0] = np.median(cover[cover > 0])
+    # the new head is as wide as the widest of it round each column, softened (`tube_radius`): the old hair's spikes
+    # stood out of a closer fit as fins, and so did the caps closing their cut
+    cover = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(cover, 2 * COVER_SMOOTH + 1, mode="wrap"),
+                                      COVER_SMOOTH / 4, mode="wrap")
     return {"frame": frame, "axis": axis, "limit": limit, "collar": collar, "outer": np.where(collar, -np.inf, outer),
             "plane": plane, "band": band, "cut": float(cut), "bottom": float(bottom), "cover": cover,
             "width": float(width), "pixel": float(pixel), "nose": nose, "chin": float(chin), "neck": neck,
@@ -582,24 +588,20 @@ def wrap_round(radius: np.ndarray, sigma: float, jump: float) -> np.ndarray:
 
 
 def tube_radius(zone: dict, built: dict) -> np.ndarray:
-    """The new head's radius in every pixel of the zone's picture: the build's (`build_radius`) where it has its head;
-    above that (under the build's own brim, which a face crop cuts lower than the hat's) the figure's own outermost
-    head surface, eased in over BLEND_ROWS; creases rounded over ROUND_SHARE of the head's width (`wrap_round`); and in
-    the band under the brim at least as wide as the old head there (zone "cover", reached in full at the cut), so the
-    old head's cut lies inside the new one and no gap shows between hat and hair."""
+    """The new head's radius in every pixel of the zone's picture: the build's (`build_radius`) where it has its head,
+    and above that (under the build's own brim, which a face crop cuts lower than the hat's) its highest row carried on
+    up; creases rounded over ROUND_SHARE of the head's width (`wrap_round`); and in the band under the brim at least as
+    wide as the old head there (zone "cover": the widest of it round each column, softened, and reached in full at the
+    cut), so the old head's cut and the caps closing it lie inside the new one and no gap shows between hat and hair.
+    The figure's own surface there is its old hair: taken as it is, its spikes stood out of the new head as fins (the
+    Zauberer, 2026-11-22)."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     radius = np.array(built["radius"], dtype=np.float64)
     known = built["known"]
     rows = np.arange(frame["rows"])[:, None]
-    first = np.where(known.any(axis=0), known.argmax(axis=0), frame["rows"])[None, :]
-    own = zone["outer"]
-    usable = np.isfinite(own) & (own < zone["limit"]) & (own > 0)
-    above = (rows < first) & usable
-    radius = np.where(above, own, radius)
-    ease = (rows >= first) & (rows < first + BLEND_ROWS)
-    reach = np.take_along_axis(np.where(usable, own, radius), np.clip(first - 1, 0, frame["rows"] - 1), axis=0)
-    mix = np.clip((rows - first + 1) / (BLEND_ROWS + 1), 0, 1)
-    radius = np.where(ease & usable, (1 - mix) * reach + mix * radius, radius)
+    first = np.where(known.any(axis=0), known.argmax(axis=0), frame["rows"] - 1)[None, :]
+    highest = np.take_along_axis(radius, np.clip(first, 0, frame["rows"] - 1), axis=0)
+    radius = np.where(rows < first, highest, radius)
     radius = wrap_round(radius, ROUND_SHARE * width / pixel, ROUND_JUMP_SHARE * width)
     heights = row_heights(frame)[:, None]
     turn = column_angles(frame)
@@ -607,7 +609,8 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     level = (plane_height(zone["plane"], edge[:, 0], edge[:, 2]) - zone["cut"])[None, :]
     band = zone["band"][None, :]
     ramp = np.clip((heights - band) / np.maximum(level - band, pixel), 0, 1)
-    least = zone["cover"][None, :] + COVER_MARGIN_SHARE * width
+    ramp = ramp * ramp * (3 - 2 * ramp)
+    least = zone["cover"][None, :] + 1.5 * COVER_MARGIN_SHARE * width
     return np.maximum(radius, radius + ramp * np.maximum(least - radius, 0))
 
 
