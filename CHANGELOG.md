@@ -77,8 +77,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the camera the figure was built with (found through its licence record) and past the coat in front of it,
   and by its own build elsewhere, moved to the picture's tones; the finer models a game-ready step bakes from get the
   same parts (`--also`), cleaned up to 150,000 faces (`--fine-faces`: two raw boots of a million faces each kept the
-  game-ready step on one core for over thirteen minutes). The check counts each part's pieces, the edges left open round it, and a boot's sole against
-  the picture's feet (the foot rule). `--hard` makes a hard part's nearly flat pieces flat and their edges sharp (a
+  game-ready step on one core for over thirteen minutes). A build is kept when it is one piece and touches itself on
+  at most half a per cent of its edges (sheets meeting at one edge); one that touches itself more is made one closed
+  skin (`--solid`: Blender's voxel remesh, thinned back to its size and its paint baked back on, through the Finish's
+  own retopology), and the finer models get that skin too. The Zauberer's boots touched themselves on 1.5 per cent of
+  their edges: in the 150,000-face clean-up the game-ready step made 81,000 triangles of a 14,000 budget and dropped
+  the hat, and at 20,000 or 8,000 faces its thinning tore the sheets into shards at the ankle and the heel. The check
+  counts each part's pieces, the edges left open round it, and a boot's sole against the picture's feet (the foot
+  rule). `--hard` makes a hard part's nearly flat pieces flat and their edges sharp (a
   pistol, a buckle; never a face or cloth): planes are found on the build's smoothed normals, a strip of a tube or the
   facets of a round surface stay smooth, a plane's points go onto it and its edge splits the shading.
 - **Pixel Match through a crop**: a view can carry its own focal length and principal point, so an upscaled crop of a

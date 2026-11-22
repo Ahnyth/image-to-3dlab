@@ -20,8 +20,10 @@ hands do this for hands; this does it for any part on the body (--box) and for b
               --drawing gives one instead.
   4. build    Pixal3D on each kept drawing, --seeds each; the first build that is one piece is the part (--build gives
               one instead).
-  5. clean    Pixal3D's own clean-up of that build at --part-faces; with --hard its nearly flat pieces made flat and
-              their edges sharp (a pistol, a buckle; never a face or cloth).
+  5. clean    Pixal3D's own clean-up of that build at --part-faces; a build that touches itself in many places (sheets
+              meeting at one edge, which the game-ready step's thinning tears into shards) is then made one closed
+              skin with its paint baked back on (--solid, needs Blender); with --hard its nearly flat pieces made
+              flat and their edges sharp (a pistol, a buckle; never a face or cloth).
   6. place    a part on the body fills its box by height, its back settled on the body behind the slab Pixal3D made of
               it; a second --box with --mirror takes the first part mirrored (a pair of holsters). A boot stands on the
               figure's floor with its sole flat, turned as the old foot was, as tall as the picture shows it (--top:
@@ -58,6 +60,8 @@ from hero_route import (
     stage,
 )
 
+from image_to_3dlab.blender import find_blender, missing_help
+
 PYTHON = Path(sys.executable)
 GENERATE = REPO / "scripts" / "pixal3d_generate.py"
 UPSCALE = REPO / "scripts" / "upscale_esrgan.py"
@@ -71,6 +75,9 @@ PAINT_SIZE = 2048             # a part's paint is laid out at most this many tex
 SOLE_LIMIT_PX = 3.0           # a boot's sole this many of the picture's pixels below its feet is a made-up sole
 FAULT_SHARE = 0.005           # a build may touch itself on at most this share of its edges (the pistol: 0.08 per cent;
                               # the Zauberer's first boot: 1.4, and game_ready kept 81,000 of 14,000 triangles)
+SOLID_VOXEL = 0.003           # a build that touches itself more is made one closed skin, voxels this share of its size
+                              # (the Zauberer's boot at 20,000 faces: 1,715 such edges before, none after, its straps
+                              # and buckles kept)
 LICENCES = [{"component": "Real-ESRGAN x4plus", "license": "BSD-3-Clause", "purpose": "part crop upscale"}]
 
 PART_PROMPT = (
@@ -266,8 +273,8 @@ def build_part(run: Run, drawings: list[Path], folder: Path, seeds) -> Path | No
             if count == 1 and (best is None or faults["share"] < best[1]):
                 best = (raw, faults["share"])
     if best is not None:
-        run.flag(f"every build touches itself in many places; {best[0].name} least ({best[1]:.2%} of its edges): the "
-                 "game-ready step may not thin it")
+        run.flag(f"every build touches itself in many places; {best[0].name} least ({best[1]:.2%} of its edges): it "
+                 "is made one closed skin, unless --solid off")
         return best[0]
     return None
 
@@ -291,6 +298,31 @@ def clean_part(run: Run, raw: Path, faces: int, folder: Path) -> Path:
         clean.write_bytes(converted)
         replay.unlink(missing_ok=True)
     return clean
+
+
+def wants_solid(mode: str, touching: float) -> bool:
+    """Whether a build is made one closed skin: --solid on always, off never, auto when it touches itself on more
+    than FAULT_SHARE of its edges."""
+    return mode == "on" or (mode == "auto" and touching > FAULT_SHARE)
+
+
+def solid_part(run: Run, clean: Path, faces: int, folder: Path) -> Path:
+    """The cleaned part made one closed skin: Blender's voxel remesh (voxels SOLID_VOXEL of its size), thinned back to
+    FACES, its paint baked back on (`blender_retopo_bake.py`, the Finish's own retopology), written into FOLDER.
+
+    Why: where a build touches itself, Pixal3D left sheets meeting at one edge (the Zauberer's boot: 1,715 such edges
+    at 20,000 faces), and the game-ready step's thinning tore them into shards at the ankle and the heel. The skin has
+    none; the small specks the remesh leaves go with the part's crumbs."""
+    from retopo_repaint import retopo_command
+
+    solid = folder / f"{clean.stem}_solid.glb"
+    if not solid.exists():
+        blender = find_blender()
+        if blender is None:
+            raise SystemExit(f"[hero] {missing_help()}")
+        run.say(f"clean: {clean.name} made one closed skin ({faces} faces)")
+        run.run(retopo_command(clean, solid, faces, PAINT_SIZE, 89.0, SOLID_VOXEL, 0.25, 0.65, 1.45, blender))
+    return solid
 
 
 def built_part(path: Path, hard: bool, run: Run, cache: Path) -> tuple[dict, dict | None]:
@@ -373,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the build's clean-up size for the --also models (0: the raw build itself)")
     parser.add_argument("--hard", action="store_true",
                         help="a hard part (a pistol, a buckle): its nearly flat pieces made flat and their edges sharp")
+    parser.add_argument("--solid", choices=("auto", "on", "off"), default="auto",
+                        help="make the cleaned part one closed skin (needs Blender): auto when the build touches "
+                             "itself in many places, which the game-ready step's thinning tears into shards")
     args = parser.parse_args(argv)
     boxes = [tuple(b) for b in (args.box or [])]
     if args.mirror and len(boxes) < 2:
@@ -514,19 +549,25 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"[hero] no build of {label} is one piece: try more seeds (--seeds) or drawings")
         stage(run, "clean", f"Cleaning up {label}")
         clean = clean_part(run, raw, args.part_faces, folder)
-        fine = clean_part(run, raw, args.fine_faces, folder) if args.also and args.fine_faces else raw
         touching = hp.edge_faults(hh.read_part(raw.read_bytes())[2])["share"]
-        if args.also and touching > FAULT_SHARE:
+        solid = wants_solid(args.solid, touching)
+        if solid:
+            clean = solid_part(run, clean, args.part_faces, folder)
+        if args.also and (solid or touching > FAULT_SHARE):
             # a build that touches itself kept it in the bigger clean-up too (the Zauberer's boot: 5,839 such edges at
             # 150,000 faces, 1,715 at 20,000), and the game-ready step thinned the finer model it went into to 81,000
-            # triangles and dropped half the figure; at the smaller size it made its 14,000
+            # triangles and dropped half the figure; the finer models take the part's own clean-up (or skin) instead
             fine = clean
-            run.flag(f"{raw.name} touches itself on {touching:.2%} of its edges: the finer models get its "
-                     f"{args.part_faces}-face clean-up too")
+            if not solid:
+                run.flag(f"{raw.name} touches itself on {touching:.2%} of its edges: the finer models get its "
+                         f"{args.part_faces}-face clean-up too")
+        else:
+            fine = clean_part(run, raw, args.fine_faces, folder) if args.also and args.fine_faces else raw
         clean_part_dict, hard_clean = built_part(clean, args.hard, run, folder / f"{clean.stem}_hard.glb")
         raw_part_dict, hard_raw = built_part(fine, args.hard, run, folder / f"{fine.stem}_hard.glb")
         built[source] = {"clean": clean_part_dict, "raw": raw_part_dict, "clean_path": clean, "raw_path": raw,
-                         "hard": {"clean": hard_clean, "raw": hard_raw}}
+                         "hard": {"clean": hard_clean, "raw": hard_raw}, "solid": solid,
+                         "build_touches_itself": round(touching, 5)}
         records += [r for r in (read_model_record(raw), _picture_record(raw)) if r]
 
     # 6. place
@@ -706,7 +747,8 @@ def main(argv: list[str] | None = None) -> int:
                  "edges_where_it_touches_itself": hp.edge_faults(part)["shared_by_more"],
                  "triangles": int(len(part["faces"])), "open_edges_near_before": before,
                  "open_edges_near_after": after, "built_from": str(built[t["source"]]["clean_path"]),
-                 "mirrored": t["mirror"]}
+                 "build_touches_itself": built[t["source"]]["build_touches_itself"],
+                 "one_closed_skin": built[t["source"]]["solid"], "mirrored": t["mirror"]}
         if args.boots:
             entry["sole_below_picture_feet_px"] = round(hp.sole_below_feet(view, part["positions"], mesh_scale), 2)
             if entry["sole_below_picture_feet_px"] > SOLE_LIMIT_PX:

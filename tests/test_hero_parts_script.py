@@ -86,3 +86,43 @@ def test_the_finer_models_get_a_part_cleaned_up_to_a_size_a_game_step_can_take()
     # step walk 2.4 million faces instead of 0.42 million; a part of the finer models is cleaned up to FINE_FACES
     assert hero_parts.FINE_FACES == 150000
     assert hero_parts.FINE_FACES > hero_parts.PART_FACES
+
+
+def test_a_build_that_touches_itself_is_made_one_closed_skin():
+    # the Zauberer's boot touched itself on 1.47 per cent of its edges, and the game-ready step's thinning tore those
+    # sheets into shards at the ankle and the heel; the pistol (0.08 per cent) thinned cleanly and stays as built
+    assert hero_parts.wants_solid("auto", 0.0147)
+    assert not hero_parts.wants_solid("auto", 0.0008)
+    assert hero_parts.wants_solid("on", 0.0)
+    assert not hero_parts.wants_solid("off", 0.5)
+
+
+class FakeRun:
+    def __init__(self):
+        self.commands, self.said = [], []
+
+    def say(self, text):
+        self.said.append(text)
+
+    def run(self, command, **_):
+        self.commands.append([str(c) for c in command])
+        return True
+
+
+def test_the_closed_skin_is_the_finish_retopology_at_the_parts_own_size(monkeypatch, tmp_path):
+    monkeypatch.setattr(hero_parts, "find_blender", lambda: tmp_path / "blender.exe")
+    clean = tmp_path / "boot_clean20k.glb"
+    run = FakeRun()
+    solid = hero_parts.solid_part(run, clean, 20000, tmp_path)
+    assert solid == tmp_path / "boot_clean20k_solid.glb"
+    command = run.commands[0]
+    assert command[0] == str(tmp_path / "blender.exe")
+    assert command[command.index("--python") + 1].endswith("blender_retopo_bake.py")
+    start = command.index("--") + 1
+    assert command[start:start + 6] == [str(clean), str(solid), "20000", str(hero_parts.PAINT_SIZE), "89.0",
+                                        str(hero_parts.SOLID_VOXEL)]
+    solid.write_bytes(b"glb")                                   # a rerun keeps it
+    assert hero_parts.solid_part(run, clean, 20000, tmp_path) == solid and len(run.commands) == 1
+    monkeypatch.setattr(hero_parts, "find_blender", lambda: None)
+    with pytest.raises(SystemExit, match="Blender"):
+        hero_parts.solid_part(FakeRun(), tmp_path / "other.glb", 20000, tmp_path)
