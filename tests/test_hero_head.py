@@ -381,6 +381,30 @@ def test_graft_head_leaves_no_bit_of_the_old_head_that_dipped_just_under_the_sti
     assert report["slivers_dropped"] == 1 and report["open_edges_near"] == 0
 
 
+def test_figure_paint_takes_the_figures_own_paint_where_the_picture_does_not_see():
+    frame = frame_round()
+    radius = np.full((frame["rows"], frame["cols"]), 0.04)
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06), "reach": 0.06, "chin": -0.03,
+            "nose": np.array([0.0, -0.005, 0.04])}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    v, f = tube(0.039, -0.045, 0.035)                           # the figure's old head, just inside the new one
+    skin = (v[:, 2] > 0) | ((v[:, 0] > 0.03) & (np.abs(v[:, 1]) < 0.012))   # its face, and an ear where the new
+    part = {"positions": v, "faces": f, "uvs": np.where(skin[:, None], [0.25, 0.5], [0.75, 0.5]),   # head has hair
+            "material": painted([200, 100, 100], right=[215, 215, 225])}    # its skin as the picture's, its hair pale
+    colour = np.full((40, 64, 3), [200.0, 100.0, 100.0])        # the picture
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)    # it sees the front
+    picture = np.where((weight > 0.5)[..., None], colour, [50.0, 50.0, 200.0])    # elsewhere the build's own: blue
+    out, offset = hd.figure_paint(picture, points, part, zone, crop=(colour, weight))
+    middle = (points[..., 1] > -0.02) & (points[..., 1] < 0.02)
+    assert np.allclose(out[(normals[..., 2] < -0.5) & middle], [215, 215, 225], atol=2)   # the figure's own hair
+    assert np.allclose(out[(weight > 0.99) & middle], [200, 100, 100], atol=2)           # the picture's face
+    assert np.allclose(offset, 0, atol=1)
+    ear = (normals[..., 0] > 0.95) & (np.abs(points[..., 1]) < 0.008)
+    assert np.allclose(out[ear], [215, 215, 225], atol=3)       # the old ear's skin is not painted on the new hair
+
+
 def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch():
     frame = frame_round()
     heights = hd.row_heights(frame)[:, None]
@@ -395,11 +419,24 @@ def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch(
     row = np.argmin(np.abs(heights[:, 0] - (-0.035)))           # halfway between the stitch and the chin's edge
     assert 0.028 < filled[row, front] < 0.032                   # on the slope from the stitch's 0.02 to the chin's 0.04
     assert filled[row + 1, front] < filled[row, front]          # lower down, nearer the stitch's
-    assert np.allclose(filled[row, side], 0.026)                # filled, but never into the collar
+    assert (filled[row, side] <= 0.026 + 1e-12).all() and (filled[row, side] > 0.024).all()   # filled, not into
     back = np.argmax(np.abs(turn[0]))
     assert np.allclose(filled[:, back], radius[:, back])        # a jaw higher than the neck's reach: left as it is
     assert np.allclose(filled[heights[:, 0] > -0.03], radius[heights[:, 0] > -0.03])    # the head above stays
     assert np.allclose(filled[heights[:, 0] < -0.04], radius[heights[:, 0] < -0.04])    # nothing under the stitch
+
+
+def test_neck_fill_rounds_a_narrow_chin_into_the_jaw_beside_it():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    jaw = np.where(np.cos(turn) > 0.95, -0.034, -0.025)         # a narrow pointed chin, the jaw beside it higher
+    radius = np.where(heights < jaw, 0.02, 0.04) * np.ones_like(turn)
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "limit": np.full(radius.shape, 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    row = np.argmin(np.abs(heights[:, 0] - (-0.036)))
+    steps = np.abs(np.diff(np.r_[filled[row], filled[row, :1]]))
+    assert steps.max() < 0.002                                  # its underside runs round into the jaw, no wall
 
 
 def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_builds_paint_behind():

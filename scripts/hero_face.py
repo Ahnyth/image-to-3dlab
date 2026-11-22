@@ -229,9 +229,12 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
         step = head_step(model_parts, zone)
         cut_parts, head_part, report = hd.graft_head(model_parts, zone, radius, step)
         if picture is None:            # the figure's own front shows what stands before the new head (brim, collar)
-            picture = hd.tube_paint(points, normals, crop_rgb, alpha, box, full_frame, build,
-                                    front_depth(cut_parts, zone), zone["width"])
-        shifted, offset = hd.figure_paint(picture, points, model_parts[report["body_part"]], {**zone, "radius": radius})
+            seen = front_depth(cut_parts, zone)
+            picture = hd.tube_paint(points, normals, crop_rgb, alpha, box, full_frame, build, seen, zone["width"])
+            crop = (*hd.crop_paint(points, normals, crop_rgb, alpha, box, full_frame, seen, zone["width"]),
+                    hd.build_colour(points, build, zone["width"]))
+        shifted, offset = hd.figure_paint(picture, points, model_parts[report["body_part"]], {**zone, "radius": radius},
+                                          crop=crop)
         first = shifted if first is None else first
         buffer = io.BytesIO()
         Image.fromarray(np.clip(np.round(shifted), 0, 255).astype(np.uint8), "RGB").save(buffer, format="PNG")

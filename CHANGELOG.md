@@ -44,10 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   brim stood out as a comb of thin plates under the hat), as
   wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
   stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
-  round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels) and
-  by the build's own paint elsewhere, moved to the figure's tone; its neck, from the stitch up to the chin's
+  round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels),
+  moved to the figure's tone read there, and elsewhere by the figure's own paint seen from the head's axis (its old
+  head's outermost surface in that direction), kept where it is the kind, hair or skin, the build has there, else
+  the figure's own hair or skin colour (the build's own paint painted the Zauberer's hair in blue, white and tan
+  patches, a helmet in close views); its neck, from the stitch up to the chin's
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the
-  chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw (a
+  chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw, rounded from side to side (a
   narrow neck under a wide jaw left a pocket that the game figure's few triangles spanned in the air, baked from the
   collar's dark inside). Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new

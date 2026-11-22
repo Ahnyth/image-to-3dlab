@@ -78,6 +78,7 @@ NECK_EASE_ROWS = 1      # the new head eases onto the figure's neck at the stitc
 NECK_STEP_SHARE = 0.08  # the new head's neck runs up from the stitch until it stands out this share of the head's
                         # width (a chin, a jaw) ...
 NECK_BAND_SHARE = 0.1   # ... at most this share of it over the stitch; the figure's own paint covers it
+NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -650,7 +651,12 @@ def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:
     band = neck_band(unpolar(frame, column_angles(frame)[None, :], sub, h[:, None]), zone)
     top = np.clip(len(h) - 1 - band.sum(axis=0), 0, len(h) - 1)     # the row just over the neck, column by column
     rise = sub[top, np.arange(sub.shape[1])] - sub[-1]
-    share = np.clip((h[:, None] - h[-1]) / np.maximum(h[top] - h[-1], frame["pixel"])[None, :], 0, 1)
+    # round it from column to column, so a narrow chin's underside runs into the jaw beside it instead of standing
+    # under it as a squared tab (the Zauberer's game figure, 2026-11-22)
+    sigma = NECK_ROUND_SHARE * sub.shape[1]
+    over = ndimage.gaussian_filter1d(h[top], sigma, mode="wrap")
+    rise = np.maximum(ndimage.gaussian_filter1d(rise, sigma, mode="wrap"), 0)
+    share = np.clip((h[:, None] - h[-1]) / np.maximum(over - h[-1], frame["pixel"])[None, :], 0, 1)
     line = np.minimum(sub[-1][None, :] + share * rise[None, :], zone["limit"][above])
     out = np.array(radius, dtype=np.float64)
     out[above] = np.where(band, np.maximum(sub, line), sub)
@@ -931,15 +937,13 @@ def tube_points(zone: dict, radius: np.ndarray, size: tuple[int, int]) -> tuple[
     return points, normals
 
 
-def tube_paint(points: np.ndarray, normals: np.ndarray, crop_rgb: np.ndarray, crop_alpha: np.ndarray,
-               crop: tuple[int, int, int, int], frame, build: dict | None, seen: tuple[np.ndarray, tuple, float] | None,
-               width: float) -> np.ndarray:
-    """The new head's picture (RGB, 0..255) at its texels' POINTS: the crop (the picture itself, upscaled: the eyes are
-    the picture's own pixels) where the head faces the camera, the picture shows it (CROP_ALPHA, the cut-out) and
-    nothing the figure keeps stands in front of it (SEEN: the kept figure's front depth, its box and pixel: a brim, a
-    collar); the build's own paint elsewhere (BUILD: positions, uvs, its paint picture), moved to the picture's where
-    both are seen (`smooth_offsets`) and eased between over the facing. Texels neither reaches stay NaN
-    (`figure_paint` fills them from each model's own paint)."""
+def crop_paint(points: np.ndarray, normals: np.ndarray, crop_rgb: np.ndarray, crop_alpha: np.ndarray,
+               crop: tuple[int, int, int, int], frame, seen: tuple[np.ndarray, tuple, float] | None,
+               width: float) -> tuple[np.ndarray, np.ndarray]:
+    """(colour, weight) of the picture at the new head's texels (POINTS, NORMALS): the crop's own pixels (CROP_RGB,
+    upscaled) and how fully they paint each texel: where it faces the camera (CROP_FACING), the picture shows it
+    (CROP_ALPHA, the cut-out) and nothing the figure keeps stands in front of it (SEEN: the kept figure's front depth,
+    its box and pixel: a brim, a collar); 0 elsewhere."""
     rows, cols = points.shape[:2]
     p = points.reshape(-1, 3)
     uv = hf.picture_uvs(p, crop, crop_rgb.shape[1], frame)
@@ -954,14 +958,125 @@ def tube_paint(points: np.ndarray, normals: np.ndarray, crop_rgb: np.ndarray, cr
         depth, box, pixel = seen
         front = hf.sample(depth, box, pixel, p, outside=-np.inf, nearest=True)
         weight = weight * (front < p[:, 2] + OCCLUDE_SHARE * width)
-    colour = np.full((len(p), 3), np.nan)
-    if build is not None:
-        from scipy.spatial import cKDTree
+    colour = np.asarray(crop_rgb, dtype=np.float64)[y, x]
+    return colour.reshape(rows, cols, 3), weight.reshape(rows, cols)
 
-        distance, nearest = cKDTree(build["positions"]).query(p, workers=-1)
-        near = distance < BUILD_PAINT_SHARE * width
-        colour[near] = hf.paint_at(build["paint"], np.asarray(build["uvs"])[nearest[near]])
-    crop_colour = np.asarray(crop_rgb, dtype=np.float64)[y, x]
+
+def own_paint(part: dict, zone: dict, points: np.ndarray) -> np.ndarray:
+    """The figure's own paint (PART: one model's body as it was) seen from the head's axis toward each of POINTS (the
+    new head's texels): on its outermost surface in the region in that direction (or within a pixel of it), read
+    between the corners of its triangle. NaN where it has none there (inside the hat). The figure's paint was laid on
+    its whole body at once (Pixel Match), so its hair has the picture's tone all round; the build's own paint (Pixal3D's)
+    painted the Zauberer's hair in blue, white and tan patches, a helmet in close views (2026-11-22)."""
+    out = np.full(points.shape, np.nan)
+    paint = hf.part_paint(part)
+    if paint is None or part.get("uvs") is None:
+        return out
+    frame = zone["frame"]
+    v = np.asarray(part["positions"], dtype=np.float64)
+    f = np.asarray(part["faces"], dtype=np.int64)
+    x0, x1, y0, y1, z0, z1 = zone_box(zone)
+    lo, hi = v[f].min(axis=1), v[f].max(axis=1)
+    f = f[(hi[:, 0] > x0) & (lo[:, 0] < x1) & (hi[:, 1] > y0) & (lo[:, 1] < y1) & (hi[:, 2] > z0) & (lo[:, 2] < z1)]
+    if not len(f):
+        return out
+    hits = cylinder_hits(v, f, frame)
+    at = hit_points(frame, hits)
+    keep = np.flatnonzero(zone_values(zone, at) > -zone["pixel"])
+    if not len(keep):
+        return out
+    keep = keep[np.lexsort((-hits["radius"][keep], hits["pixel"][keep]))]     # by pixel, the outermost first
+    keep = keep[np.r_[True, hits["pixel"][keep][1:] != hits["pixel"][keep][:-1]]]
+    corners = f[hits["face"][keep]]
+    a, b, c = v[corners[:, 0]], v[corners[:, 1]], v[corners[:, 2]]
+    e0, e1, e2 = b - a, c - a, at[keep] - a
+    d00, d01, d11 = (e0 * e0).sum(1), (e0 * e1).sum(1), (e1 * e1).sum(1)
+    d20, d21 = (e2 * e0).sum(1), (e2 * e1).sum(1)
+    den = np.where(np.abs(d00 * d11 - d01 * d01) > 1e-30, d00 * d11 - d01 * d01, 1e-30)
+    t1, t2 = np.clip((d11 * d20 - d01 * d21) / den, 0, 1), np.clip((d00 * d21 - d01 * d20) / den, 0, 1)
+    scale = np.maximum(t1 + t2, 1.0)
+    t1, t2 = t1 / scale, t2 / scale
+    uvs = np.asarray(part["uvs"], dtype=np.float64)
+    uv = (1 - t1 - t2)[:, None] * uvs[corners[:, 0]] + t1[:, None] * uvs[corners[:, 1]] + t2[:, None] * uvs[corners[:, 2]]
+    seen = np.full((frame["rows"] * frame["cols"], 3), np.nan)
+    seen[hits["pixel"][keep]] = hf.paint_at(paint, uv)
+    flat = points.reshape(-1, 3)
+    row, col = pixel_of(frame, polar(frame, flat)[0], flat[:, 1])
+    return seen[row * frame["cols"] + col].reshape(points.shape)
+
+
+def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> np.ndarray:
+    """OWN (`own_paint`) kept where it is the kind the new head has there, hair or skin, else the figure's own colour of
+    that kind (its median, shaded by the build's paint). The kind is told by the colour's hue (its share of red, green
+    and blue): the figure's skin is read where the picture sees the face under the nose (WEIGHT), its hair at the back
+    over the nose; the new head's kind by the build's own paint (BUILD), each texel as most of its neighbours. On the
+    Zauberer the new hair lay over the old head's ears and cheeks, and their skin stood in it as patches
+    (2026-11-22)."""
+    flat = points.reshape(-1, 3)
+    angle, _ = polar(zone["frame"], flat)
+    nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
+    turn = np.abs(np.angle(np.exp(1j * (angle - nose[0])))).reshape(points.shape[:2])
+    height = points[..., 1]
+    have = np.isfinite(own[..., 0])
+    face = have & (weight > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
+    back = have & (turn > 0.8 * np.pi) & (height > zone["nose"][1])
+    if face.sum() < 3 or back.sum() < 3:
+        return own
+
+    def hue(rgb):
+        return rgb / np.maximum(rgb.sum(axis=-1, keepdims=True), 1e-6)
+
+    skin, hair = np.median(own[face], axis=0), np.median(own[back], axis=0)
+
+    def is_hair(rgb, skin=skin, hair=hair):
+        return np.linalg.norm(hue(rgb) - hue(hair), axis=-1) < np.linalg.norm(hue(rgb) - hue(skin), axis=-1)
+
+    seen = np.isfinite(build[..., 0])
+    if (face & seen).sum() < 3 or (back & seen).sum() < 3:
+        return own
+    # the build told by its own skin and hair (it paints them its own way: the Zauberer's hair blue and white)
+    built = is_hair(np.nan_to_num(build), np.median(build[face & seen], axis=0), np.median(build[back & seen], axis=0))
+    vote = ndimage.uniform_filter(np.where(seen, built, 0.5), size=(7, 15), mode=("nearest", "wrap"))
+    new_hair = vote > 0.5
+    light = np.nan_to_num(build).sum(axis=-1)
+    out = np.array(own)
+    for kind, colour in ((new_hair, hair), (~new_hair, skin)):
+        wrong = have & kind & (is_hair(np.nan_to_num(own)) != (colour is hair))
+        if wrong.any():
+            usual = np.median(light[kind & seen]) if (kind & seen).any() else 1.0
+            shade = np.clip(light[wrong] / max(usual, 1e-6), 0.85, 1.15)
+            out[wrong] = np.clip(colour[None, :] * shade[:, None], 0, 255)
+    return out
+
+
+def build_colour(points: np.ndarray, build: dict | None, width: float) -> np.ndarray:
+    """The build's own paint at the new head's texels (POINTS): at its nearest point on the build's outer skin (BUILD:
+    positions, uvs, paint), within BUILD_PAINT_SHARE of the head's WIDTH; NaN elsewhere or without a build."""
+    colour = np.full(points.shape, np.nan)
+    if build is None:
+        return colour
+    from scipy.spatial import cKDTree
+
+    flat = colour.reshape(-1, 3)
+    distance, nearest = cKDTree(build["positions"]).query(points.reshape(-1, 3), workers=-1)
+    near = distance < BUILD_PAINT_SHARE * width
+    flat[near] = hf.paint_at(build["paint"], np.asarray(build["uvs"])[nearest[near]])
+    return flat.reshape(points.shape)
+
+
+def tube_paint(points: np.ndarray, normals: np.ndarray, crop_rgb: np.ndarray, crop_alpha: np.ndarray,
+               crop: tuple[int, int, int, int], frame, build: dict | None, seen: tuple[np.ndarray, tuple, float] | None,
+               width: float) -> np.ndarray:
+    """The new head's picture (RGB, 0..255) at its texels' POINTS: the crop (the picture itself, upscaled: the eyes are
+    the picture's own pixels) where the head faces the camera, the picture shows it (CROP_ALPHA, the cut-out) and
+    nothing the figure keeps stands in front of it (SEEN: the kept figure's front depth, its box and pixel: a brim, a
+    collar); the build's own paint elsewhere (BUILD: positions, uvs, its paint picture), moved to the picture's where
+    both are seen (`smooth_offsets`) and eased between over the facing. Texels neither reaches stay NaN
+    (`figure_paint` fills them from each model's own paint)."""
+    rows, cols = points.shape[:2]
+    crop_colour, weight = crop_paint(points, normals, crop_rgb, crop_alpha, crop, frame, seen, width)
+    crop_colour, weight = crop_colour.reshape(-1, 3), weight.reshape(-1)
+    colour = build_colour(points, build, width).reshape(-1, 3)
     known = np.isfinite(colour[:, 0])
     both = known & (weight > 0.5)
     if both.any():          # the build paints its own way (the Zauberer's skin peach where the picture's is pale)
@@ -989,21 +1104,33 @@ def neck_band(points: np.ndarray, zone: dict) -> np.ndarray:
     return np.logical_and.accumulate(near[::-1], axis=0)[::-1]
 
 
-def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict) -> tuple[np.ndarray, np.ndarray |
-                                                                                                    None]:
+def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict,
+                 crop: tuple[np.ndarray, ...] | None = None) -> tuple[np.ndarray, np.ndarray | None]:
     """(the new head's picture for one model, the offset its own part got): PICTURE (`tube_paint`, NaN where neither the
     picture nor the build reaches: under the build's own brim, where the figure's own head stands in) moved to the
     model's own tone (`paint_offset`), and its empty texels and its neck (`neck_band`: the stitch then shows no change
     of paint) painted from the model's own old head nearest each one (POINTS, the texels' places), else from the
-    nearest painted texel; up the neck that paint eases into the head's just over it. A model with no paint keeps the
-    picture as it is, those texels filled the same way."""
-    out = np.array(picture, dtype=np.float64)
+    nearest painted texel; up the neck that paint eases into the head's just over it. With CROP (`crop_paint`: the
+    picture's colour and weight, and the build's own paint, `build_colour`, to tell hair from skin) the head takes the picture only where it sees it, moved to the model's tone read
+    there, and round it the model's own paint (`own_paint`); PICTURE stands in only where that has none. A model with
+    no paint keeps the picture as it is, those texels filled the same way."""
     band = neck_band(points, zone)
-    out[band] = np.nan
+    if crop is None:
+        out = np.array(picture, dtype=np.float64)
+        out[band] = np.nan
+        offset = paint_offset(part, zone, out)
+        if offset is not None:
+            out = out + np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
+    else:                   # the picture where it sees the head, the figure's own paint round it (`own_paint`)
+        colour, weight = np.asarray(crop[0], dtype=np.float64), np.asarray(crop[1], dtype=np.float64)[..., None]
+        offset = paint_offset(part, zone, np.where(weight > 0.5, colour, np.nan))
+        shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
+        raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
+        own = same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone)
+        out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
+                       np.asarray(picture, dtype=np.float64) + shift)
+        out[band] = np.nan
     empty = ~np.isfinite(out[..., 0])
-    offset = paint_offset(part, zone, out)
-    if offset is not None:
-        out = out + np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
     paint = hf.part_paint(part)
     if empty.any() and paint is not None and part.get("uvs") is not None:
         from scipy.spatial import cKDTree
