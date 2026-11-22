@@ -160,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             f"{bounds[1]:.4f}, y {bounds[2]:.4f}..{bounds[3]:.4f} (window.png)")
     if window["floor"] is None:
         run.flag("no hat brim found above the face: the seam's top follows the hairline's reach; check window.png")
+    for doubt in hf.window_doubts(window):
+        run.flag(f"{doubt}; check window.png")
 
     # 2. crop
     stage(run, "crop", "Cropping and upscaling the face")

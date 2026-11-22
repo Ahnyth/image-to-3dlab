@@ -184,6 +184,27 @@ def test_solid_cutout_puts_back_eyes_the_background_remover_took_but_not_the_bac
     assert (solid[0:5, :, 3] == 0).all() and (solid[20, 20] == [120, 120, 120, 255]).all()
 
 
+def test_face_window_finds_the_nose_not_a_collar_standing_in_front_below_it():
+    head = sphere(0.05, rings=40, segments=60)
+    collar = box((-0.03, -0.075, 0.0), (0.03, -0.04, 0.07))      # nearer to the camera than the nose, below the chin
+    v, f = joined(head, collar)
+    is_head = np.zeros(len(v), bool)
+    is_head[:len(head[0])] = True
+    window = hf.face_window(v, f, is_head)
+    nose_y = window["box"][3] - (window["seed"][0] + 0.5) * window["pixel"]
+    assert window["floor"] is None and abs(nose_y) < 0.01
+    assert hf.window_bounds(window)[3] < hf.BROW_SHARE * window["width"] + 0.002          # no brim: the seam stays below the hairline's cap
+
+
+def test_window_doubts_name_a_window_too_tall_and_a_nose_too_high():
+    window = disk_window(0.03)
+    assert hf.window_doubts(window) == []
+    tall = dict(window, mask=window["mask"] & (np.abs(np.arange(window["mask"].shape[1]) - 30) < 8)[None, :])
+    assert any("taller than wide" in d for d in hf.window_doubts(tall))
+    high = dict(window, seed=(window["seed"][0] - 12, window["seed"][1]))
+    assert any("nose was found" in d for d in hf.window_doubts(high))
+
+
 def test_crop_box_is_square_padded_and_inside_the_picture():
     assert hf.crop_box(np.array([100, 140]), np.array([200, 230]), 768, 1376) == (80, 175, 160, 255)
     left, top, right, bottom = hf.crop_box(np.array([0, 60]), np.array([0, 40]), 768, 1376)

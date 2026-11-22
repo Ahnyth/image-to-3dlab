@@ -31,7 +31,8 @@ PLATE_RATIO = 1.5      # a slice of the head this much wider than its median sli
 SLICES = 80            # slices over the head region's height when looking for a brim
 MIN_SLICE_POINTS = 20  # fewer points than this in a slice and its width is noise
 PIXELS_PER_HEAD = 240  # the front depth map's resolution, in pixels across the head's width
-SEED_BAND = 0.2        # the nose is looked for within this share of the head's width either side of its middle
+SEED_BAND = 0.2        # the nose is looked for within this share of the head's width either side of its middle ...
+SEED_SPAN = (0.3, 0.8)  # ... and this far down from the head's top (or a brim's underside) to its bottom
 JUMP_SHARE = 0.25      # a step in depth of this share of the head's width between neighbouring pixels is an edge where
                        # the face goes behind something: the Zauberer's brim drops 0.065 onto his forehead and his jaw
                        # 0.04 onto the collar behind it (head width 0.075); the strand in front of his eye stands 0.01
@@ -39,7 +40,8 @@ CLIFF_PIXELS = 3       # ... and so is that step spread over up to this many pix
 FACING = 0.2           # the face faces the camera at least this much (the cosine): its sides and the chin's underside,
                        # which turn away, end it
 SIDE_SHARE = 0.45      # the face reaches at most this share of the head's width either side of the nose
-CHIN_SHARE = 0.6       # and at most this share of it below the nose (the Zauberer's chin: 0.42)
+CHIN_SHARE = 0.6       # and at most this share of it below the nose (the Zauberer's chin: 0.42) ...
+BROW_SHARE = 0.55      # ... and above it (his brim: 0.43); without a brim the seam then runs through the hairline
 MARGIN_SHARE = 0.06    # the seam runs this share of the head's width inside the outline
 SMOOTH_SHARE = 0.04    # the seam's line is smoothed over this share of the head's width
 BEHIND_SHARE = 0.15    # what of the figure lies less than this share of the head's width behind the new face goes: the
@@ -200,19 +202,18 @@ def sample(grid: np.ndarray, box, pixel: float, points: np.ndarray, outside: flo
 
 # --- The face's window ----------------------------------------------------------------------------------------------
 
-def face_seed(depth: np.ndarray, box, pixel: float, centre_x: float, band: float,
-              floor: float | None, bottom: float) -> tuple[int, int]:
-    """(row, column) of the nose: the nearest pixel within BAND either side of CENTRE_X, between BOTTOM and FLOOR
-    (a brim's underside, whose front edge stands nearer than any nose)."""
+def face_seed(depth: np.ndarray, facing: np.ndarray, box, pixel: float, centre_x: float, band: float,
+              low: float, high: float) -> tuple[int, int]:
+    """(row, column) of the nose: the nearest pixel that faces the camera, within BAND either side of CENTRE_X and
+    between heights LOW and HIGH (the middle of the head below its top or brim: a brim's edge, a chin over a high
+    collar or a hair spike stand nearer than a nose, and on four figures of round 22 one of them was taken)."""
     rows, cols = depth.shape
     x = box[0] + (np.arange(cols) + 0.5) * pixel
     y = box[3] - (np.arange(rows) + 0.5) * pixel
-    allowed = (np.abs(x - centre_x) <= band)[None, :] & (y >= bottom)[:, None]
-    if floor is not None:
-        allowed &= (y < floor)[:, None]
+    allowed = (np.abs(x - centre_x) <= band)[None, :] & ((y >= low) & (y < high))[:, None] & (facing >= FACING)
     candidates = np.where(allowed & np.isfinite(depth), depth, -np.inf)
     if not np.isfinite(candidates).any():
-        raise ValueError("no surface in front of the head's middle: is the model facing +Z?")
+        raise ValueError("no surface faces the camera in the middle of the head: is the model facing +Z?")
     return tuple(int(i) for i in np.unravel_index(np.argmax(candidates), depth.shape))
 
 
@@ -326,9 +327,12 @@ def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray) -> di
             & (middle[:, 1] > box[2] - width) & (middle[:, 1] < box[3] + width))
     depth, owner = depth_map(v, f[near], box, pixel)
     facing = np.where(owner >= 0, face_normals(v, f[near])[np.maximum(owner, 0), 2], -1.0)
-    seed = face_seed(depth, box, pixel, centre_x, SEED_BAND * width, floor, bottom)
+    upper = floor if floor is not None else float(hv[:, 1].max())
+    seed = face_seed(depth, facing, box, pixel, centre_x, SEED_BAND * width,
+                     upper - SEED_SPAN[1] * (upper - bottom), upper - SEED_SPAN[0] * (upper - bottom))
     reach = face_outline(depth, facing, seed, JUMP_SHARE * width)
     top, chin = column_reach(reach, seed)
+    top = max(top, seed[0] - int(round(BROW_SHARE * width / pixel)))
     chin = min(chin, seed[0] + int(round(CHIN_SHARE * width / pixel)))
     outline = reach & face_shape(depth.shape, seed, top, chin, SIDE_SHARE * width / pixel)
     mask = window_mask(outline, MARGIN_SHARE * width / pixel, SMOOTH_SHARE * width / pixel, seed)
@@ -339,6 +343,27 @@ def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray) -> di
 
 FAR = 1e6                  # how far outside the window a point off its picture counts: finite, so a cut between it
                            # and a point inside still falls on the edge (an infinity made the edge's mix NaN)
+
+
+TALL_LIMIT = 1.6         # a face window this many times taller than wide ran past the chin (gunner_h, round 22)
+NOSE_SPAN = (0.3, 0.75)  # the nose sits this far down its window; the Zauberer's at 0.5, skin_sorcerer_a's at 0.1
+
+
+def window_doubts(window: dict) -> list[str]:
+    """Plain-words reasons to look at window.png before trusting the result: the window's shape or the nose's place in
+    it is unlike a face's. Measured on six figures of round 22: the Zauberer (built and checked) and four more looked
+    right; one window ran past the chin into a collar's opening, one sat on the brow and hair."""
+    x0, x1, y0, y1 = window_bounds(window)
+    doubts = []
+    if (y1 - y0) > TALL_LIMIT * (x1 - x0):
+        doubts.append(f"the face's window is {(y1 - y0) / (x1 - x0):.1f} times taller than wide: it may run past the "
+                      "chin")
+    nose = window["box"][3] - (window["seed"][0] + 0.5) * window["pixel"]
+    share = (y1 - nose) / max(y1 - y0, 1e-12)
+    if not NOSE_SPAN[0] <= share <= NOSE_SPAN[1]:
+        doubts.append(f"the nose was found {share:.0%} of the way down the face's window (a face's is about half): "
+                      "it may be a hair spike, a chin or a collar")
+    return doubts
 
 
 def window_values(window: dict, points: np.ndarray) -> np.ndarray:
