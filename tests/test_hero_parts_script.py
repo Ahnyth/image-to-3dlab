@@ -79,3 +79,10 @@ def test_a_drawing_is_kept_when_it_shows_one_whole_part_with_its_toe_where_it_wa
     assert not left["ok"] and left["toe_at"] == "left"
     assert not hero_parts.drawing_check(boot_mask(cut=True), toe="right")["ok"]
     assert not hero_parts.drawing_check(boot_mask(crumb=True), toe="right")["ok"]
+
+
+def test_the_finer_models_get_a_part_cleaned_up_to_a_size_a_game_step_can_take():
+    # the raw build is about a million faces a part: two raw boots in the Zauberer's mesh source made the game-ready
+    # step walk 2.4 million faces instead of 0.42 million; a part of the finer models is cleaned up to FINE_FACES
+    assert hero_parts.FINE_FACES == 150000
+    assert hero_parts.FINE_FACES > hero_parts.PART_FACES

@@ -32,7 +32,7 @@ hands do this for hands; this does it for any part on the body (--box) and for b
               the old boot below goes. Every outline the cut leaves is closed, so no edge stays open. A part on the body
               moves rigidly with the bones the slab followed; a boot takes the old leg's weights point by point, so it
               bends at the ankle. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in
-              the same frame) gets the same parts, built finer.
+              the same frame) gets the same parts, built finer (--fine-faces).
   8. paint    each part painted by the figure's own picture where that sees it (through its camera, past the coat
               in front of it) and by its own build elsewhere, moved to the picture's tones.
   9. check    each part's pieces counted, the open edges round it, a boot's sole against the picture's feet.
@@ -62,7 +62,9 @@ PYTHON = Path(sys.executable)
 GENERATE = REPO / "scripts" / "pixal3d_generate.py"
 UPSCALE = REPO / "scripts" / "upscale_esrgan.py"
 TRIES, KEEP, SEEDS = 6, 2, (42, 7)
-PART_FACES = 20000            # Pixal3D's clean-up of a part built alone, for the rigged model (the --also ones get the build)
+PART_FACES = 20000            # Pixal3D's clean-up of a part built alone, for the rigged model ...
+FINE_FACES = 150000           # ... and for the finer --also models: the raw build is about a million faces a part, and two
+                              # raw boots in the Zauberer's mesh source made game_ready walk 2.4 million faces, not 0.42
 DRAW_SIZE = 1024
 CROP_PAD = 1.25               # a part's crop is this many times its own size
 PAINT_SIZE = 2048             # a part's paint is laid out at most this many texels square
@@ -354,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", type=int, default=KEEP, help="good drawings to build from")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS), help="Pixal3D seeds per drawing")
     parser.add_argument("--part-faces", type=int, default=PART_FACES, help="the build's clean-up size")
+    parser.add_argument("--fine-faces", type=int, default=FINE_FACES,
+                        help="the build's clean-up size for the --also models (0: the raw build itself)")
     parser.add_argument("--hard", action="store_true",
                         help="a hard part (a pistol, a buckle): its nearly flat pieces made flat and their edges sharp")
     args = parser.parse_args(argv)
@@ -497,8 +501,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"[hero] no build of {label} is one piece: try more seeds (--seeds) or drawings")
         stage(run, "clean", f"Cleaning up {label}")
         clean = clean_part(run, raw, args.part_faces, folder)
+        fine = clean_part(run, raw, args.fine_faces, folder) if args.also and args.fine_faces else raw
         clean_part_dict, hard_clean = built_part(clean, args.hard, run, folder / f"{clean.stem}_hard.glb")
-        raw_part_dict, hard_raw = built_part(raw, args.hard, run, folder / f"{raw.stem}_hard.glb")
+        raw_part_dict, hard_raw = built_part(fine, args.hard, run, folder / f"{fine.stem}_hard.glb")
         built[source] = {"clean": clean_part_dict, "raw": raw_part_dict, "clean_path": clean, "raw_path": raw,
                          "hard": {"clean": hard_clean, "raw": hard_raw}}
         records += [r for r in (read_model_record(raw), _picture_record(raw)) if r]
