@@ -425,6 +425,36 @@ def test_match_face_paint_repaints_the_face_to_meet_the_figure_and_leaves_an_unp
     assert hf.match_face_paint(face, [webp], window, crop, CROP, FRAME)[1] == pytest.approx([30.0, 20.0, 10.0])
 
 
+def test_relief_step_follows_the_models_own_faces_inside_the_window():
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    pixel = window["pixel"]
+    assert hf.relief_step([painted_plane((0, 0, 0), step=0.0005)], window) == pixel           # a fine model
+    assert hf.relief_step([painted_plane((0, 0, 0), step=0.003)], window) == pytest.approx(0.0015)
+    assert hf.relief_step([painted_plane((0, 0, 0), step=0.01)], window) == pytest.approx(hf.COARSEST_STEP * pixel)
+    far = painted_plane((0, 0, 0), step=0.003)
+    far["positions"] = far["positions"] + [1.0, 0.0, 0.0]
+    assert hf.relief_step([far], window) == pixel                                             # nothing in the window
+    back = painted_plane((0, 0, 0), step=0.01)
+    back["positions"] = back["positions"] - [0.0, 0.0, 0.05]                                  # the back of the head
+    assert hf.relief_step([painted_plane((0, 0, 0), step=0.0005), back], window) == pixel    # does not count
+
+
+def test_face_relief_laid_out_coarser_is_lighter_and_reaches_as_far_past_the_seam():
+    v, f = roof()
+    window = disk_window(0.03, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    pixel = window["pixel"]
+    fine = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME)
+    coarse = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, step=4 * pixel)
+    assert len(coarse["faces"]) < len(fine["faces"]) / 12
+    past = -hf.window_values(window, coarse["positions"])
+    assert past.max() >= (hf.SKIRT_PIXELS + 4) * pixel                  # the skirt under the cut edge stays whole
+    new, _ = hh.cut_part_values(coarse, -(hf.window_values(window, coarse["positions"]) + hf.SKIRT_PIXELS * pixel))
+    tri = new["positions"][new["faces"]]
+    seen = 0.5 * np.abs((tri[:, 1, 0] - tri[:, 0, 0]) * (tri[:, 2, 1] - tri[:, 0, 1])
+                        - (tri[:, 2, 0] - tri[:, 0, 0]) * (tri[:, 1, 1] - tri[:, 0, 1])).sum()
+    assert seen == pytest.approx(np.pi * (0.03 + hf.SKIRT_PIXELS * pixel) ** 2, rel=0.03)   # no bite out of it
+
+
 def test_relief_puts_two_triangles_on_every_square_of_kept_pixels():
     depth = np.zeros((4, 5))
     keep = np.ones((4, 5), bool)

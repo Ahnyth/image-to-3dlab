@@ -219,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
     scale = float(np.cbrt(np.linalg.det(tf[:3, :3])))
     shift = float(np.linalg.norm(hh.moved(rough, own)[:, :2] - hh.moved(tf, own)[:, :2], axis=1).mean())
     material = hf.picture_material(_png(up))
-    face = hf.face_relief(hf.place_face(built, tf), window, box, face_picture.width, full_frame, material)
+    placed = hf.place_face(built, tf)
+    face = hf.face_relief(placed, window, box, face_picture.width, full_frame, material)
     seen = hf.sample(window["depth"], window["box"], window["pixel"], body["positions"], outside=-np.inf,
                      nearest=True)
     on_face = ((hf.window_values(window, body["positions"]) > 0)
@@ -249,9 +250,13 @@ def main(argv: list[str] | None = None) -> int:
         target_path = out / f"{model.stem}_face.glb"
         data = model.read_bytes()
         _, _, model_parts = hf.read_parts(data)
-        model_face, offset = hf.match_face_paint(face, model_parts, window, crop_rgb, box, full_frame)
+        step = hf.relief_step(model_parts, window)   # a coarse model gets a face as coarse as its old one
+        model_face = face if step <= window["pixel"] else hf.face_relief(
+            placed, window, box, face_picture.width, full_frame, material, step=step)
+        model_face, offset = hf.match_face_paint(model_face, model_parts, window, crop_rgb, box, full_frame)
         cut_parts, face_out, report = hf.graft_face(model_parts, window, model_face)
         report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]
+        report["relief_step_pixels"] = round(step / window["pixel"], 2)
         written = [hh.finish_part(p) for p in cut_parts] + [hh.finish_part(face_out, smooth=True)]
         target_path.write_bytes(hh.regraft_glb(data, written))
         run.say(f"graft: {target_path.name}: {report}")

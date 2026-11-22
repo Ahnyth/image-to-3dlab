@@ -57,6 +57,7 @@ ROUND_SHARE = 0.0125   # the new face's relief is rounded over this share of the
                        # two pixels, and the game figure's decimation kept the planes: a hard line down the nose, its
                        # far flank and the tip's underside dark facets (round 22, F7). At 3 pixels of 240 a head the
                        # sharpest one per cent of its creases turn 11 degrees a pixel, the old face's 26
+COARSEST_STEP = 4      # a model's new face is laid out at most this many of the window's pixels apart (`relief_step`)
 RING_PIXELS = 4        # the figure's paint is read in a band this many pixels wide just outside the seam ...
 PAINT_LIMIT = 60.0     # ... and the crop's moved toward it by at most this many levels (0..255) a channel
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
@@ -809,13 +810,36 @@ def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_
     rows, cols = depth.shape
     grid = np.stack(np.meshgrid(box[0] + (np.arange(cols) + 0.5) * step, box[3] - (np.arange(rows) + 0.5) * step),
                     axis=-1).reshape(-1, 2)
-    inside = window_values(window, np.c_[grid, np.zeros(len(grid))]).reshape(rows, cols) > -(NEAR_PIXELS + 1) * pixel
+    reach = (NEAR_PIXELS + 1) * pixel + 2 * (step - pixel)     # a coarser layout reaches a little further, so its
+    inside = window_values(window, np.c_[grid, np.zeros(len(grid))]).reshape(rows, cols) > -reach   # skirt is whole
     depth = round_relief(depth, inside, rounding / step, JUMP_SHARE * window["width"])
     out = relief(depth, box, step, inside)
     out["uvs"] = picture_uvs(out["positions"], crop, crop_size, frame)
     if material is not None:
         out["material"] = material
     return out
+
+
+def relief_step(parts: list[dict], window: dict, most: int = COARSEST_STEP) -> float:
+    """How finely a model's new face is laid out: half the median edge of the model's own face inside the window (its
+    skin seen from the front, not the back of the head behind it), at least the window's pixel and at most MOST
+    pixels. A relief at the window's pixel gave the Zauberer's 40k rigged model a face of 47,000 triangles where its
+    old one had 650; a finer model (the paint source) keeps a finer one."""
+    pixel = window["pixel"]
+    lengths = []
+    for part in parts:
+        p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
+        if not len(f):
+            continue
+        middle = p[f].mean(axis=1)
+        seen = sample(window["depth"], window["box"], pixel, middle, outside=np.inf, nearest=True)
+        inside = (window_values(window, p)[f] > 0).all(axis=1) & (middle[:, 2] > seen - NEAR_PIXELS * pixel)
+        if inside.any():
+            t = p[f[inside]]
+            lengths.append(np.linalg.norm(t - np.roll(t, 1, axis=1), axis=2).ravel())
+    if not lengths:
+        return pixel
+    return float(np.clip(np.median(np.concatenate(lengths)) / 2, pixel, most * pixel))
 
 
 def place_face(face: dict, tf: np.ndarray) -> dict:

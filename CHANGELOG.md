@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rounded a little: built alone, a face can come out in crisp planes, and a game figure's decimation turned them into
   a hard line down the nose with dark facets beside it and under its tip. The crop's paint is moved to the figure's
   own just outside the seam and smoothly across the face (as in seamless cloning), since a figure's paint is often
-  lighter or darker than the picture and the face's outline showed. A rigged figure keeps
+  lighter or darker than the picture and the face's outline showed. Each model's new face is laid out about
+  as finely as its old one (the 40k rigged model's took 3,200 triangles instead of 47,000). A rigged figure keeps
   its skeleton and the new face moves as the old one did. The finer models a game-ready step bakes paint and bumps from get the same face (`--also`). A
   figure with its Hero hands on (two parts) is read as it is.
 
