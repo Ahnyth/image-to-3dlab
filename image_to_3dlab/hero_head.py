@@ -597,7 +597,7 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     wide as the old head there (zone "cover": the widest of it round each column, softened, and reached in full at the
     cut), so the old head's cut and the caps closing it lie inside the new one and no gap shows between hat and hair.
     The figure's own surface there is its old hair: taken as it is, its spikes stood out of the new head as fins (the
-    Zauberer, 2026-11-22)."""
+    Zauberer, 2026-11-22). Under the chin and the jaw the neck slopes down to the stitch (`neck_fill`)."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     radius = np.array(built["radius"], dtype=np.float64)
     known = built["known"]
@@ -614,7 +614,29 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     ramp = np.clip((heights - band) / np.maximum(level - band, pixel), 0, 1)
     ramp = ramp * ramp * (3 - 2 * ramp)
     least = zone["cover"][None, :] + 1.5 * COVER_MARGIN_SHARE * width
-    return np.maximum(radius, radius + ramp * np.maximum(least - radius, 0))
+    return neck_fill(zone, np.maximum(radius, radius + ramp * np.maximum(least - radius, 0)))
+
+
+def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:
+    """RADIUS (a picture of the zone's frame) with the pocket under the chin and jaw filled: in each column, through
+    the new head's neck (`neck_band`), at least the straight line from the stitch up to where the neck ends (a chin's
+    or a jaw's edge), never past the region's limit (a collar). A narrow neck under a wide jaw left a pocket that the
+    game figure's few triangles spanned in the air, and the bake painted them from the collar's dark inside: a beard
+    under the Zauberer's chin (2026-11-22)."""
+    frame = zone["frame"]
+    heights = row_heights(frame)
+    above = heights >= zone["bottom"]
+    if above.sum() < 2:
+        return radius
+    sub, h = radius[above], heights[above]
+    band = neck_band(unpolar(frame, column_angles(frame)[None, :], sub, h[:, None]), zone)
+    top = np.clip(len(h) - 1 - band.sum(axis=0), 0, len(h) - 1)     # the row just over the neck, column by column
+    rise = sub[top, np.arange(sub.shape[1])] - sub[-1]
+    share = np.clip((h[:, None] - h[-1]) / np.maximum(h[top] - h[-1], frame["pixel"])[None, :], 0, 1)
+    line = np.minimum(sub[-1][None, :] + share * rise[None, :], zone["limit"][above])
+    out = np.array(radius, dtype=np.float64)
+    out[above] = np.where(band, np.maximum(sub, line), sub)
+    return out
 
 
 def sample_map(frame: dict, values: np.ndarray, angle: np.ndarray, height: np.ndarray) -> np.ndarray:
