@@ -313,6 +313,20 @@ def test_a_boots_rim_is_where_its_top_is_lowest():
     assert hp.boot_rim(p) == pytest.approx(0.17, abs=0.002)
 
 
+def test_an_old_leg_wider_than_the_new_boot_is_tucked_inside_it_up_to_its_top():
+    # the old boot's top stood wider than the new boot at the back and showed as a ledge over its rim: between the cut
+    # and the new boot's top every old point outside the boot goes just inside it; above its top the trousers stay
+    boot = trimesh.creation.cylinder(radius=0.02, height=0.18, sections=32)
+    boot_points = np.asarray(boot.vertices)[:, [0, 2, 1]] + [0.0, 0.09, 0.0]
+    rings = np.linspace(0.1, 0.3, 11)
+    old = np.concatenate([np.c_[0.025 * np.cos(a), np.full(24, y), 0.025 * np.sin(a)]
+                          for y in rings for a in [np.linspace(0, 2 * np.pi, 24, endpoint=False)]])
+    moved = hp.tuck_inside(old, boot_points, np.asarray(boot.faces), 0.12, 0.18)
+    radius = np.hypot(moved[:, 0], moved[:, 2])
+    band = (old[:, 1] >= 0.12) & (old[:, 1] <= 0.18)
+    assert radius[band].max() < 0.02 and np.allclose(moved[~band], old[~band])
+
+
 def lower_leg(x=-0.07):
     """An old lower leg: a shin tube (bone 1) down to an ankle at -0.385, a foot (bone 2) to the floor at -0.44;
     a coat panel (bone 3) hangs beside it down to -0.25."""

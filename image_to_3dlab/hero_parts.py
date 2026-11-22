@@ -629,13 +629,73 @@ def boot_rim(points: np.ndarray, sectors: int = 16, band: float = 0.15) -> float
     return float(tops[np.isfinite(tops)].min())
 
 
-def graft_boot(parts: list[dict], bones: list[np.ndarray], plan: dict, cut_y: float) -> tuple[list[dict], dict]:
+def tuck_inside(points: np.ndarray, boot: np.ndarray, boot_faces: np.ndarray, low: float, high: float,
+                keep: float = 0.96, rows: int = 24, slices: int = 24, samples: int = 40000) -> np.ndarray:
+    """POINTS of the old leg with those between LOW (the cut) and HIGH (the new boot's top) pulled inside the new
+    boot (BOOT, BOOT_FACES; its surface sampled SAMPLES times): each to KEEP of the boot's own radius at its height and
+    angle round the boot's middle there, when it lies further out. The old boot's top stood wider than the new boot at
+    the back and showed over its rim as a ledge; above HIGH, and where the boot has no surface (over a rim that runs
+    lower), nothing moves."""
+    p = np.array(points, dtype=np.float64)
+    tri = np.asarray(boot, dtype=np.float64)[np.asarray(boot_faces, dtype=np.int64)]
+    area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    rng = np.random.default_rng(0)
+    pick = rng.choice(len(tri), size=samples, p=area / area.sum())
+    u, v = rng.random(samples), rng.random(samples)
+    flip = u + v > 1
+    u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+    b = tri[pick, 0] + u[:, None] * (tri[pick, 1] - tri[pick, 0]) + v[:, None] * (tri[pick, 2] - tri[pick, 0])
+    band = (p[:, 1] >= low) & (p[:, 1] <= high)
+    near = b[(b[:, 1] >= low) & (b[:, 1] <= high)]
+    if not band.any() or len(near) < 3:
+        return p
+    edges = np.linspace(low, high, rows + 1)
+
+    def row_of(y):
+        return np.clip(np.searchsorted(edges, y, side="right") - 1, 0, rows - 1)
+
+    boot_row, old_row = row_of(near[:, 1]), row_of(p[band, 1])
+    middle = np.full((rows, 2), np.nan)
+    for r in np.unique(boot_row):
+        middle[r] = near[boot_row == r][:, [0, 2]].mean(axis=0)
+    centre = middle[boot_row]
+
+    def slice_of(q, c):
+        return np.clip(((np.arctan2(q[:, 0] - c[:, 0], q[:, 2] - c[:, 1]) + np.pi) / (2 * np.pi) * slices).astype(int),
+                       0, slices - 1)
+
+    radius = np.full((rows, slices), np.nan)
+    reach = np.hypot(near[:, 0] - centre[:, 0], near[:, 2] - centre[:, 1])
+    where = (boot_row, slice_of(near, centre))
+    np.fmax.at(radius, where, reach)
+    old = p[band]
+    old_centre = middle[old_row]
+    known = np.isfinite(old_centre[:, 0])
+    out = old.copy()
+    if known.any():
+        c = old_centre[known]
+        q = old[known]
+        r_old = np.hypot(q[:, 0] - c[:, 0], q[:, 2] - c[:, 1])
+        r_boot = radius[old_row[known], slice_of(q, c)]
+        pull = np.isfinite(r_boot) & (r_old > keep * r_boot)
+        scale = np.where(pull, keep * r_boot / np.maximum(r_old, 1e-12), 1.0)
+        q = q.copy()
+        q[:, 0] = c[:, 0] + (q[:, 0] - c[:, 0]) * scale
+        q[:, 2] = c[:, 1] + (q[:, 2] - c[:, 1]) * scale
+        out[known] = q
+    p[band] = out
+    return p
+
+
+def graft_boot(parts: list[dict], bones: list[np.ndarray], plan: dict, cut_y: float,
+               boot: dict | None = None) -> tuple[list[dict], dict]:
     """PARTS (one model of the figure, part by part; BONES the main bone of every vertex of each) with one old boot cut
-    off: the leg (PLAN, `leg_plan`) cut straight across at CUT_Y, just under the new boot's top; whatever of the leg's
+    off: the leg (PLAN, `leg_plan`) cut straight across at CUT_Y, just under the new boot's rim; whatever of the leg's
     bones lies below that within its reach goes (a coat hanging beside it stays: other bones, or out of reach), and the
-    cut's outlines are closed by fans inside the new boot. Returns (parts, report)."""
+    cut's outlines are closed by fans inside the new boot. With the placed new BOOT (positions, faces) the old leg
+    between the cut and the boot's top is tucked inside it (`tuck_inside`). Returns (parts, report)."""
     out = []
-    report = {"faces_removed": 0, "outlines_closed": 0}
+    report = {"faces_removed": 0, "outlines_closed": 0, "points_tucked": 0}
     knee, ankle, reach = plan["knee"], plan["ankle"], plan["reach"]
 
     def low_and_near(points):
@@ -651,13 +711,22 @@ def graft_boot(parts: list[dict], bones: list[np.ndarray], plan: dict, cut_y: fl
             out.append(part)
             continue
         gone = cuttable & (p[f][:, :, 1].max(axis=1) < cut_y)
-        cut, _ = hh.cut_part(part, np.array([0.0, cut_y, 0.0]), -UP, cuttable)
+        marked = {**part, "marks": np.isin(np.asarray(bone), plan["bones"]).astype(float)[:, None]}
+        cut, _ = hh.cut_part(marked, np.array([0.0, cut_y, 0.0]), -UP, cuttable)
         cut, _ = drop_inside(cut, low_and_near)
         loops = open_loops(cut, lambda q: (np.abs(q[:, 1] - cut_y) < 1e-6) & (_across(q, knee, ankle) < reach))
         cut, closed = hd.cap_loops(cut, loops)
+        if boot is not None:
+            q = np.asarray(cut["positions"], dtype=np.float64)
+            leg = (np.asarray(cut["marks"])[:, 0] > 0.5) & (_across(q, knee, ankle) < reach)
+            top = float(np.asarray(boot["positions"])[:, 1].max())
+            tucked = tuck_inside(q[leg], boot["positions"], boot["faces"], cut_y, top)
+            report["points_tucked"] += int(np.any(tucked != q[leg], axis=1).sum())
+            q[leg] = tucked
+            cut = {**cut, "positions": q}
         report["faces_removed"] += int(gone.sum())
         report["outlines_closed"] += closed
-        out.append(cut)
+        out.append({k: v for k, v in cut.items() if k != "marks"})
     return out, report
 
 

@@ -579,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         for t in targets:
             part = placed(t, which)
             if args.boots:
-                parts, report = hp.graft_boot(parts, part_bones, t["leg"], t["cut_y"])
+                parts, report = hp.graft_boot(parts, part_bones, t["leg"], t["cut_y"], placed(t, "clean"))
                 if main is not None:
                     part["dense"] = hp.boot_weights(part["positions"], main[0], main[1], t["leg"])
             else:
