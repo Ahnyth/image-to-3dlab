@@ -84,21 +84,24 @@ def plane_basis(normal: np.ndarray) -> np.ndarray:
     return np.stack([u, np.cross(n, u)])
 
 
-def chain_loops(edges: np.ndarray) -> list[np.ndarray]:
+def chain_loops(edges: np.ndarray, rank: np.ndarray | None = None) -> list[np.ndarray]:
     """Closed loops from directed edges (a -> b), as arrays of the ids in walking order.
 
     Every id should have one edge out and one in. Where a cut grazes a vertex shared by two loops, an id has two
-    out; the walk then takes the first unused one, so each edge lands in exactly one loop. Open chains (a mesh
-    that was not closed there) come back too, so nothing is lost silently.
+    out; the walk then takes the unused one of lowest RANK (by default the first), so each edge lands in exactly one
+    loop, and walks start from the lowest ranks. Open chains (a mesh that was not closed there) come back too, so
+    nothing is lost silently.
     """
     edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+    rank = np.arange(len(edges)) if rank is None else np.asarray(rank)
     outgoing: dict[int, list[int]] = {}
-    for index, (a, _) in enumerate(edges):
-        outgoing.setdefault(int(a), []).append(index)
+    for index in np.argsort(rank, kind="stable"):
+        outgoing.setdefault(int(edges[index, 0]), []).append(int(index))
     used = np.zeros(len(edges), dtype=bool)
     incoming = {int(b) for _, b in edges}
     # Open chains first, from their free ends, so a closed walk never starts in their middle.
-    starts = [i for i, (a, _) in enumerate(edges) if int(a) not in incoming] + list(range(len(edges)))
+    by_rank = [int(i) for i in np.argsort(rank, kind="stable")]
+    starts = [i for i in by_rank if int(edges[i, 0]) not in incoming] + by_rank
     loops = []
     for first in starts:
         if used[first]:
@@ -132,12 +135,10 @@ def _cut_edges(faces: np.ndarray, out: np.ndarray, select: np.ndarray):
         yield "out", a[one_out], b[one_out], c[one_out]
 
 
-def section_loops(points: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np.ndarray,
-                  select: np.ndarray | None = None) -> list[np.ndarray]:
-    """The closed outlines where a plane cuts a welded mesh (`weld`), as arrays of 3D points.
-
-    SELECT (bool per face) limits the cut to some faces: an arm, not the coat beside it.
-    """
+def crossings(points: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np.ndarray,
+              select: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(the points where a plane crosses a welded mesh's edges, the segments between them as pairs of their ids,
+    each running as the kept faces' boundary). SELECT (bool per face) limits the cut to some faces."""
     faces = np.asarray(faces, dtype=np.int64)
     d = _signed(points, origin, normal)
     chosen = np.ones(len(faces), bool) if select is None else np.asarray(select, dtype=bool)
@@ -148,13 +149,22 @@ def section_loops(points: np.ndarray, faces: np.ndarray, origin: np.ndarray, nor
             # the outline runs as the kept faces' boundary: P(a,b) -> P(c,a) when only a is kept, else reversed
             segments.append(np.stack([ab, ca], 1) if kind == "in" else np.stack([ca, ab], 1))
     if not segments:
-        return []
+        return np.zeros((0, 3)), np.zeros((0, 2), dtype=np.int64)
     seg = np.concatenate(segments)                       # (s, 2 ends, 2 vertex ids of the crossed edge)
     keys, inverse = np.unique(seg.reshape(-1, 2), axis=0, return_inverse=True)
     t = d[keys[:, 0]] / (d[keys[:, 0]] - d[keys[:, 1]])
     crossing = points[keys[:, 0]] + (points[keys[:, 1]] - points[keys[:, 0]]) * t[:, None]
-    loops = chain_loops(inverse.reshape(-1, 2))
-    return [crossing[loop] for loop in loops if len(loop) >= 3]
+    return crossing, inverse.reshape(-1, 2)
+
+
+def section_loops(points: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np.ndarray,
+                  select: np.ndarray | None = None) -> list[np.ndarray]:
+    """The closed outlines where a plane cuts a welded mesh (`weld`), as arrays of 3D points.
+
+    SELECT (bool per face) limits the cut to some faces: an arm, not the coat beside it.
+    """
+    crossing, seg = crossings(points, faces, origin, normal, select)
+    return [crossing[loop] for loop in chain_loops(seg) if len(loop) >= 3]
 
 
 def clip(vertices: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np.ndarray,
@@ -274,37 +284,141 @@ def limb_loop(loops: list[np.ndarray], normal: np.ndarray, centre: np.ndarray) -
 
 PIECE_SHARE = 0.05   # an outline under this share of a section's largest is a sliver, not a piece (a cuff's rim
                      # left specks of 1e-6 beside the Revolverheld's left wrist, of 1.2e-3)
+SECTION_PIXELS = 200  # a limb's sections are filled on a grid this many pixels across its widest: a wrist ~100 across
+SOLID_SHARE = 0.5     # a section's piece filling less of its outline's hull is a shell round a hollow: solid sections
+                      # of the Revolverheld's, the Zauberer's and the Waechter's builds fill 0.97-1.0 of it, the
+                      # Waechter's knuckle plate (open toward the palm) and cuff lip 0.12-0.18
+HOLLOW_LIMIT = 0.15   # a built hand with more of its sections below the wrist hollow has a hole for a palm: three of
+                      # the Waechter's gauntlet builds 0.29-0.40, a solid one with a lip just below its cut 0.05, six
+                      # good gloved and bare builds 0
+HOLLOW_SIZE = 0.25    # only sections at least this share of the largest below the wrist are judged: a fingertip's
+                      # open cap is no hole for a palm
+
+
+def filled(segments: np.ndarray, pixel: float) -> tuple[np.ndarray, np.ndarray]:
+    """(inside, corner): flat SEGMENTS (s, 2 ends, 2) drawn as lines on a grid of PIXEL and filled from outside;
+    INSIDE is every cell no path from outside reaches without crossing a line (the lines too), CORNER the plane
+    position of cell (0, 0)."""
+    import cv2
+
+    seg = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 2)
+    corner = seg.reshape(-1, 2).min(axis=0) - 2 * pixel
+    cells = np.round((seg - corner) / pixel).astype(np.int32)
+    canvas = np.zeros((int(cells[..., 1].max()) + 3, int(cells[..., 0].max()) + 3), np.uint8)
+    cv2.polylines(canvas, cells.reshape(-1, 2, 1, 2), False, 1)       # 8-connected lines ...
+    seen = np.zeros((canvas.shape[0] + 2, canvas.shape[1] + 2), np.uint8)
+    cv2.floodFill(canvas, seen, (0, 0), 2, flags=4)                    # ... that a 4-connected fill cannot cross
+    return canvas != 2, corner
+
+
+def mask_pieces(inside: np.ndarray, least: float = PIECE_SHARE, solid: float = SOLID_SHARE) -> dict:
+    """A filled section's pieces, slivers under LEAST of the largest dropped: {"labels" (0 outside or not a piece,
+    piece k is k + 1), "areas", "centres" (in cells), "hollow" (per piece)}.
+
+    Armour leaves two kinds of shell a fill from outside misreads (the Waechter's gauntlet build, AssetFurnace
+    Support D241). A cuff's lip hanging round the wrist, open on one side, is a thin piece whose outline wraps
+    another piece: it is not a piece of its own and adds nothing. A knuckle plate built as a shell open toward a
+    hollow palm fills less than SOLID of its outline's hull: it is hollow and counts as the hull it encloses, or
+    the open shell reads as a wrist a tenth as wide as the hand."""
+    import cv2
+
+    n, labels, stats, centres = cv2.connectedComponentsWithStats(inside.astype(np.uint8), connectivity=4)
+    areas = stats[1:, cv2.CC_STAT_AREA].astype(np.float64)
+    big = np.flatnonzero(areas >= least * areas.max(initial=0.0))
+    hulls, hull_areas = {}, {}
+    for k in big:
+        x, y, w, h = stats[k + 1, :4]
+        ys, xs = np.nonzero(labels[y:y + h, x:x + w] == k + 1)
+        hulls[k] = cv2.convexHull(np.stack([xs + x, ys + y], 1).astype(np.int32))
+        hull_areas[k] = max(float(cv2.contourArea(hulls[k])), areas[k])
+    wraps = {k for k in big for j in big if j != k and hull_areas[k] > hull_areas[j]
+             and cv2.pointPolygonTest(hulls[k], (float(centres[j + 1, 0]), float(centres[j + 1, 1])), False) >= 0}
+    kept = [k for k in big if k not in wraps]
+    keep = np.zeros(n, dtype=np.int64)
+    keep[1:][kept] = np.arange(1, len(kept) + 1)
+    hollow = np.array([areas[k] < solid * hull_areas[k] for k in kept], dtype=bool)
+    sized = np.array([hull_areas[k] if h else areas[k] for k, h in zip(kept, hollow)])
+    return {"labels": keep[labels], "areas": sized.reshape(-1), "centres": centres[1:][kept].reshape(-1, 2),
+            "hollow": hollow}
 
 
 def pieces(loops: list[np.ndarray], normal: np.ndarray, least: float = PIECE_SHARE) -> int:
     """How many separate pieces a section's outlines make: an outline inside another (a double-walled build's
     inner skin, a hollow sleeve's lining) is part of that one, and slivers do not count. A wrist is one piece,
     a row of fingers several."""
-    areas = [loop_area(loop, normal) for loop in loops]
-    big = [loop for loop, area in zip(loops, areas) if area >= least * max(areas, default=0.0)]
-    count = 0
-    for i, loop in enumerate(big):
-        if not any(j != i and contains(other, normal, loop[0]) for j, other in enumerate(big)):
-            count += 1
-    return count
+    loops = [np.asarray(loop, dtype=np.float64) for loop in loops if len(loop) >= 3]
+    if not loops:
+        return 0
+    basis = plane_basis(normal)
+    segments = np.concatenate([np.stack([loop, np.roll(loop, -1, axis=0)], 1) @ basis.T for loop in loops])
+    pixel = max(float(np.ptp(segments.reshape(-1, 2), axis=0).max()), 1e-12) / SECTION_PIXELS
+    return len(mask_pieces(filled(segments, pixel)[0], least)["areas"])
+
+
+def section_fill(points: np.ndarray, faces: np.ndarray, origin: np.ndarray, normal: np.ndarray,
+                 select: np.ndarray | None = None, pixel: float | None = None) -> dict:
+    """A section through a welded mesh as the solid it outlines: {"area" (NaN where the plane misses), "pieces",
+    "centre" (of the piece holding ORIGIN, else the largest; None where it misses), "piece_area" (that piece's),
+    "hollow" (the share of its area in shells round a hollow, `mask_pieces`)}.
+
+    Filled from outside, so its area is what the outer wall encloses. A Pixal3D build has an inner skin about a
+    millimetre in, and where the two walls touch, one walk ran round both and their areas cancelled; elsewhere the
+    inner skin's area was added. Measured as outlines, the Waechter's gauntlet build read 0.009 where it enclosed
+    about 0.05, and the wrist was taken there, on the knuckle plate (AssetFurnace Support D241)."""
+    normal = unit(normal)
+    crossing, seg = crossings(points, faces, origin, normal, select)
+    if not len(seg):
+        return {"area": float("nan"), "pieces": 0, "centre": None}
+    basis = plane_basis(normal)
+    flat = crossing @ basis.T
+    if pixel is None:
+        pixel = max(float(np.ptp(flat, axis=0).max()), 1e-12) / SECTION_PIXELS
+    inside, corner = filled(flat[seg], pixel)
+    found = mask_pieces(inside)
+    labels, areas, centres = found["labels"], found["areas"], found["centres"]
+    if not len(areas):
+        return {"area": float("nan"), "pieces": 0, "centre": None}
+    here = np.round((np.asarray(origin, dtype=np.float64) @ basis.T - corner) / pixel).astype(int)
+    holder = (labels[here[1], here[0]] if 0 <= here[1] < labels.shape[0] and 0 <= here[0] < labels.shape[1]
+              else 0)
+    piece = holder - 1 if holder > 0 else int(np.argmax(areas))
+    middle = corner + centres[piece] * pixel
+    centre = middle @ basis + (np.asarray(origin, dtype=np.float64) @ normal) * normal
+    return {"area": float(areas.sum()) * pixel ** 2, "pieces": len(areas), "centre": centre,
+            "piece_area": float(areas[piece]) * pixel ** 2,
+            "hollow": float(areas[found["hollow"]].sum() / max(areas.sum(), 1e-18))}
+
+
+def section_pixel(points: np.ndarray, axis: np.ndarray, faces: np.ndarray | None = None,
+                  select: np.ndarray | None = None) -> float:
+    """One grid size for every section of a limb: its widest extent across AXIS over SECTION_PIXELS."""
+    p = np.asarray(points, dtype=np.float64)
+    if select is not None and faces is not None:
+        p = p[np.unique(np.asarray(faces)[np.asarray(select, dtype=bool)])]
+    flat = p @ plane_basis(axis).T
+    return max(float(np.ptp(flat, axis=0).max()) if len(flat) else 0.0, 1e-12) / SECTION_PIXELS
+
+
+def sections_along(points: np.ndarray, faces: np.ndarray, start: np.ndarray, axis: np.ndarray, ts: np.ndarray,
+                   select: np.ndarray | None = None) -> list[dict]:
+    """The limb's sections at START + t AXIS for every t (`section_fill`), on one grid."""
+    axis = unit(axis)
+    pixel = section_pixel(points, axis, faces, select)
+    return [section_fill(points, faces, np.asarray(start, dtype=np.float64) + t * axis, axis, select, pixel)
+            for t in ts]
 
 
 def profile(points: np.ndarray, faces: np.ndarray, start: np.ndarray, axis: np.ndarray, ts: np.ndarray,
             select: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """(area, pieces) of the limb's sections at START + t AXIS for every t: the area of all its outlines together
-    (past the knuckles the fingers are five), NaN where the plane misses it, and how many separate pieces they
-    make (`pieces`).
+    """(area, pieces) of the limb's sections at START + t AXIS for every t: the solid all its outlines enclose
+    together (past the knuckles the fingers are five; `section_fill`), NaN where the plane misses it, and how
+    many separate pieces they make.
 
     All outlines, not the one round the axis: between the fingers the axis holds none, the nearest finger
     stood in for the hand, and the walk took a knuckle for the wrist."""
-    axis = unit(axis)
-    areas, counts = np.full(len(ts), np.nan), np.zeros(len(ts), dtype=np.int64)
-    for i, t in enumerate(ts):
-        loops = section_loops(points, faces, np.asarray(start, dtype=np.float64) + t * axis, axis, select)
-        if loops:
-            areas[i] = sum(loop_area(loop, axis) for loop in loops)
-            counts[i] = pieces(loops, axis)
-    return areas, counts
+    sections = sections_along(points, faces, start, axis, ts, select)
+    return (np.array([s["area"] for s in sections], dtype=np.float64),
+            np.array([s["pieces"] for s in sections], dtype=np.int64))
 
 
 def running_median(values: np.ndarray, width: int = 3) -> np.ndarray:
@@ -351,9 +465,13 @@ def limb_seam(points: np.ndarray, faces: np.ndarray, start: np.ndarray, axis: np
               select: np.ndarray | None = None, steps: int = PROFILE_STEPS, shift: float = SEAM_SHIFT) -> dict:
     """Where to cut a limb whose sections run from START (up the arm) along AXIS for LENGTH (past the fingertips):
     {"cut": the plane's point on the axis, "centre": the section's middle there, "found": False when no wrist
-    shows in the profile (the cut then sits halfway and the caller should say so), "areas", "ts"}."""
+    shows in the profile (the cut then sits halfway and the caller should say so), "areas", "ts", "hollow": the
+    share of the sections past the cut, of those at least HOLLOW_SIZE of the largest there, whose area lies mostly
+    in shells round a hollow (`mask_pieces`): a thin lip beside the hand or a fingertip's cap is no hole}."""
     ts = np.linspace(0.0, length, steps)
-    areas, counts = profile(points, faces, start, axis, ts, select)
+    sections = sections_along(points, faces, start, axis, ts, select)
+    areas = np.array([s["area"] for s in sections], dtype=np.float64)
+    counts = np.array([s["pieces"] for s in sections], dtype=np.int64)
     low = seam_index(areas, counts)
     found = low is not None
     t_low = ts[low] if found else 0.5 * length
@@ -361,9 +479,13 @@ def limb_seam(points: np.ndarray, faces: np.ndarray, start: np.ndarray, axis: np
     t_tip = ts[valid[-1]] if len(valid) else length
     t_cut = t_low + shift * max(t_tip - t_low, 0.0)
     here = np.asarray(start, dtype=np.float64) + t_cut * unit(axis)
-    loop = limb_loop(section_loops(points, faces, here, axis, select), axis, here)
-    return {"cut": here, "centre": loop.mean(axis=0) if loop is not None else here, "found": found,
-            "area": loop_area(loop, axis) if loop is not None else float("nan"), "areas": areas, "ts": ts}
+    section = section_fill(points, faces, here, axis, select, section_pixel(points, axis, faces, select))
+    found_piece = section["centre"] is not None
+    past = [s for t, s in zip(ts, sections) if t > t_cut and s["pieces"]]
+    judged = [s for s in past if s["area"] >= HOLLOW_SIZE * max(p["area"] for p in past)] if past else []
+    return {"cut": here, "centre": section["centre"] if found_piece else here, "found": found,
+            "area": section["piece_area"] if found_piece else float("nan"), "areas": areas, "ts": ts,
+            "hollow": sum(s["hollow"] > 0.5 for s in judged) / max(len(judged), 1)}
 
 
 def reach_of(points: np.ndarray, centre: np.ndarray) -> float:
@@ -434,18 +556,40 @@ def mirror_x(vertices: np.ndarray, faces: np.ndarray, normals: np.ndarray | None
 
 # --- The seam -------------------------------------------------------------------------------------------------
 
+RIM_PIXELS = 600   # a cut's outline is filled on a grid this many pixels across: an inner wall ~0.5 % in is 3 apart
+RIM_LIMIT = 0.8    # a stitch closing less of the hand's cross-section leaves the wrist open (`rim_share`): a tube
+                   # closes 0.97-1.0, the Waechter's gauntlet with open plates at its wrist 0.13
+
+
+def rim_fill(vertices: np.ndarray, rim: np.ndarray, normal: np.ndarray):
+    """(each rim edge's distance from outside, in grid cells; the area its outline encloses): RIM's edges drawn in
+    the plane and filled from outside (`filled`)."""
+    import cv2
+
+    seg = (np.asarray(vertices, dtype=np.float64)[np.asarray(rim)] @ plane_basis(normal).T).reshape(-1, 2, 2)
+    pixel = max(float(np.ptp(seg.reshape(-1, 2), axis=0).max()), 1e-12) / RIM_PIXELS
+    inside, corner = filled(seg, pixel)
+    depth = cv2.distanceTransform(inside.astype(np.uint8), cv2.DIST_L2, 3)
+    middle = np.round((seg.mean(axis=1) - corner) / pixel).astype(int)
+    end = np.round((seg[:, 1] - corner) / pixel).astype(int)
+    return depth[middle[:, 1], middle[:, 0]] + depth[end[:, 1], end[:, 0]], float(inside.sum()) * pixel ** 2
+
+
 def rim_loop(vertices: np.ndarray, rim: np.ndarray, normal: np.ndarray, centre: np.ndarray):
     """(vertex ids in walking order, welded positions) of the cut's outline round the limb.
 
     RIM is `clip`'s edge list; a UV seam that crosses the cut leaves two vertices at one place, so the outline is
-    walked on welded positions and each place keeps one of its vertices."""
+    walked on welded positions and each place keeps one of its vertices. The walk keeps to the outer wall: it
+    starts on the edges nearest the outside and, where a build's inner wall is fused to the outer one, goes on
+    along the outermost edge (`rim_fill`); the Waechter's gauntlet walked into its inner wall, broke into seven
+    loops and was stitched to one a tenth the wrist's size."""
     ids = np.unique(rim)
     group = weld_groups(np.asarray(vertices)[ids])
     first = np.zeros(group.max() + 1, dtype=np.int64)
     first[group[::-1]] = ids[::-1]                       # one vertex per place (the lowest id)
     lookup = np.full(int(ids.max()) + 1, -1, dtype=np.int64)
     lookup[ids] = group
-    loops = chain_loops(lookup[rim])
+    loops = chain_loops(lookup[rim], rim_fill(vertices, rim, normal)[0])
     points = [np.asarray(vertices)[first[loop]] for loop in loops]
     best = limb_loop(points, normal, centre)
     if best is None:
@@ -544,6 +688,34 @@ def cut_part_values(part: dict, values: np.ndarray, cuttable: np.ndarray | None 
     return out, rim[(rim >= 0).all(axis=1)]
 
 
+def loose_inner_skins(part: dict, rim: np.ndarray, plan: dict) -> np.ndarray:
+    """Which faces of a body cut at PLAN's wrist belong to an inner skin the cut cut loose: a piece that owns part of
+    the cut's rim but none of its outermost edges (`rim_fill`), all of it within the seam's reach.
+
+    Finish's remesh leaves an inner skin a few millimetres inside the outer one; on the Waechter's shape model it
+    hung on the outer skin only through the hand, and cut at the wrist the forearm's part of it came loose (about
+    1,000 faces an arm), its open edge just inside the stitch, and the game figure showed bits of it on the forearm
+    above each new hand. A piece that wraps the arm from outside (a bracelet) owns outer edges and stays."""
+    faces = np.asarray(part["faces"])
+    drop = np.zeros(len(faces), dtype=bool)
+    if not len(rim):
+        return drop
+    group = weld_groups(part["positions"])
+    label = components(faces, group)
+    rank, _ = rim_fill(part["positions"], rim, plan["axis"])
+    owner = np.full(group.max() + 1, -1, dtype=np.int64)      # each place's piece (pieces join at welded places)
+    owner[group[faces].reshape(-1)] = np.repeat(label, 3)
+    edge_owner = owner[group[np.asarray(rim)[:, 0]]]
+    outer = set(edge_owner[rank <= rank.min() + 2].tolist())
+    middle = np.asarray(part["positions"])[faces].mean(axis=1)
+    near = np.linalg.norm(middle - plan["centre"], axis=1) < plan["reach"]
+    for piece in set(edge_owner.tolist()) - outer - {-1}:
+        mine = label == piece
+        if near[mine].all():
+            drop |= mine
+    return drop
+
+
 def keep_faces(part: dict, keep: np.ndarray, rim: np.ndarray | None = None):
     """PART with only the KEEP faces (and the vertices they use); RIM renumbered along."""
     present = [k for k in ATTRIBUTES if part.get(k) is not None]
@@ -612,7 +784,9 @@ def figure_wrist(positions: np.ndarray, faces: np.ndarray, bone: np.ndarray, for
 
 def hand_wrist(positions: np.ndarray, faces: np.ndarray, toward_camera: np.ndarray = FORWARD) -> dict:
     """A built hand's own wrist and frame. The drawing hangs the hand fingers down with the back of the hand to the
-    camera (Pixal3D's +Z), so its long axis is turned to point down and its thinnest direction to the camera."""
+    camera (Pixal3D's +Z), so its long axis is turned to point down and its thinnest direction to the camera.
+    "hollow" is the share of its sections below the wrist that are a shell round an empty inside: over
+    HOLLOW_LIMIT, the build is a plate with a hole where its palm should be (the Waechter's first gauntlet)."""
     points, wfaces, _ = weld(positions, faces)
     axis = principal_axes(points)[0]
     axis = -axis if axis[1] > 0 else axis
@@ -623,7 +797,7 @@ def hand_wrist(positions: np.ndarray, faces: np.ndarray, toward_camera: np.ndarr
     fingers, palm = hand_frame(points[beyond], seam["centre"])
     back = palm if palm @ toward_camera >= 0 else -palm
     return {"cut": seam["cut"], "axis": axis, "centre": seam["centre"], "found": seam["found"],
-            "area": seam["area"], "fingers": fingers, "back": back,
+            "area": seam["area"], "fingers": fingers, "back": back, "hollow": round(seam["hollow"], 3),
             "length": reach_of(points[beyond], seam["centre"])}
 
 
@@ -634,21 +808,75 @@ def arm_faces(positions: np.ndarray, faces: np.ndarray, bone: np.ndarray, plan: 
     return on_arm & (np.linalg.norm(middle - plan["centre"], axis=1) < plan["reach"])
 
 
+LEAST_HAND_FACES = 1000   # a hand build's clean-up never goes below this: the fingers keep their shape
+FACES_STEP = 500          # clean-up sizes are rounded up to this, so close densities share one clean-up
+
+
+def surface_area(positions: np.ndarray, faces: np.ndarray) -> float:
+    """The total area of a mesh's triangles."""
+    p = np.asarray(positions, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    a, b, c = p[f[:, 0]], p[f[:, 1]], p[f[:, 2]]
+    return float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+
+
+def wrist_density(positions: np.ndarray, faces: np.ndarray, bone: np.ndarray, plans: dict[str, dict]) -> float:
+    """Triangles per unit of area of a model round its wrists: the arm's faces near each seam (`arm_faces`), every
+    side together. A new hand is put on at this density, so a game-ready step thins it with the rest of the
+    figure: the Waechter's shape model (35,000 a unit) took a raw hand at 10 million, its thinning stopped at 37,887
+    triangles instead of 14,000 and squashed the figure 10 cm (AssetFurnace Support D241)."""
+    count, area = 0, 0.0
+    for plan in plans.values():
+        near = arm_faces(positions, faces, bone, plan)
+        count += int(near.sum())
+        area += surface_area(positions, np.asarray(faces)[near])
+    return count / area if area > 0 else 0.0
+
+
+def spread_area(below_faces: int, below_area: float, total_faces: int) -> float:
+    """The area a clean-up of a whole hand build spreads its faces over, as the hand below the cut takes them: the
+    area below the cut, grown by how many of a clean-up's faces land elsewhere (measured on one clean-up). A
+    decimation spends more faces on curved fingers than on a flat cuff, so by the whole build's area the
+    Waechter's first sized hands came out twice as fine as the figure round them."""
+    return float(below_area) * total_faces / max(below_faces, 1)
+
+
+def hand_faces(density: float, area: float, detail: float = 1.0) -> int:
+    """How many faces a clean-up of a hand build covering AREA (in the figure's units) needs to be DETAIL times as
+    fine as a figure of DENSITY: rounded up to FACES_STEP, never under LEAST_HAND_FACES."""
+    wanted = detail * density * area
+    return int(max(LEAST_HAND_FACES, FACES_STEP * np.ceil(wanted / FACES_STEP)))
+
+
 def hand_onto(hand: dict, tf: np.ndarray, plan: dict, gap: float):
     """(the built HAND cut at the figure's seam moved GAP toward the fingers, put in place by TF; its rim).
 
     The cut is the figure's plane carried back into the hand's own space, so after the move the two rims lie in
-    parallel planes and the stitch between them is an even band. Only the outer skin is kept (`outer_wall`)."""
+    parallel planes and the stitch between them is an even band. Only the outer skin is kept (`outer_wall`). The
+    part keeps "section": the hand's cross-section there as the solid it outlines (`section_fill`), placed, for
+    `rim_share`."""
     inverse = np.linalg.inv(tf)
     origin = moved(inverse, plan["cut"] + gap * plan["axis"])
     normal = unit(inverse[:3, :3] @ -plan["axis"])
+    section = section_fill(*weld(hand["positions"], hand["faces"])[:2], origin, normal)["area"]
     part, rim = cut_part(hand, origin, normal)
     part, rim = keep_faces(part, outer_wall(part["positions"], part["faces"], rim, normal), rim)
-    turn = tf[:3, :3] / np.cbrt(np.linalg.det(tf[:3, :3]))
-    out = {**part, "positions": moved(tf, part["positions"])}
+    scale = np.cbrt(np.linalg.det(tf[:3, :3]))
+    out = {**part, "positions": moved(tf, part["positions"]), "section": float(section) * scale ** 2}
     if part.get("normals") is not None:
-        out["normals"] = part["normals"] @ turn.T
+        out["normals"] = part["normals"] @ (tf[:3, :3] / scale).T
     return out, rim
+
+
+def rim_share(hand: dict, tf: np.ndarray, plan: dict, gap: float) -> float:
+    """How much of the placed HAND's cross-section at the figure's cut a stitch would close: the area its outer rim
+    loop goes round (`rim_loop`) over the section's (`hand_onto`). About 1 for a wrist that is a tube; the
+    Waechter's gauntlet build of drawing 3, seed 7 was overlapping open plates there and closed a seventh."""
+    placed, rim = hand_onto(hand, tf, plan, gap)
+    if not len(rim):
+        return 0.0
+    _, loop = rim_loop(placed["positions"], rim, plan["axis"], plan["centre"])
+    return loop_area(loop, plan["axis"]) / max(placed["section"], 1e-18) if len(loop) else 0.0
 
 
 def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, plan: dict,
@@ -665,6 +893,9 @@ def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, p
     hand_ids, hand_loop = rim_loop(hand["positions"], hand_rim, axis, plan["centre"])
     if not len(body_ids) or not len(hand_ids):
         raise ValueError(f"the {plan['side']} wrist's cut left no rim to stitch")
+    # how much of the hand's cross-section the stitched loop closes (`rim_share`): under RIM_LIMIT, the wrist is open
+    section = hand.get("section") or rim_fill(hand["positions"], hand_rim, axis)[1]
+    rim_closed = loop_area(hand_loop, axis) / max(section, 1e-18)
     ratio = float(np.sqrt(loop_area(body_loop, axis) / max(loop_area(hand_loop, axis), 1e-18)))
     hand = {**hand, "positions": blend_wrist(hand["positions"], hand_loop.mean(axis=0), axis,
                                              hand_loop.mean(axis=0), body_loop.mean(axis=0), ratio,
@@ -673,7 +904,8 @@ def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, p
     out, stitched, alike = join_rims(body, body_ids, hand, hand_ids, axis)
     band = np.linalg.norm(body_loop.mean(axis=0) - hand_loop.mean(axis=0))
     report = {"wrist_ratio": round(ratio, 3), "rim_points": [len(body_ids), len(hand_ids)],
-              "stitch_faces": stitched, "band_length": float(band), "rims_turn_alike": bool(alike)}
+              "stitch_faces": stitched, "band_length": float(band), "rims_turn_alike": bool(alike),
+              "rim_share": round(float(rim_closed), 3)}
     return out, report
 
 
@@ -776,6 +1008,9 @@ def graft_model(body: dict, bone: np.ndarray, plans: dict[str, dict], hands: dic
         cuttable = (work["marks"][faces, index] > 0).any(axis=1) & (
             np.linalg.norm(middle - plan["centre"], axis=1) < plan["reach"])
         work, body_rim = cut_part(work, plan["cut"], plan["axis"], cuttable)
+        loose = loose_inner_skins(work, body_rim, plan)
+        if loose.any():
+            work, body_rim = keep_faces(work, ~loose, body_rim)
         pieces = rim_pieces(work["positions"], body_rim)
         areas = sorted((loop_area(work["positions"][ids], plan["axis"]) for ids in pieces), reverse=True)
         placed, hand_rim = hand_onto(hands[side]["part"], hands[side]["tf"], plan, gap_share * plan["length"])
@@ -784,7 +1019,7 @@ def graft_model(body: dict, bone: np.ndarray, plans: dict[str, dict], hands: dic
         placed, stitched = stitch(work, body_rim, placed, hand_rim, plan)
         placed_parts.append(placed)
         side_of_face.append(np.full(len(placed["faces"]), index))
-        report[side] = {**stitched, "rim_pieces": len(pieces),
+        report[side] = {**stitched, "rim_pieces": len(pieces), "inner_dropped": int(loose.sum()),
                         "rim_rest_share": round(float(sum(areas[1:]) / max(sum(areas), 1e-18)), 4)}
     body_out = {k: v for k, v in work.items() if k != "marks"}
     hands_out = merge_parts(placed_parts)
