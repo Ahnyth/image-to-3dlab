@@ -314,6 +314,27 @@ def test_graft_head_sets_a_new_head_in_closed_all_round():
     assert np.allclose(head["dense"], [1.0, 0.0])               # the old head's skin weights
 
 
+def test_graft_head_leaves_no_bit_of_the_old_head_that_dipped_just_under_the_stitch():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    zone = hd.head_zone(v, f, window)
+    # the old chin's tip, in front of the neck, reaching half a pixel under the stitch (the Zauberer's: 0.2 mm)
+    tip = (0.0, zone["bottom"] + 0.006 - 0.5 * zone["pixel"], 0.02)
+    v2, f2 = joined((v, f), sphere(0.006, centre=tip))
+    new_v, new_f = sphere(0.033, centre=(0.0, 0.005, 0.006))
+    neck_v, neck_f = tube(0.019, -0.09, -0.01, centre=(0.0, -0.005))
+    built = hd.build_radius(zone, *joined((new_v, new_f), (neck_v, neck_f)))
+    radius = hd.tube_radius(zone, built)
+    body = {"positions": v2, "faces": f2, "uvs": np.zeros((len(v2), 2))}
+    parts, _, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
+    kept = parts[0]["positions"]
+    under_tip = ((np.hypot(kept[:, 0] - tip[0], kept[:, 2] - tip[2]) < 0.006)
+                 & (kept[:, 1] > zone["bottom"] - 2 * zone["pixel"]) & (kept[:, 1] < zone["bottom"] + 1e-9))
+    assert not under_tip.any()                                  # the tip went with the head, it stays no patch
+    assert report["slivers_dropped"] == 1 and report["open_edges_near"] == 0
+
+
 def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_builds_paint_behind():
     frame = frame_round()
     radius = np.full((frame["rows"], frame["cols"]), 0.04)
@@ -331,3 +352,36 @@ def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_bu
     picture = hd.tube_paint(points, normals, crop, np.ones((64, 64)), (0, 0, 64, 64), frame_full, build, None, 0.08)
     assert np.allclose(picture[8, 32], [200, 100, 100], atol=2)     # the face: the picture's own pixels
     assert np.allclose(picture[8, 0], [70, 70, 220], atol=3)        # the back: the build's paint, moved as its face was
+
+
+def painted(colour):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), tuple(int(c) for c in colour)).save(buffer, format="PNG")
+    return hf.picture_material(buffer.getvalue())
+
+
+def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_paint():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.034, 0.02, 0.04) * np.ones((1, frame["cols"]))     # a neck under a chin
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
+    points, _ = hd.tube_points(zone, radius, (40, 64))
+    picture = np.full((40, 64, 3), [200.0, 170.0, 160.0])                       # the face
+    lips = (points[..., 1] > -0.032) & (points[..., 1] < -0.028)
+    picture[lips] = [220.0, 120.0, 120.0]
+    picture[points[..., 1] < -0.034] = [100.0, 75.0, 70.0]      # under the chin the throat in its shadow, a shirt
+    turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
+    rings = [(0.021, y) for y in np.arange(-0.0395, -0.034, 0.001)] + [(0.041, y) for y in np.arange(-0.033, 0.02, 0.002)]
+    old = np.concatenate([hd.unpolar(frame, turn, np.full(90, r), np.full(90, y)) for r, y in rings])
+    part = {"positions": old, "faces": np.zeros((0, 3), np.int64), "uvs": np.full((len(old), 2), 0.5),
+            "material": painted([190, 160, 160])}               # the figure's own paint, a little darker
+    out, offset = hd.figure_paint(picture, points, part, zone)
+    assert np.allclose(offset, [-10, -10, 0], atol=1)           # the tone read on the face, not on the dark throat
+    assert np.allclose(out[-1], [190, 160, 160], atol=2)        # the neck: the figure's own paint
+    assert np.allclose(out[lips], [210, 110, 120], atol=2)      # the chin above it keeps the picture

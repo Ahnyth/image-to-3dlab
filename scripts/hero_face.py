@@ -221,7 +221,7 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
     span = float(zone["frame"]["y_hi"] - zone["bottom"])
     size = (max(64, int(round(hd.PICTURE_WIDTH * span / circumference))), hd.PICTURE_WIDTH)
     points, normals = hd.tube_points(zone, radius, size)
-    picture = None
+    picture = first = None
     for model in [args.model, *args.also]:
         target_path = out / f"{model.stem}_head.glb"
         data = model.read_bytes()
@@ -232,6 +232,7 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
             picture = hd.tube_paint(points, normals, crop_rgb, alpha, box, full_frame, build,
                                     front_depth(cut_parts, zone), zone["width"])
         shifted, offset = hd.figure_paint(picture, points, model_parts[report["body_part"]], {**zone, "radius": radius})
+        first = shifted if first is None else first
         buffer = io.BytesIO()
         Image.fromarray(np.clip(np.round(shifted), 0, 255).astype(np.uint8), "RGB").save(buffer, format="PNG")
         head_part["material"] = hf.picture_material(buffer.getvalue(), name="HeroHead")
@@ -250,8 +251,7 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
                               source_record=record if model == args.model else None,
                               component_records=[r for r in (face_record, upscaled) if r])
         del data, model_parts, cut_parts, head_part
-    Image.fromarray(np.clip(np.round(np.nan_to_num(picture)), 0, 255).astype(np.uint8), "RGB").save(
-        out / "head_paint.png")
+    Image.fromarray(np.clip(np.round(first), 0, 255).astype(np.uint8), "RGB").save(out / "head_paint.png")
     summary["unsure"] = run.unsure
     (out / "face.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     run.say(f"done: {out / (args.model.stem + '_head.glb')}; numbers in {out / 'face.json'}")

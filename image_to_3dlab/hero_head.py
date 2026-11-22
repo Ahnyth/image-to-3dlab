@@ -46,8 +46,7 @@ COLLAR_MARGIN_SHARE = 0.03   # the new head stays this share of the head's width
 COLLAR_GROW = 3         # a collar's mask grows this many pixels, so its own rim and edges are never cut
 COLLAR_JUMP_SHARE = 0.05     # a collar's outside runs on up without jumps of this share of the head's width
 REACH_SHARE = 0.95      # nothing further than this share of the head's width from the axis is head (hair included)
-NECK_SHARE = 0.2        # the new head reaches this share of the head's width below the chin, down into the collar
-TOP_SHARE = 0.04        # and this share above the brim's underside, up into the hat
+TOP_SHARE = 0.04        # the new head reaches this share of the head's width above the brim's underside, into the hat
 CUT_GAP_PIXELS = 2      # the old head is cut this many pixels under the brim's plane (below its lowest residual)
 COVER_BAND_SHARE = 0.2  # under the brim, in a band this share of the head's width deep under the cut, the old head is
                         # measured all round ...
@@ -75,6 +74,10 @@ OFFSET_SHARE = 0.05     # the build's paint is moved to the picture's by offsets
 OFFSET_NEAR_SHARE = 0.02    # the figure's tone is read where its old head lay this close to the new one
 BLEND_ROWS = 6          # the head's picture reaches this many rows below the stitch
 NECK_EASE_ROWS = 1      # the new head eases onto the figure's neck at the stitch over this many rows
+NECK_STEP_SHARE = 0.08  # the new head's neck runs up from the stitch until it stands out this share of the head's
+                        # width (a chin, a jaw) ...
+NECK_BAND_SHARE = 0.1   # ... at most this share of it over the stitch; the figure's own paint covers it
+SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 ROUND_SHARE = hf.ROUND_SHARE      # creases rounded over this share of the head's width, as the face's ...
 ROUND_JUMP_SHARE = 0.1  # ... but not across a step of this share of it (an ear's rim, the nose's and chin's underside)
 
@@ -707,6 +710,26 @@ def cycles(edges: np.ndarray) -> list[np.ndarray]:
     return out
 
 
+def drop_slivers(part: dict, rim: np.ndarray, zone: dict) -> tuple[dict, np.ndarray, int]:
+    """PART as the cut left it (RIM, the cut's edges) without the pieces that touch the cut and lie wholly within
+    SLIVER_PIXELS of the region: bits of the old head that reached just past its edge. The Zauberer's chin dipped 0.2 mm
+    under the stitch, and its tip stayed under the new chin as a patch of the old paint (2026-11-22). Returns (part,
+    rim, how many pieces went)."""
+    f = np.asarray(part["faces"], dtype=np.int64)
+    if not len(f):
+        return part, rim, 0
+    label = hh.components(f, hh.weld_groups(np.asarray(part["positions"])))
+    values = zone_values(zone, part["positions"])[f]
+    least, most = np.full(label.max() + 1, np.inf), np.full(label.max() + 1, -np.inf)
+    np.minimum.at(least, label, values.min(axis=1))
+    np.maximum.at(most, label, values.max(axis=1))
+    sliver = (least > -SLIVER_PIXELS * zone["pixel"]) & (most > -0.5 * zone["pixel"])
+    if not sliver.any():
+        return part, rim, 0
+    kept, rim = hh.keep_faces(part, ~sliver[label], rim)
+    return kept, rim, int(sliver.sum())
+
+
 def cap_loops(part: dict, loops: list[np.ndarray]) -> tuple[dict, int]:
     """PART with every outline of LOOPS (vertex ids in the order its own faces' boundary runs, `cycles`) closed by a fan
     from its middle, facing as the cut surface's own faces do across it. Returns (the part, how many were closed). A cut
@@ -787,11 +810,12 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
     section and inside the collar; the collar and the hat stay whole. At the neck the new head is
     stitched to the figure's own skin (`hero_hands.join_rims`), its lowest rows eased onto it, so the seam is closed;
     every other outline the cut leaves (the old head's inside the hat, a hollow build's inner wall) is closed by a fan
-    (`cap_loops`), and the new head is capped inside the hat. With skin weights (dense) the new head takes those of the
-    nearest old point it replaces."""
+    (`cap_loops`), slivers of the old head just past the region's edge go (`drop_slivers`), and the new head is
+    capped inside the hat. With skin weights (dense) the new head takes those of the nearest old point it replaces."""
     frame = zone["frame"]
     up = np.array([0.0, 1.0, 0.0])
-    out_parts, report, body_index, most, old_points, old_dense, rims = [], {"parts": []}, None, 0, [], [], []
+    out_parts, body_index, most, old_points, old_dense, rims = [], None, 0, [], [], []
+    report = {"parts": [], "slivers_dropped": 0}
     for part in parts:
         values = zone_values(zone, part["positions"])
         f = np.asarray(part["faces"], dtype=np.int64)
@@ -806,6 +830,8 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
             old_points.append(np.asarray(part["positions"])[used])
             old_dense.append(np.asarray(part["dense"])[used])
         cut, rim = hh.cut_part_values(part, values)
+        cut, rim, slivers = drop_slivers(cut, rim, zone)
+        report["slivers_dropped"] += slivers
         report["parts"].append({"cut": True, "faces_removed": int(gone.sum())})
         if gone.sum() > most:
             body_index, most = len(out_parts), int(gone.sum())
@@ -908,14 +934,30 @@ def tube_paint(points: np.ndarray, normals: np.ndarray, crop_rgb: np.ndarray, cr
     return np.clip(out, 0, 255)
 
 
+def neck_band(points: np.ndarray, zone: dict) -> np.ndarray:
+    """Which texels of the new head's picture (POINTS, `tube_points`: rows from the top down) make its neck: in each
+    column from the stitch up while the head stays within NECK_STEP_SHARE of its width of the lowest texel's distance
+    from the axis, or faces down (a chin's underside goes with the neck), at most NECK_BAND_SHARE of the width over the
+    stitch. The picture shows the throat there in the chin's shadow, often the shirt's dark opening under it, and the
+    build's paint copies it: on the Zauberer both painted a dark beard under the new chin (2026-11-22)."""
+    _, r = polar(zone["frame"], points.reshape(-1, 3))
+    r = r.reshape(points.shape[:2])
+    height = points[..., 1]
+    near = np.ones(r.shape, bool)
+    near[:-1] = (r[:-1] < r[-1:] + NECK_STEP_SHARE * zone["width"]) | (r[:-1] - r[1:] > height[:-1] - height[1:])
+    near &= height - zone["bottom"] < NECK_BAND_SHARE * zone["width"]
+    return np.logical_and.accumulate(near[::-1], axis=0)[::-1]
+
+
 def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict) -> tuple[np.ndarray, np.ndarray |
                                                                                                     None]:
     """(the new head's picture for one model, the offset its own part got): PICTURE (`tube_paint`, NaN where neither the
     picture nor the build reaches: under the build's own brim, where the figure's own head stands in) moved to the
-    model's own tone (`paint_offset`), and its empty texels painted from the model's own old head nearest each one
-    (POINTS, the texels' places), else from the nearest painted texel. A model with no paint keeps the picture as it
-    is, its empty texels filled the same way."""
+    model's own tone (`paint_offset`), and its empty texels and its neck (`neck_band`: the stitch then shows no change
+    of paint) painted from the model's own old head nearest each one (POINTS, the texels' places), else from the
+    nearest painted texel. A model with no paint keeps the picture as it is, those texels filled the same way."""
     out = np.array(picture, dtype=np.float64)
+    out[neck_band(points, zone)] = np.nan
     empty = ~np.isfinite(out[..., 0])
     offset = paint_offset(part, zone, out)
     if offset is not None:
