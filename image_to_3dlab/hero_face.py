@@ -43,11 +43,13 @@ SMOOTH_SHARE = 0.04    # the seam's line is smoothed over this share of the head
 BEHIND_SHARE = 0.15    # what of the figure lies less than this share of the head's width behind the new face goes: the
                        # old eye under a strand, an inner skin; a collar hidden behind the jaw lies deeper and stays
 NEAR_PIXELS = 3        # the new face's depth is carried this many pixels past its outline, for the faces the seam cuts
-BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this share of the head's width
+BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this share of the head's width ...
+EASE_SHARE = 0.05      # ... by at most this share of it; the stitch closes the rest
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
                        # Pixal3D builds a head and not a mask (the Zauberer's 174 px crop round an 85 px face)
-ICP_KEEP = 0.75        # the line-up uses the closest three quarters of the point pairs: the old strand is no match
-ICP_STEPS = 60
+SOFT_EDGE_PX = 2       # the face crop's cut-out keeps its soft alpha only this close to its outline (`solid_cutout`)
+OPAQUE = 250           # alpha this high counts as solid (the background remover leaves most of a subject at 254)
+ICP_KEEP = 0.75        # fits and checks use the closest three quarters of the point pairs: the old strand is no match
 SMALL_SPAN = 4         # triangles up to this many pixels across are drawn into the depth map all at once
 FRONT = np.array([0.0, 0.0, 1.0])
 
@@ -349,17 +351,22 @@ def window_bounds(window: dict) -> tuple[float, float, float, float]:
             box[3] - (rows.max() + 1) * pixel, box[3] - rows.min() * pixel)
 
 
-def solid_cutout(picture: np.ndarray, cutout: np.ndarray) -> tuple[np.ndarray, int]:
-    """(the cut-out RGBA with every hole inside its outline made solid again from PICTURE's RGB; how many pixels).
+def solid_cutout(picture: np.ndarray, cutout: np.ndarray, edge: int = SOFT_EDGE_PX) -> tuple[np.ndarray, int]:
+    """(the cut-out RGBA made solid inside its outline, from PICTURE's RGB; how many pixels changed).
 
-    The background remover took the Zauberer's glowing eyes for background (2026-11-22, his face crop at 156 px): a
-    build from that has holes, or dark paint, where the eyes should glow. A face crop holds no real hole."""
+    The background remover took the Zauberer's glowing eyes for background (2026-11-22, his face crop at 156 px), and
+    filling those holes alone still left a one-pixel ring of half-transparent alpha round each eye: Pixal3D carved a
+    slit through the face along it, the clean-up widened it to a hole, and Pixel Match painted the glow onto the back
+    of the head seen through it. A face crop holds no real hole, so everything inside the outline but its own soft
+    EDGE (pixels wide) is made opaque."""
     out = np.array(cutout, dtype=np.uint8, copy=True)
-    solid = out[..., 3] > 127
-    holes = ndimage.binary_fill_holes(solid) & ~solid
-    out[holes, :3] = np.asarray(picture)[holes][:, :3]
-    out[holes, 3] = 255
-    return out, int(holes.sum())
+    alpha = out[..., 3]
+    filled = ndimage.binary_fill_holes(alpha > 127)
+    core = ndimage.binary_erosion(filled, iterations=edge) if edge else filled
+    fix = (filled & (alpha <= 127)) | (core & (alpha < OPAQUE))
+    out[fix, :3] = np.asarray(picture)[fix][:, :3]
+    out[fix, 3] = 255
+    return out, int(fix.sum())
 
 
 def crop_box(px: np.ndarray, py: np.ndarray, width: int, height: int, pad: float = CROP_PAD):
@@ -375,67 +382,115 @@ def crop_box(px: np.ndarray, py: np.ndarray, width: int, height: int, pad: float
 
 # --- Lining the new face up -----------------------------------------------------------------------------------------
 
-def turn_about(axis_angle: np.ndarray) -> np.ndarray:
-    """The 3x3 turn by |AXIS_ANGLE| radians about its direction (Rodrigues)."""
-    w = np.asarray(axis_angle, dtype=np.float64)
-    angle = float(np.linalg.norm(w))
-    if angle < 1e-15:
-        return np.eye(3)
-    k = w / angle
-    cross = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
-    return np.eye(3) + np.sin(angle) * cross + (1 - np.cos(angle)) * cross @ cross
+def alpha_box(rgba: np.ndarray) -> tuple[float, float, float, float]:
+    """(x0, y0, x1, y1) of a cut-out's subject (alpha above half), in pixels, its far edges exclusive."""
+    ys, xs = np.nonzero(np.asarray(rgba)[..., 3] > 128)
+    return float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)
 
 
-def plane_step(points: np.ndarray, targets: np.ndarray, normals: np.ndarray) -> np.ndarray:
-    """The small 4x4 turn and shift that best slides POINTS onto the planes through TARGETS with NORMALS (one
-    linearised point-to-plane step, turned about the points' middle)."""
-    middle = points.mean(axis=0)
-    p = points - middle
-    a = np.concatenate([np.cross(p, normals), normals], axis=1)
-    b = -((points - targets) * normals).sum(axis=1)
-    x = np.linalg.lstsq(a, b, rcond=None)[0]
-    turn = turn_about(x[:3])
+def box_to_box(points: np.ndarray, source: tuple, target: tuple) -> np.ndarray:
+    """Pixel POINTS (x, y) in a picture whose subject fills box SOURCE, in one where it fills box TARGET: the build's
+    input picture is the crop's cut-out cropped to its subject, scaled and centred on a padded square."""
+    p = np.asarray(points, dtype=np.float64)
+    k = (target[2] - target[0]) / (source[2] - source[0])
+    return np.stack([target[0] + (p[:, 0] - source[0]) * k, target[1] + (p[:, 1] - source[1]) * k], axis=1)
+
+
+def crop_to_figure(pixels: np.ndarray, crop: tuple[int, int, int, int], crop_size: int, frame) -> np.ndarray:
+    """Pixels (x, y) of the upscaled crop (CROP_SIZE wide, cut from the picture at CROP) as the figure's model (x, y),
+    by the figure's picture frame (`hero.frame`; its own camera is all but straight-on at its face)."""
+    centre, per_px, box_centre = frame
+    k = (crop[2] - crop[0]) / crop_size
+    u = crop[0] + np.asarray(pixels, dtype=np.float64)[:, 0] * k
+    v = crop[1] + np.asarray(pixels, dtype=np.float64)[:, 1] * k
+    return np.stack([centre[0] + (u - box_centre[0]) * per_px, centre[1] - (v - box_centre[1]) * per_px], axis=1)
+
+
+def pairs_apart(points: np.ndarray, target: np.ndarray, keep: float = ICP_KEEP) -> float:
+    """How far POINTS lie from TARGET: the mean distance to the nearest target point of the KEEP share that lie
+    closest (an old strand is no match for anything)."""
+    distance, _ = cKDTree(np.asarray(target, dtype=np.float64)).query(np.asarray(points, dtype=np.float64),
+                                                                       workers=-1)
+    return float(distance[distance <= np.quantile(distance, keep)].mean())
+
+
+def similarity_2d(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """The 4x4 transform whose turn about Z, shift in X and Y and one size best move SOURCE's (x, y) onto TARGET's,
+    row for row (Umeyama in the picture plane); Z is scaled by the same size and not shifted."""
+    s, t = np.asarray(source, dtype=np.float64)[:, :2], np.asarray(target, dtype=np.float64)[:, :2]
+    ms, mt = s.mean(axis=0), t.mean(axis=0)
+    a, b = s - ms, t - mt
+    u, sing, vt = np.linalg.svd(b.T @ a / len(s))
+    flip = np.diag([1.0, np.sign(np.linalg.det(u @ vt)) or 1.0])
+    turn = u @ flip @ vt
+    k = float(np.trace(np.diag(sing) @ flip) / max((a ** 2).sum() / len(s), 1e-30))
     tf = np.eye(4)
-    tf[:3, :3] = turn
-    tf[:3, 3] = middle + x[3:] - turn @ middle
+    tf[:2, :2] = k * turn
+    tf[2, 2] = k
+    tf[:2, 3] = mt - k * turn @ ms
     return tf
 
 
-def trimmed_icp(source: np.ndarray, target: np.ndarray, normals: np.ndarray, keep: float = ICP_KEEP,
-                steps: int = ICP_STEPS) -> tuple[np.ndarray, float]:
-    """(4x4 transform, mean distance of the pairs kept): SOURCE turned and shifted onto the surface through TARGET
-    (whose NORMALS are given), point to plane, each step fitted on the KEEP share of nearest pairs that lie closest,
-    so a part that differs (the old strand in front of an eye) does not pull the rest. Point to point slid along a
-    smooth face onto its sample grid instead and stopped millimetres off; its size stays the crop's."""
-    s = np.asarray(source, dtype=np.float64)
-    t = np.asarray(target, dtype=np.float64)
-    n = np.asarray(normals, dtype=np.float64)
-    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-18)
-    tree = cKDTree(t)
+def depth_fit(window: dict, part: dict, keep: float = ICP_KEEP, rounds: int = 3) -> np.ndarray:
+    """The 4x4 transform that moves PART (a face put in by the picture) in depth onto the figure's face: Z plus a
+    plane in X and Y, fitted over the window to the figure's front depth less the part's, each round on the KEEP share
+    of pixels that fit best (the old strand in front of an eye is no match). The crop's frame centres a build's depth
+    on the figure's middle, and a face built alone is mostly the head behind it: the Zauberer's sat 0.09 too deep and
+    a little turned, its jaw 0.009 proud on one side. A plane, not a turn: it keeps X and Y where the picture put
+    them."""
+    box, pixel = window["box"], window["pixel"]
+    own, _ = depth_map(part["positions"], part["faces"], box, pixel)
+    both = window["mask"] & np.isfinite(own) & np.isfinite(window["depth"])
+    if not both.any():
+        raise ValueError("the new face does not reach into the window: check its placement")
+    rows, cols = np.nonzero(both)
+    x = box[0] + (cols + 0.5) * pixel
+    y = box[3] - (rows + 0.5) * pixel
+    gap = window["depth"][both] - own[both]
+    design = np.stack([np.ones(len(x)), x, y], axis=1)
+    use = np.ones(len(x), bool)
+    for _ in range(rounds):
+        coef = np.linalg.lstsq(design[use], gap[use], rcond=None)[0]
+        miss = np.abs(design @ coef - gap)
+        use = miss <= np.quantile(miss, keep)
     tf = np.eye(4)
-    for _ in range(steps):
-        moved = hh.moved(tf, s)
-        distance, nearest = tree.query(moved, workers=-1)
-        use = distance <= np.quantile(distance, keep)
-        step = plane_step(moved[use], t[nearest[use]], n[nearest[use]])
-        tf = step @ tf
-        if np.linalg.norm(step[:3, 3]) < 1e-9 * max(np.ptp(t, axis=0).max(), 1e-12) and np.allclose(
-                step[:3, :3], np.eye(3), atol=1e-10):
-            break
-    distance, _ = tree.query(hh.moved(tf, s), workers=-1)
-    return tf, float(distance[distance <= np.quantile(distance, keep)].mean())
+    tf[2, 0], tf[2, 1], tf[2, 3] = coef[1], coef[2], coef[0]
+    return tf
 
 
 # --- Cutting and stitching ------------------------------------------------------------------------------------------
 
+def sheets(faces: np.ndarray, group: np.ndarray) -> np.ndarray:
+    """A piece id per face, faces joined only across an edge exactly two of them share. Pixal3D's clean-up joins the
+    outer skin to the inner one at a few edges four faces share (55 on the Zauberer's face); joined at those, the
+    face's rim ran round the outer skin and back round the inner one, a loop with no area."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    f = np.asarray(group)[np.asarray(faces, dtype=np.int64)]
+    m = len(f)
+    if not m:
+        return np.zeros(0, dtype=np.int64)
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    owner = np.tile(np.arange(m), 3)
+    _, edge_id, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    edge_id = edge_id.reshape(-1)
+    shared = counts[edge_id] == 2
+    order = np.argsort(edge_id[shared], kind="stable")
+    pairs = owner[shared][order].reshape(-1, 2)
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(m, m))
+    return connected_components(graph, directed=False)[1]
+
+
 def front_piece(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """Which faces belong to the piece seen most from the front: the most area facing the camera. After the window's
     cut, a face built alone falls apart into its front, the back of its head, an inner skin and specks of brim or
-    collar the cut caught; only the front belongs in the figure's face."""
+    collar the cut caught; only the front belongs in the figure's face. Pieces join across edges two faces share
+    (`sheets`), so an inner skin touching the outer one at an edge stays apart."""
     v = np.asarray(vertices, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
     if not len(v):
         return np.zeros(0, bool)
-    label = hh.components(faces, hh.weld_groups(vertices))
+    label = sheets(faces, hh.weld_groups(vertices))
     toward = ((v[:, 1, 0] - v[:, 0, 0]) * (v[:, 2, 1] - v[:, 0, 1])
               - (v[:, 2, 0] - v[:, 0, 0]) * (v[:, 1, 1] - v[:, 0, 1]))   # twice the area seen from the front
     score = np.bincount(label, weights=np.clip(toward, 0.0, None))
@@ -462,6 +517,26 @@ def front_rim(vertices: np.ndarray, rim: np.ndarray, centre: np.ndarray, share: 
     largest = max(area for _, area in holding)
     best = max((i for i, area in holding if area >= share * largest), key=lambda i: points[i][:, 2].mean())
     return first[loops[best]], points[best]
+
+
+def loop_depth(loop: np.ndarray, points_xy: np.ndarray, near: int = 4) -> np.ndarray:
+    """The depth of the closed outline LOOP (points in walking order) where it passes nearest each of POINTS_XY seen
+    from the front: along its segments, not at its nearest corner. A coarse figure's rim has a point every few
+    millimetres and a fine face's many more between them; easing to the nearest corner left steps."""
+    loop = np.asarray(loop, dtype=np.float64)
+    q = np.asarray(points_xy, dtype=np.float64)
+    if len(loop) < 2:
+        return np.full(len(q), loop[0, 2] if len(loop) else 0.0)
+    _, corner = cKDTree(loop[:, :2]).query(q, k=min(near, len(loop)), workers=-1)
+    corner = corner.reshape(len(q), -1)
+    starts = np.concatenate([corner, (corner - 1) % len(loop)], axis=1)          # the segments either side
+    a, b = loop[starts], loop[(starts + 1) % len(loop)]
+    ab = b[..., :2] - a[..., :2]
+    t = np.clip(((q[:, None, :] - a[..., :2]) * ab).sum(-1) / np.maximum((ab * ab).sum(-1), 1e-30), 0.0, 1.0)
+    foot = a[..., :2] + t[..., None] * ab
+    best = np.argmin(((q[:, None, :] - foot) ** 2).sum(-1), axis=1)
+    pick = np.arange(len(q))
+    return a[pick, best, 2] + t[pick, best] * (b[pick, best, 2] - a[pick, best, 2])
 
 
 def ease_depth(points: np.ndarray, values: np.ndarray, rim_xy: np.ndarray, rim_dz: np.ndarray,
@@ -502,6 +577,74 @@ def spread(depth: np.ndarray, reach: int) -> np.ndarray:
     return out
 
 
+def relief(depth: np.ndarray, box, pixel: float, keep: np.ndarray) -> dict:
+    """A surface through every KEEP pixel of DEPTH (a front depth map of BOX): one point per pixel at its depth, two
+    triangles per square of four kept pixels, facing the camera.
+
+    A face built alone is a hollow shell on the Zauberer: an inner wall about 0.002 behind its skin, joined to it all
+    over the face, so a cut along the seam ran round the skin and back round the wall, a rim with no area. The nearest
+    surface seen from the front is the skin and nothing else, and a face is seen from the front; what it gives up is
+    the underside of the nose and of the strands, which a game camera above the figure never sees."""
+    ok = np.asarray(keep, dtype=bool) & np.isfinite(depth)
+    index = np.full(depth.shape, -1, dtype=np.int64)
+    index[ok] = np.arange(int(ok.sum()))
+    r, c = np.nonzero(ok)
+    positions = np.stack([box[0] + (c + 0.5) * pixel, box[3] - (r + 0.5) * pixel, depth[r, c]], axis=1)
+    tl, tr, bl, br = index[:-1, :-1], index[:-1, 1:], index[1:, :-1], index[1:, 1:]
+    full = (tl >= 0) & (tr >= 0) & (bl >= 0) & (br >= 0)
+    faces = np.concatenate([np.stack([bl[full], br[full], tr[full]], axis=1),
+                            np.stack([bl[full], tr[full], tl[full]], axis=1)])
+    return {"positions": positions, "faces": faces}
+
+
+def picture_uvs(points: np.ndarray, crop: tuple[int, int, int, int], crop_size: int, frame) -> np.ndarray:
+    """glTF texture coordinates (u right, v down) in the upscaled crop of the figure's model points (x, y): the inverse
+    of `crop_to_figure`, so the crop paints the face where the picture shows it."""
+    centre, per_px, box_centre = frame
+    p = np.asarray(points, dtype=np.float64)
+    k = (crop[2] - crop[0]) / crop_size
+    u = (box_centre[0] + (p[:, 0] - centre[0]) / per_px - crop[0]) / k
+    v = (box_centre[1] - (p[:, 1] - centre[1]) / per_px - crop[1]) / k
+    return np.stack([u / crop_size, v / crop_size], axis=1)
+
+
+def picture_material(png: bytes, name: str = "HeroFace", roughness: float = 0.8) -> tuple[dict, bytes, int]:
+    """A material painted by one picture (PNG bytes), as (document, binary, index) of a small GLB, the form a part's
+    "material" takes (`hero_hands.regraft_glb` copies it into the model)."""
+    from image_to_3dlab.glb_turn import parse_glb
+
+    writer = hh.GlbWriter()
+    writer.doc["images"] = [{"bufferView": writer.view(png), "mimeType": "image/png"}]
+    writer.doc["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
+    writer.doc["textures"] = [{"source": 0, "sampler": 0}]
+    writer.doc["materials"] = [{"name": name, "pbrMetallicRoughness": {
+        "baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": roughness}}]
+    doc, binary = parse_glb(writer.build())
+    return doc, binary, 0
+
+
+def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_size: int, frame,
+                material: tuple[dict, bytes, int] | None = None, step: float | None = None) -> dict:
+    """The placed new FACE (a build in the figure's frame) as a relief over the window and a little beyond it
+    (`relief`), every STEP (default the window's pixel), painted by the crop picture (`picture_uvs`)."""
+    box, pixel = window["box"], window["pixel"]
+    step = pixel if step is None else step
+    p = np.asarray(face["positions"], dtype=np.float64)
+    f = np.asarray(face["faces"], dtype=np.int64)
+    middle = p[f].mean(axis=1)
+    near = ((middle[:, 0] > box[0]) & (middle[:, 0] < box[1]) & (middle[:, 1] > box[2]) & (middle[:, 1] < box[3]))
+    depth, _ = depth_map(p, f[near], box, step)
+    rows, cols = depth.shape
+    grid = np.stack(np.meshgrid(box[0] + (np.arange(cols) + 0.5) * step, box[3] - (np.arange(rows) + 0.5) * step),
+                    axis=-1).reshape(-1, 2)
+    inside = window_values(window, np.c_[grid, np.zeros(len(grid))]).reshape(rows, cols) > -(NEAR_PIXELS + 1) * pixel
+    out = relief(depth, box, step, inside)
+    out["uvs"] = picture_uvs(out["positions"], crop, crop_size, frame)
+    if material is not None:
+        out["material"] = material
+    return out
+
+
 def place_face(face: dict, tf: np.ndarray) -> dict:
     """FACE (a part) moved by the 4x4 TF; its normals turned along."""
     out = {**face, "positions": hh.moved(tf, face["positions"])}
@@ -520,7 +663,7 @@ def cut_face(face: dict, window: dict) -> tuple[dict, np.ndarray]:
 
 
 def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None = None,
-               blend: float | None = None) -> tuple[list[dict], dict, dict]:
+               blend: float | None = None, ease: float | None = None) -> tuple[list[dict], dict, dict]:
     """PARTS (one model of the figure, part by part, in the figure's frame) with their face cut out along the
     window's seam and the placed new FACE set in and stitched to the rim. Returns (the model's parts cut, the new face
     part with its stitch, report).
@@ -528,7 +671,11 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     What goes of the figure: inside the window, whatever is not more than BEHIND (default BEHIND_SHARE of the head's
     width) behind the new face or the figure's own front, so a strand in front of an eye, the eye under it and an
     inner skin go, while a collar hidden behind the jaw stays. With skin weights (dense) the new face takes the
-    weights of the nearest old face point."""
+    weights of the nearest old face point.
+
+    The new face's rim is eased in depth onto the figure's, at most EASE (default EASE_SHARE of the head's width);
+    a larger gap is left to the stitch, as a short wall. Where the seam crosses the figure's own strand, eased in
+    full, the face rose to the strand in a ramp across the brow (0.015 on the Zauberer)."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
@@ -573,8 +720,9 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     if not len(face_ids):
         raise ValueError("the new face's cut left no closed rim round the face")
     body_ids, body_loop = body_rim
-    _, nearest = cKDTree(body_loop[:, :2]).query(face_loop[:, :2], workers=-1)
-    rim_dz = body_loop[nearest, 2] - face_loop[:, 2]
+    rim_gap = loop_depth(body_loop, face_loop[:, :2]) - face_loop[:, 2]
+    limit = EASE_SHARE * width if ease is None else ease
+    rim_dz = np.clip(rim_gap, -limit, limit)
     values = window_values(window, new["positions"])
     new = {**new, "positions": ease_depth(new["positions"], np.maximum(values, 0.0), face_loop[:, :2], rim_dz, blend)}
     if old_points:
@@ -584,7 +732,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     stitched, band, alike = hh.join_rims(body, body_ids, new, face_ids, FRONT)
     report.update({"body_part": body_index, "rim_points": [int(len(body_ids)), int(len(face_ids))],
                    "stitch_faces": band, "rims_turn_alike": alike,
-                   "ease_max": float(np.abs(rim_dz).max()), "ease_median": float(np.median(np.abs(rim_dz))),
+                   "rim_gap_max": float(np.abs(rim_gap).max()), "rim_gap_median": float(np.median(np.abs(rim_gap))),
+                   "eased_share": float(np.mean(np.abs(rim_gap) <= limit)),
                    "face_faces": int(len(new["faces"]))})
     return out_parts, stitched, report
 
