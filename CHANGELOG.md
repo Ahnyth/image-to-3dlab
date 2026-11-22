@@ -59,6 +59,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collar's dark inside). Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
   head's paint.
+- **Hero parts** (`scripts/hero_parts.py`): any small part of a figure built again on its own at full detail and set
+  in, as the Hero hands do for hands. A part a few dozen pixels big comes out of a full-body build coarse (a holstered
+  pistol as a flat slab with the pistol's outline, boots as smooth tubes with their straps only painted on); cut from
+  the figure's front view, upscaled, redrawn alone by the picture editor and built on its own, it keeps its shape.
+  `--box` takes a part on the body by its box in the front picture (a second `--box` with `--mirror` takes the pair);
+  it fills its box by height, is turned to lie along the body (a build from one drawing can lean: the Revolverheld's
+  pistol by 21 degrees) and settles with its back on the body behind the slab Pixal3D made of it, never on the slab.
+  Inside its outline the figure loses what lies in front of its back (the slab, a strap across it, a piece of the
+  slab that reached past it) and keeps what lies behind (the thigh); every face the outline crosses is split, so no
+  crack opens, and every outline the cut leaves is closed; the part moves rigidly with the bones the slab followed.
+  `--boots` finds the legs from the rig, draws each boot from its outer side, stands it on the figure's floor with
+  its sole laid flat and turned as the old foot was, as tall as the picture shows it (`--top`: where its shaft ends),
+  cuts the leg straight across just under its top and closes the cut inside it; the boot takes the old leg's weights
+  point by point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,
+  through the camera the figure was built with (found through its licence record) and past the coat in front of it,
+  and by its own build elsewhere, moved to the picture's tones; the finer models a game-ready step bakes from get the
+  same parts (`--also`). The check counts each part's pieces, the edges left open round it, and a boot's sole against
+  the picture's feet (the foot rule). `--hard` makes a hard part's nearly flat pieces flat and their edges sharp (a
+  pistol, a buckle; never a face or cloth): planes are found on the build's smoothed normals, a strip of a tube or the
+  facets of a round surface stay smooth, a plane's points go onto it and its edge splits the shading.
 - **Pixel Match through a crop**: a view can carry its own focal length and principal point, so an upscaled crop of a
   run's picture paints where the whole picture would, only sharper; `occluders` are surfaces that hide what lies
   behind them without being painted (the rest of a figure a part was built for).

@@ -53,6 +53,7 @@ game-ready LODs), start with [the prop sheet guide](../docs/prop-sheets.md).
 | `hero_blender.py` | Join a grafted head and body into one object, or render a check sheet, in a background Blender. |
 | `hero_hands.py` | Give a rigged figure hands with real fingers: each hand built on its own and grafted on at the wrist. |
 | `hero_face.py` | Give a figure a sharper face, or its whole head under a hat brim: built again on its own and set in above its collar. |
+| `hero_parts.py` | Set a small part of a figure in again, built on its own at full detail: a holstered pistol, a pouch, or both boots. |
 | `upscale_esrgan.py` | Upscale a picture 4x with Real-ESRGAN, then resize it to a square of SIZE pixels. |
 | `make_back_view.py` | Draw the back of a subject from its front picture, for a front + back 3D build. |
 | `trellis_space_generate.py` | Full image -> GLB generation through the CLEAN `trellis-space-mac` port on Apple Silicon. |
