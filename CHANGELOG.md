@@ -19,7 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through below its cuff, and the new hand is put on at the old hand's place, length and turn and stitched to the arm as
   one surface: no overlapping skins at the seam (the Hero face's fault in #229). The figure keeps its skeleton and every
   body weight; the new hand moves as the old one did. The finer models a game-ready step bakes paint and bumps from get
-  the same hands (`--also`).
+  the same hands (`--also`). Armoured hands too: a section is measured as the solid its outer wall encloses, so a
+  gauntlet built with an inner skin, a cuff's lip hanging round its wrist or a knuckle plate open toward the palm is
+  cut below its cuff, not across its knuckles, where the Waechter's first gauntlet lost its thumb and needed a 0.70x
+  squeeze to meet the arm. A build whose palm came out as a plate round an empty inside, or whose wrist is open plates
+  where the figure's cut falls, is turned away for the next seed; where a build's inner wall is fused to its outer
+  one, the stitch keeps to the outer wall. Each model's hands are as fine as the model round its wrists (`--hand-detail`; Pixal3D's own clean-up at that
+  size), so a game-ready step thins them with the rest of the figure: with a raw hand in its shape model, the
+  Waechter's game figure stopped at 37,887 triangles instead of 14,000 and came out 10 cm short.
 - **Hero face** (`scripts/hero_face.py`): a figure's face built again on its own and set in between its hat brim and
   its collar. A face is a few dozen pixels of a full-body picture, so a thin hair strand can come out fat and in front
   of an eye, and Pixel Match then paints the eye's glow onto it. The face is cropped from the picture, upscaled and
@@ -59,14 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collar's dark inside). Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
   head's paint.
-  the same hands (`--also`). Armoured hands too: a section is measured as the solid its outer wall encloses, so a
-  gauntlet built with an inner skin, a cuff's lip hanging round its wrist or a knuckle plate open toward the palm is
-  cut below its cuff, not across its knuckles, where the Waechter's first gauntlet lost its thumb and needed a 0.70x
-  squeeze to meet the arm. A build whose palm came out as a plate round an empty inside, or whose wrist is open plates
-  where the figure's cut falls, is turned away for the next seed; where a build's inner wall is fused to its outer
-  one, the stitch keeps to the outer wall. Each model's hands are as fine as the model round its wrists (`--hand-detail`; Pixal3D's own clean-up at that
-  size), so a game-ready step thins them with the rest of the figure: with a raw hand in its shape model, the
-  Waechter's game figure stopped at 37,887 triangles instead of 14,000 and came out 10 cm short.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
