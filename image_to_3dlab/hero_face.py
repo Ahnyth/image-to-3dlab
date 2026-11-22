@@ -12,8 +12,9 @@ above, a collar below) and the sides where the head turns away. That outline is 
 map as the area round the nose the surface reaches without a jump in depth (`face_window`); the seam runs a little
 inside it, through skin and hair, where the old and the new face nearly agree. Hat, collar and the rest of the head
 stay the figure's own. The figure is cut along that outline (`hero_hands.clip_values`). The new face is put where
-the picture has it through its build's own camera, taken as the build's skin seen from the front (`relief`) and
-painted by the crop itself; it reaches a little past the seam and is tucked just behind the figure's surface there
+the picture has it through its build's own camera, taken as the build's skin seen from the front (`relief`), its
+creases rounded a little (`round_relief`), and painted by the crop moved to the figure's own paint at the seam
+(`match_face_paint`); it reaches a little past the seam and is tucked just behind the figure's surface there
 (`tuck`), so the figure's cut edge lies over it. A rigged figure's new face takes the old face's skin weights.
 `scripts/hero_face.py` runs the steps.
 
@@ -56,6 +57,8 @@ ROUND_SHARE = 0.0125   # the new face's relief is rounded over this share of the
                        # two pixels, and the game figure's decimation kept the planes: a hard line down the nose, its
                        # far flank and the tip's underside dark facets (round 22, F7). At 3 pixels of 240 a head the
                        # sharpest one per cent of its creases turn 11 degrees a pixel, the old face's 26
+RING_PIXELS = 4        # the figure's paint is read in a band this many pixels wide just outside the seam ...
+PAINT_LIMIT = 60.0     # ... and the crop's moved toward it by at most this many levels (0..255) a channel
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
                        # Pixal3D builds a head and not a mask (the Zauberer's 174 px crop round an 85 px face)
 SOFT_EDGE_PX = 2       # the face crop's cut-out keeps its soft alpha only this close to its outline (`solid_cutout`)
@@ -624,6 +627,154 @@ def picture_uvs(points: np.ndarray, crop: tuple[int, int, int, int], crop_size: 
     u = (box_centre[0] + (p[:, 0] - centre[0]) / per_px - crop[0]) / k
     v = (box_centre[1] - (p[:, 1] - centre[1]) / per_px - crop[1]) / k
     return np.stack([u / crop_size, v / crop_size], axis=1)
+
+
+def part_paint(part: dict) -> np.ndarray | None:
+    """The base colour picture of PART's material as an RGB array (0..255), or None when it has none (or no UVs)."""
+    import io
+
+    from PIL import Image
+
+    if part.get("material") is None or part.get("uvs") is None:
+        return None
+    doc, binary, index = part["material"]
+    texture = doc["materials"][index].get("pbrMetallicRoughness", {}).get("baseColorTexture")
+    if texture is None:
+        return None
+    entry = doc["textures"][texture["index"]]
+    sources = ([entry["source"]] if "source" in entry else []) + [
+        extension["source"] for extension in entry.get("extensions", {}).values() if "source" in extension]
+    images = [doc["images"][s] for s in sources if "bufferView" in doc["images"][s]]   # a WebP one sits in an extension
+    if not images:
+        return None
+    image = images[0]
+    view = doc["bufferViews"][image["bufferView"]]
+    start = view.get("byteOffset", 0)
+    with Image.open(io.BytesIO(binary[start:start + view["byteLength"]])) as opened:
+        return np.asarray(opened.convert("RGB"), dtype=np.float64)
+
+
+def paint_at(paint: np.ndarray, uvs: np.ndarray) -> np.ndarray:
+    """PAINT (an RGB array) at glTF texture coordinates (u right, v down), the nearest texel."""
+    h, w = paint.shape[:2]
+    uv = np.asarray(uvs, dtype=np.float64)
+    x = np.clip(np.floor(uv[:, 0] * w).astype(np.int64), 0, w - 1)
+    y = np.clip(np.floor(uv[:, 1] * h).astype(np.int64), 0, h - 1)
+    return paint[y, x]
+
+
+def seam_paint(parts: list[dict], window: dict, crop_rgb: np.ndarray, crop: tuple[int, int, int, int], frame,
+               ring: int = RING_PIXELS) -> tuple[np.ndarray, np.ndarray]:
+    """(points, offsets): the figure's own surface in a band RING pixels wide just outside the seam, and there the
+    figure's paint less the crop's (RGB). The crop is the picture as it is, and a figure's paint is often lighter or
+    darker (the Zauberer's was 12 to 36 levels lighter all round the seam), so the new face's outline showed."""
+    pixel = window["pixel"]
+    points, offsets = [], []
+    for part in parts:
+        paint = part_paint(part)
+        if paint is None:
+            continue
+        p = np.asarray(part["positions"], dtype=np.float64)
+        values = window_values(window, p)
+        seen = sample(window["depth"], window["box"], pixel, p, outside=-np.inf, nearest=True)
+        band = (values <= 0) & (values > -ring * pixel) & (p[:, 2] > seen - ring * pixel)
+        if not band.any():
+            continue
+        own = paint_at(paint, np.asarray(part["uvs"])[band])
+        new = paint_at(crop_rgb, picture_uvs(p[band], crop, crop_rgb.shape[1], frame))
+        points.append(p[band, :2])
+        offsets.append(own - new)
+    if not points:
+        return np.zeros((0, 2)), np.zeros((0, 3))
+    return np.concatenate(points), np.concatenate(offsets)
+
+
+def offset_field(window: dict, points: np.ndarray, offsets: np.ndarray, limit: float = PAINT_LIMIT) -> np.ndarray:
+    """An RGB offset for every pixel of the window's picture: the seam's offsets (`seam_paint`, each clipped to
+    LIMIT) on the band just outside the seam, and inside it the smoothest field that meets them there (Laplace's
+    equation, as in seamless cloning), so a crop darker all round turns lighter all over and the face's own detail
+    stays. Pixels further out take the nearest value. Zero where no seam point lies near."""
+    field = window["field"]
+    rows, cols = field.shape
+    pixel = window["pixel"]
+    out = np.zeros((rows, cols, 3))
+    if not len(points):
+        return out
+    r, c = np.nonzero((field <= 0) & (field > -RING_PIXELS * pixel))
+    x = window["box"][0] + (c + 0.5) * pixel
+    y = window["box"][3] - (r + 0.5) * pixel
+    distance, nearest = cKDTree(np.asarray(points)[:, :2]).query(np.stack([x, y], axis=1), workers=-1)
+    near = distance <= RING_PIXELS * pixel
+    fixed = np.zeros((rows, cols), bool)
+    fixed[r[near], c[near]] = True
+    out[r[near], c[near]] = np.clip(np.asarray(offsets, dtype=np.float64)[nearest[near]], -limit, limit)
+    inside = field > 0
+    if fixed.any() and inside.any():
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.linalg import spsolve
+
+        index = np.full((rows, cols), -1, dtype=np.int64)
+        index[inside] = np.arange(int(inside.sum()))
+        ir, ic = np.nonzero(inside)
+        diagonal = np.zeros(len(ir))
+        rhs = np.zeros((len(ir), 3))
+        a, b = [], []
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = ir + dr, ic + dc
+            on = (nr >= 0) & (nr < rows) & (nc >= 0) & (nc < cols)
+            nr, nc = np.where(on, nr, 0), np.where(on, nc, 0)
+            free = on & inside[nr, nc]
+            held = on & fixed[nr, nc] & ~inside[nr, nc]
+            diagonal += free | held
+            a.append(np.flatnonzero(free))
+            b.append(index[nr[free], nc[free]])
+            rhs[held] += out[nr[held], nc[held]]
+        lone = diagonal == 0
+        diagonal[lone] = 1.0
+        a, b = np.concatenate(a), np.concatenate(b)
+        n = len(ir)
+        matrix = coo_matrix((np.r_[diagonal, -np.ones(len(a))], (np.r_[np.arange(n), a], np.r_[np.arange(n), b])),
+                            shape=(n, n)).tocsr()
+        solved = np.stack([spsolve(matrix, rhs[:, k]) for k in range(3)], axis=1)
+        out[ir, ic] = solved
+        fixed |= inside
+    if fixed.any():
+        _, (nr, nc) = ndimage.distance_transform_edt(~fixed, return_indices=True)
+        out = out[nr, nc]
+    return out
+
+
+def matched_picture(crop_rgb: np.ndarray, window: dict, offsets: np.ndarray, crop: tuple[int, int, int, int],
+                    frame) -> np.ndarray:
+    """CROP_RGB (the upscaled crop, as the face's paint) with OFFSETS (`offset_field`) added where each of its pixels
+    lands on the figure (`crop_to_figure`): the crop's paint meets the figure's at the seam."""
+    h, w = crop_rgb.shape[:2]
+    v, u = np.mgrid[0:h, 0:w]
+    xy = crop_to_figure(np.stack([u.ravel() + 0.5, v.ravel() + 0.5], axis=1), crop, w, frame)
+    points = np.c_[xy, np.zeros(len(xy))]
+    shift = np.stack([sample(offsets[..., k], window["box"], window["pixel"], points, outside=0.0)
+                      for k in range(3)], axis=1)
+    out = np.asarray(crop_rgb, dtype=np.float64).reshape(-1, 3) + shift
+    return np.clip(np.round(out), 0, 255).astype(np.uint8).reshape(h, w, 3)
+
+
+def match_face_paint(face: dict, parts: list[dict], window: dict, crop_rgb: np.ndarray,
+                     crop: tuple[int, int, int, int], frame) -> tuple[dict, list[float] | None]:
+    """(FACE painted by the crop moved to the figure's own paint at the seam, the median offset the seam asked for in
+    levels per channel): `seam_paint` on PARTS (the figure before the graft), `offset_field`, `matched_picture`. FACE
+    as it is and None when the figure carries no paint there."""
+    import io
+
+    from PIL import Image
+
+    points, offsets = seam_paint(parts, window, crop_rgb, crop, frame)
+    if not len(points):
+        return face, None
+    picture = matched_picture(crop_rgb, window, offset_field(window, points, offsets), crop, frame)
+    buffer = io.BytesIO()
+    Image.fromarray(picture, "RGB").save(buffer, format="PNG")
+    median = np.median(np.clip(offsets, -PAINT_LIMIT, PAINT_LIMIT), axis=0)
+    return {**face, "material": picture_material(buffer.getvalue())}, [float(v) for v in median]
 
 
 def picture_material(png: bytes, name: str = "HeroFace", roughness: float = 0.8) -> tuple[dict, bytes, int]:

@@ -18,14 +18,15 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
   3. build    Pixal3D on the crop (--seed).
   4. place    the build's face goes through the build's own camera into the crop and the picture, and the build is
               fitted to where that puts it, then moved in depth onto the figure's face. The new face is the build's
-              nearest surface seen from the front (a build can be a hollow shell: its inner wall stays out), painted
-              by the crop itself, so the eyes are the picture's own pixels.
+              nearest surface seen from the front (a build can be a hollow shell: its inner wall stays out), its
+              creases rounded a little, painted by the crop itself, so the eyes are the picture's own pixels.
   5. graft    the figure cut along the seam: what lies inside it and not clearly behind the new face goes (a strand
               in front of an eye, the eye under it, an inner skin); hat, collar and the hidden rest stay. The new
               face reaches a few pixels past the seam and is tucked just behind the figure's surface there, so the
               figure's cut edge lies over it (Pixal3D's skin and inner wall are one surface, so neither cut gives a
-              clean rim to stitch). A rigged figure keeps its skeleton; the new face takes the old face's skin
-              weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
+              clean rim to stitch). The crop's paint is moved to the figure's own just outside the seam, smoothly
+              across the face (a figure's paint is often lighter or darker than the picture, and the face's outline
+              showed). A rigged figure keeps its skeleton; the new face takes the old face's skin weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
               frame) gets the same face.
 
 Writes <out>/<model>_face.glb (and <out>/<also>_face.glb), with face.json (every number), window.png and a licence
@@ -243,11 +244,14 @@ def main(argv: list[str] | None = None) -> int:
                "window": {"bounds": [round(b, 5) for b in bounds], "head_width": window["width"],
                           "brim_underside": window["floor"], "seed_pixel": list(window["seed"])},
                "placement": {"apart_from_old_face": cost, "scale": scale, "transform": tf.tolist()}, "models": {}}
+    crop_rgb = np.asarray(Image.open(up).convert("RGB"), dtype=np.float64)
     for model in [args.model, *args.also]:
         target_path = out / f"{model.stem}_face.glb"
         data = model.read_bytes()
         _, _, model_parts = hf.read_parts(data)
-        cut_parts, face_out, report = hf.graft_face(model_parts, window, face)
+        model_face, offset = hf.match_face_paint(face, model_parts, window, crop_rgb, box, full_frame)
+        cut_parts, face_out, report = hf.graft_face(model_parts, window, model_face)
+        report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]
         written = [hh.finish_part(p) for p in cut_parts] + [hh.finish_part(face_out, smooth=True)]
         target_path.write_bytes(hh.regraft_glb(data, written))
         run.say(f"graft: {target_path.name}: {report}")

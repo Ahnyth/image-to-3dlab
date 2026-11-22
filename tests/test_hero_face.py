@@ -340,6 +340,91 @@ def test_face_relief_rounds_a_build_made_of_crisp_planes():
     assert np.allclose(face["positions"][flank, 2], 0.05 - np.abs(face["positions"][flank, 0]), atol=1e-5)
 
 
+def painted_plane(colour, half=0.05, step=0.002):
+    """A flat figure facing the camera at z = 0, painted one COLOUR all over (its own material and UVs)."""
+    import io
+
+    from PIL import Image
+
+    xs = np.arange(-half, half + step / 2, step)
+    x, y = np.meshgrid(xs, xs)
+    v = np.stack([x.ravel(), y.ravel(), np.zeros(x.size)], axis=1)
+    n = len(xs)
+    i = np.arange(n * n).reshape(n, n)
+    a, b, c, d = i[:-1, :-1], i[:-1, 1:], i[1:, :-1], i[1:, 1:]
+    f = np.concatenate([np.stack([a, b, d], -1).reshape(-1, 3), np.stack([a, d, c], -1).reshape(-1, 3)])
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), colour).save(buffer, format="PNG")
+    return {"positions": v, "faces": f, "uvs": (v[:, :2] + half) / (2 * half),
+            "material": hf.picture_material(buffer.getvalue())}
+
+
+CROP = (400, 400, 600, 600)
+FRAME = (np.zeros(3), 0.001, np.array([500.0, 500.0]))        # 1 mm a picture pixel, the picture's centre at 500
+
+
+def test_seam_paint_reads_the_figures_paint_against_the_crops_just_outside_the_seam():
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    crop = np.full((1024, 1024, 3), 100.0)
+    points, offsets = hf.seam_paint([painted_plane((130, 120, 110))], window, crop, CROP, FRAME)
+    assert len(points) > 20
+    distance = np.hypot(points[:, 0], points[:, 1])
+    assert distance.min() >= 0.02 - window["pixel"] and distance.max() <= 0.02 + 5 * window["pixel"]
+    assert np.allclose(offsets, [30, 20, 10])
+    assert len(hf.seam_paint([{k: v for k, v in painted_plane((0, 0, 0)).items() if k != "material"}], window, crop,
+                             CROP, FRAME)[0]) == 0                         # an unpainted figure: nothing to match
+
+
+def test_offset_field_meets_the_seam_all_round_and_runs_smoothly_inside():
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    turn = np.linspace(0, 2 * np.pi, 400, endpoint=False)
+    ring = 0.0203 * np.stack([np.cos(turn), np.sin(turn)], axis=1)
+    even = hf.offset_field(window, ring, np.tile([30.0, 20.0, -10.0], (len(ring), 1)))
+    inside = window["mask"]
+    assert np.allclose(even[inside], [30.0, 20.0, -10.0], atol=0.5)      # darker all round: lighter all over
+    left = np.where(ring[:, :1] < 0, 40.0, 0.0) * np.ones((1, 3))
+    split = hf.offset_field(window, ring, left)[..., 0]
+    middle = window["seed"]
+    assert split[middle] == pytest.approx(20.0, abs=2.0)                  # halfway between the two sides
+    core = window["field"] > 8 * window["pixel"]                          # away from where the two sides meet
+    assert np.abs(np.diff(split, axis=1)[core[:, 1:] & core[:, :-1]]).max() < 2.0       # no step inside
+    assert np.allclose(hf.offset_field(window, ring, np.full((len(ring), 3), 500.0))[inside], hf.PAINT_LIMIT)
+
+
+def test_matched_picture_lifts_the_crop_to_the_figures_paint_and_keeps_its_detail():
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    crop = np.full((1024, 1024, 3), 100.0)
+    crop[500:524, 500:524] = 20.0                                         # an eye's dark outline in the middle
+    figure = painted_plane((130, 120, 110))
+    points, offsets = hf.seam_paint([figure], window, crop, CROP, FRAME)
+    out = hf.matched_picture(crop, window, hf.offset_field(window, points, offsets), CROP, FRAME).astype(float)
+    assert np.allclose(out[440, 440], [130, 120, 110], atol=1.0)          # inside the face, away from the dot
+    assert np.allclose(out[512, 512] - out[440, 440], [-80, -80, -80], atol=1.0)   # the dot as dark as before
+
+
+def test_match_face_paint_repaints_the_face_to_meet_the_figure_and_leaves_an_unpainted_one():
+    import io
+
+    from PIL import Image
+
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    crop = np.full((1024, 1024, 3), 100.0)
+    face = {"positions": np.zeros((3, 3)), "faces": np.array([[0, 1, 2]]), "material": "crop as it is"}
+    matched, offset = hf.match_face_paint(face, [painted_plane((130, 120, 110))], window, crop, CROP, FRAME)
+    assert offset == pytest.approx([30.0, 20.0, 10.0])
+    doc, binary, _ = matched["material"]
+    view = doc["bufferViews"][doc["images"][0]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    picture = np.asarray(Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB"))
+    assert np.allclose(picture[512, 512], [130, 120, 110], atol=1)       # the face's middle, now the figure's tone
+    bare = {k: v for k, v in painted_plane((0, 0, 0)).items() if k != "material"}
+    assert hf.match_face_paint(face, [bare], window, crop, CROP, FRAME) == (face, None)
+    webp = painted_plane((130, 120, 110))                     # a texture whose picture sits in an extension (WebP)
+    doc = webp["material"][0]
+    doc["textures"][0] = {"sampler": 0, "extensions": {"EXT_texture_webp": {"source": doc["textures"][0]["source"]}}}
+    assert hf.match_face_paint(face, [webp], window, crop, CROP, FRAME)[1] == pytest.approx([30.0, 20.0, 10.0])
+
+
 def test_relief_puts_two_triangles_on_every_square_of_kept_pixels():
     depth = np.zeros((4, 5))
     keep = np.ones((4, 5), bool)
