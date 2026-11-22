@@ -314,6 +314,52 @@ def test_graft_head_sets_a_new_head_in_closed_all_round():
     assert np.allclose(head["dense"], [1.0, 0.0])               # the old head's skin weights
 
 
+def test_build_radius_drops_a_thin_plate_the_rays_only_graze():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    zone = hd.head_zone(v, f, window)
+    heights = hd.row_heights(zone["frame"])
+    row = int(np.argmin(np.abs(heights)))
+    # the build: a head, and a piece of its brim lower than the hat's, so thin that one row of rays crosses it
+    plate_v, plate_f = plate(0.02, 0.05, heights[row] - 0.3 * zone["pixel"], thickness=0.6 * zone["pixel"])
+    built = hd.build_radius(zone, *joined(sphere(0.033, centre=(0.0, 0.005, 0.006)), (plate_v, plate_f)))
+    r = built["radius"]
+    assert np.abs(r[row] - 0.5 * (r[row - 1] + r[row + 1])).max() < 0.005   # no plate standing out of the head
+    assert not built["known"][row].any()        # nor a row the head's highest would be carried up from into the hat
+
+
+def test_build_radius_leaves_out_a_tilted_plate_further_out_than_the_old_head_reached():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    zone = hd.head_zone(v, f, window)
+    # a piece of the build's brim hanging lower on one side, tilted, out past the region's reach
+    plate_v, plate_f = plate(0.02, 0.09, 0.0, tilt=(0.3, 0.0), thickness=0.6 * zone["pixel"])
+    built = hd.build_radius(zone, *joined(sphere(0.033, centre=(0.0, 0.005, 0.006)), (plate_v, plate_f)))
+    middle = np.abs(hd.row_heights(zone["frame"])) < 0.02
+    reach = zone["cover"].max() + hd.COVER_MARGIN_SHARE * zone["width"]
+    assert built["radius"][middle].max() <= reach                # the head, not the plate's streak out round it
+
+
+def test_tube_radius_keeps_the_new_head_under_the_brim_about_as_wide_as_the_old():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    zone = hd.head_zone(v, f, window)
+    frame = zone["frame"]
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.full((frame["rows"], frame["cols"]), 0.03)
+    wide = (heights > zone["band"].max()) & (np.arange(frame["cols"]) < frame["cols"] // 8)[None, :]
+    radius[wide] = 0.07                                         # a piece of the build's brim hanging low at one side
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    least = zone["cover"] + 1.5 * hd.COVER_MARGIN_SHARE * zone["width"]
+    top = np.argmin(np.abs(heights[:, 0] - (zone["plane"]["a"] - zone["cut"])))   # at the cut, under the brim
+    assert (out[top] <= least + hd.COVER_CAP_SHARE * zone["width"] + 1e-9).all()  # no wider than the old head there
+    low = heights[:, 0] < zone["band"].min() - 4 * zone["pixel"]
+    assert np.allclose(out[low & (heights[:, 0] > zone["bottom"] + 0.02)], 0.03)   # lower down the build's own
+
+
 def test_graft_head_leaves_no_bit_of_the_old_head_that_dipped_just_under_the_stitch():
     (v, f), _ = figure()
     is_head = v[:, 1] > -0.06

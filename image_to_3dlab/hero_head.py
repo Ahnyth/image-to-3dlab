@@ -50,7 +50,8 @@ TOP_SHARE = 0.04        # the new head reaches this share of the head's width ab
 CUT_GAP_PIXELS = 2      # the old head is cut this many pixels under the brim's plane (below its lowest residual)
 COVER_BAND_SHARE = 0.2  # under the brim, in a band this share of the head's width deep under the cut, the old head is
                         # measured all round ...
-COVER_MARGIN_SHARE = 0.015   # ... and the new head is at least this much wider there, so the cut lies inside it
+COVER_MARGIN_SHARE = 0.015   # ... and the new head is at least this much wider there, so the cut lies inside it ...
+COVER_CAP_SHARE = 0.02  # ... and at most this much more again (a piece of the build's brim hanging lower stood out)
 COVER_SPREAD = 3        # ... and a column takes the widest of its neighbours this many columns either side ...
 COVER_SMOOTH = 40       # ... and the new head is as wide as the widest of it this many columns either side, softened
 SIDE_LIMIT = 0.7        # a surface whose normal points this much up or down is a plate (a brim), not a head's side
@@ -78,6 +79,8 @@ NECK_STEP_SHARE = 0.08  # the new head's neck runs up from the stitch until it s
                         # width (a chin, a jaw) ...
 NECK_BAND_SHARE = 0.1   # ... at most this share of it over the stitch; the figure's own paint covers it
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
+SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
+SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
 ROUND_SHARE = hf.ROUND_SHARE      # creases rounded over this share of the head's width, as the face's ...
 ROUND_JUMP_SHARE = 0.1  # ... but not across a step of this share of it (an ear's rim, the nose's and chin's underside)
 
@@ -557,8 +560,13 @@ def build_radius(zone: dict, vertices: np.ndarray, faces: np.ndarray) -> dict:
     collar (zone "limit"). The build's own brim is left out by its own brim plane (`brim_plane`; a face crop cuts the
     brim, and the Zauberer's build carries a piece of it lower than his hat's on one side), its own collar the way the
     figure's is (`collar_limit`). Pixels it leaves empty (under the build's brim, where its crop ended) take the nearest
-    known one. Returns {"radius", "known", "plane", "skin" (which of its faces make that outermost surface: its paint
-    is read there, not on the inner wall of its hollow shell just behind)}."""
+    known one. A plate the rays only graze (fewer than SPIKE_ROWS rows standing out more than SPIKE_SHARE of the head's
+    width: a piece of that brim under its plane, a strand's flat side) is left out, and so is any surface facing up or
+    down (past SIDE_LIMIT) further out than the old head reached under the brim (zone "cover"): on the Zauberer that
+    piece of brim reached out to the region's edge at the back, and carried up into the hat it stood out of the new
+    head as a comb of thin plates (2026-11-22). Returns
+    {"radius", "known", "plane", "skin" (which of its faces make that outermost surface: its paint is read there, not on
+    the inner wall of its hollow shell just behind)}."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     middle = centre(zone["axis"], zone["plane"]["a"])
     plane = (brim_plane(vertices, faces, middle, zone["nose"][1], width, pixel)
@@ -571,11 +579,17 @@ def build_radius(zone: dict, vertices: np.ndarray, faces: np.ndarray) -> dict:
     own, _, _ = collar_limit(vertices, faces, hits, frame, zone["bottom"], width, zone["reach"])
     pixel_id, radius = hits["pixel"], hits["radius"]
     valid = radius < np.minimum(own, zone["limit"]).reshape(-1)[pixel_id]
+    if zone.get("cover") is not None:       # a plate further out than the old head ever reached is the build's brim
+        reach = zone["cover"][pixel_id % frame["cols"]] + COVER_MARGIN_SHARE * width
+        valid &= (np.abs(hits["up"]) < SIDE_LIMIT) | (radius < reach)
     outer = np.full(frame["rows"] * frame["cols"], -np.inf)
     np.maximum.at(outer, pixel_id[valid], radius[valid])
     skin = np.zeros(len(np.asarray(faces)), bool)          # the faces the outermost surface is made of
     skin[hits["face"][valid & (radius >= outer[pixel_id])]] = True
     outer = outer.reshape(frame["rows"], frame["cols"])
+    opened = ndimage.grey_opening(outer, size=(SPIKE_ROWS, 1), mode="nearest")   # an empty pixel counts as low
+    with np.errstate(invalid="ignore"):
+        outer = np.where(outer - opened > SPIKE_SHARE * width, -np.inf, outer)
     known = np.isfinite(outer)
     return {"radius": fill_nearest(np.where(known, outer, 0.0), known), "known": known, "plane": plane,
             "skin": skin}
@@ -595,9 +609,11 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     and above that (under the build's own brim, which a face crop cuts lower than the hat's) its highest row carried on
     up; creases rounded over ROUND_SHARE of the head's width (`wrap_round`); and in the band under the brim at least as
     wide as the old head there (zone "cover": the widest of it round each column, softened, and reached in full at the
-    cut), so the old head's cut and the caps closing it lie inside the new one and no gap shows between hat and hair.
-    The figure's own surface there is its old hair: taken as it is, its spikes stood out of the new head as fins (the
-    Zauberer, 2026-11-22). Under the chin and the jaw the neck slopes down to the stitch (`neck_fill`)."""
+    cut), so the old head's cut and the caps closing it lie inside the new one and no gap shows between hat and hair,
+    and not wider than that by more than COVER_CAP_SHARE of the head's width (a drooping piece of the build's brim stood
+    out there as a comb of plates). The figure's own surface there is its old hair: taken as it is, its spikes stood out
+    of the new head as fins (the Zauberer, 2026-11-22). Under the chin and the jaw the neck slopes down to the stitch
+    (`neck_fill`)."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     radius = np.array(built["radius"], dtype=np.float64)
     known = built["known"]
@@ -614,7 +630,9 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     ramp = np.clip((heights - band) / np.maximum(level - band, pixel), 0, 1)
     ramp = ramp * ramp * (3 - 2 * ramp)
     least = zone["cover"][None, :] + 1.5 * COVER_MARGIN_SHARE * width
-    return neck_fill(zone, np.maximum(radius, radius + ramp * np.maximum(least - radius, 0)))
+    radius = np.maximum(radius, radius + ramp * np.maximum(least - radius, 0))
+    radius = np.minimum(radius, radius + ramp * np.minimum(least + COVER_CAP_SHARE * width - radius, 0))
+    return neck_fill(zone, radius)
 
 
 def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:

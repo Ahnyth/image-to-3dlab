@@ -40,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the brim's tilted underside is read from below, the collar told from the neck by where the air between them opens to
   the outside (a collar's own wall is hollow too), and the neck followed down to where it fuses with the collar. The
   old head goes, hat and collar stay whole; the new head is the build's outermost surface (its own brim and collar
-  left out), as wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
+  left out, and any plate of it the rays only graze or lying further out than the old head reached: a piece of its
+  brim stood out as a comb of thin plates under the hat), as
+  wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
   stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
   round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels) and
   by the build's own paint elsewhere, moved to the figure's tone; its neck, from the stitch up to the chin's
