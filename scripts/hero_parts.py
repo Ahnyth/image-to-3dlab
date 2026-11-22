@@ -69,6 +69,8 @@ DRAW_SIZE = 1024
 CROP_PAD = 1.25               # a part's crop is this many times its own size
 PAINT_SIZE = 2048             # a part's paint is laid out at most this many texels square
 SOLE_LIMIT_PX = 3.0           # a boot's sole this many of the picture's pixels below its feet is a made-up sole
+FAULT_SHARE = 0.005           # a build may touch itself on at most this share of its edges (the pistol: 0.08 per cent;
+                              # the Zauberer's first boot: 1.4, and game_ready kept 81,000 of 14,000 triangles)
 LICENCES = [{"component": "Real-ESRGAN x4plus", "license": "BSD-3-Clause", "purpose": "part crop upscale"}]
 
 PART_PROMPT = (
@@ -239,10 +241,13 @@ def draw_parts(run: Run, name: str, up: Path, folder: Path, args, engine, prompt
 
 
 def build_part(run: Run, drawings: list[Path], folder: Path, seeds) -> Path | None:
-    """The first Pixal3D build of a kept drawing that is one piece once its crumbs are gone."""
+    """The first Pixal3D build of a kept drawing that is one piece once its crumbs are gone and whose surface touches
+    itself in few places (`hero_parts.edge_faults`, at most FAULT_SHARE of its edges); else the one-piece build that
+    touches itself least, with a note."""
     from image_to_3dlab import hero_hands as hh
     from image_to_3dlab import hero_parts as hp
 
+    best = None
     for drawing in drawings:
         for seed in seeds:
             raw = folder / f"{drawing.stem}_b{seed}.glb"
@@ -252,10 +257,18 @@ def build_part(run: Run, drawings: list[Path], folder: Path, seeds) -> Path | No
                     run.flag(f"Pixal3D failed on {drawing.name} seed {seed} (see run.log)")
                     continue
             part, crumbs = hp.drop_crumbs(hh.read_part(raw.read_bytes())[2])
-            count = hp.pieces(part)
-            run.say(f"build: {raw.name} {count} piece(s), {crumbs} crumb(s)" + (" - kept" if count == 1 else ""))
-            if count == 1:
+            count, faults = hp.pieces(part), hp.edge_faults(part)
+            ok = count == 1 and faults["share"] <= FAULT_SHARE
+            run.say(f"build: {raw.name} {count} piece(s), {crumbs} crumb(s), {faults['shared_by_more']} edges where "
+                    f"it touches itself ({faults['share']:.2%})" + (" - kept" if ok else ""))
+            if ok:
                 return raw
+            if count == 1 and (best is None or faults["share"] < best[1]):
+                best = (raw, faults["share"])
+    if best is not None:
+        run.flag(f"every build touches itself in many places; {best[0].name} least ({best[1]:.2%} of its edges): the "
+                 "game-ready step may not thin it")
+        return best[0]
     return None
 
 
@@ -682,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         before = hd.open_edges(figure, near)
         after = hd.open_edges(cut_main + [x["placed_clean"] for x in targets], near)
         entry = {**t["report"], **graft_reports[t["name"]], "pieces": hp.pieces(part),
+                 "edges_where_it_touches_itself": hp.edge_faults(part)["shared_by_more"],
                  "triangles": int(len(part["faces"])), "open_edges_near_before": before,
                  "open_edges_near_after": after, "built_from": str(built[t["source"]]["clean_path"]),
                  "mirrored": t["mirror"]}

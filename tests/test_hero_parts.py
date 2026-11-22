@@ -428,3 +428,14 @@ def test_crumbs_of_a_build_go_and_its_pieces_are_counted():
     assert dropped == 1 and hp.pieces(part) == 1
     part, dropped = hp.drop_crumbs(merged(main, box((3, 0, 0), (4, 1, 1), subdivide=3)))
     assert dropped == 0 and hp.pieces(part) == 2                   # a second piece of its own is no crumb
+
+
+def test_a_surface_that_touches_itself_is_counted():
+    # two boxes sharing an edge: four faces meet there, as where a build's thin wall pinched onto itself (the
+    # Zauberer's first boot build: 21,107 such edges, and the game-ready step could not thin it)
+    single = box((0, 0, 0), (1, 1, 1), subdivide=1)
+    faults = hp.edge_faults(single)
+    assert faults["open"] == 0 and faults["shared_by_more"] == 0 and faults["share"] == 0.0
+    touching = merged(single, box((1, 1, 0), (2, 2, 1), subdivide=1))
+    faults = hp.edge_faults(touching)
+    assert faults["shared_by_more"] > 0 and faults["share"] > 0.0

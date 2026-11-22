@@ -979,6 +979,22 @@ def pieces(part: dict) -> int:
     return int(hh.components(f, hh.weld_groups(np.asarray(part["positions"]))).max() + 1)
 
 
+def edge_faults(part: dict) -> dict:
+    """PART's edges (welded by place) that only one face uses ("open": holes) and that more than two use
+    ("shared_by_more": where its surface touches itself), and that second count's share of all its edges. A build whose
+    thin wall pinched onto itself in many places (the Zauberer's first boot build: 21,107 such edges, 1.4 per cent; the
+    pistol's 0.08) could not be thinned by the game-ready step, which kept 81,000 of its 14,000 triangles."""
+    group = hh.weld_groups(np.asarray(part["positions"]))
+    f = group[np.asarray(part["faces"], dtype=np.int64)]
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    if not len(edges):
+        return {"open": 0, "shared_by_more": 0, "share": 0.0}
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    more = int((counts > 2).sum())
+    return {"open": int((counts == 1).sum()), "shared_by_more": more, "share": round(more / len(counts), 5)}
+
+
 def drop_crumbs(part: dict, share: float = CRUMB_SHARE) -> tuple[dict, int]:
     """(PART without its crumbs, how many went): separate pieces with fewer than SHARE of its faces, the specks a build
     leaves floating round a part."""
