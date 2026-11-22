@@ -11,9 +11,11 @@ So only the face is swapped: what the front view shows of it, between the things
 above, a collar below) and the sides where the head turns away. That outline is found on the figure's front depth
 map as the area round the nose the surface reaches without a jump in depth (`face_window`); the seam runs a little
 inside it, through skin and hair, where the old and the new face nearly agree. Hat, collar and the rest of the head
-stay the figure's own. Both models are cut along that outline (`hero_hands.clip_values`); the new face is eased in
-depth to meet the figure's rim and stitched to it (`hero_hands.join_rims`), so there is no overlap and no gap; a
-rigged figure's new face takes the old face's skin weights. `scripts/hero_face.py` runs the steps.
+stay the figure's own. The figure is cut along that outline (`hero_hands.clip_values`). The new face is put where
+the picture has it through its build's own camera, taken as the build's skin seen from the front (`relief`) and
+painted by the crop itself; it reaches a little past the seam and is tucked just behind the figure's surface there
+(`tuck`), so the figure's cut edge lies over it. A rigged figure's new face takes the old face's skin weights.
+`scripts/hero_face.py` runs the steps.
 
 Models face +Z (glTF's front) with Y up, as Pixal3D builds them; "depth" is Z, larger is nearer the camera.
 """
@@ -44,7 +46,9 @@ BEHIND_SHARE = 0.15    # what of the figure lies less than this share of the hea
                        # old eye under a strand, an inner skin; a collar hidden behind the jaw lies deeper and stays
 NEAR_PIXELS = 3        # the new face's depth is carried this many pixels past its outline, for the faces the seam cuts
 BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this share of the head's width ...
-EASE_SHARE = 0.05      # ... by at most this share of it; the stitch closes the rest
+EASE_SHARE = 0.05      # ... toward the front by at most this share of it (`tuck`)
+SKIRT_PIXELS = 3       # the new face reaches this many pixels past the seam, under the figure's cut edge ...
+TUCK_SHARE = 0.01      # ... and lies this share of the head's width behind the figure's surface there
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
                        # Pixal3D builds a head and not a mask (the Zauberer's 174 px crop round an 85 px face)
 SOFT_EDGE_PX = 2       # the face crop's cut-out keeps its soft alpha only this close to its outline (`solid_cutout`)
@@ -458,7 +462,7 @@ def depth_fit(window: dict, part: dict, keep: float = ICP_KEEP, rounds: int = 3)
     return tf
 
 
-# --- Cutting and stitching ------------------------------------------------------------------------------------------
+# --- Cutting and tucking --------------------------------------------------------------------------------------------
 
 def sheets(faces: np.ndarray, group: np.ndarray) -> np.ndarray:
     """A piece id per face, faces joined only across an edge exactly two of them share. Pixal3D's clean-up joins the
@@ -497,59 +501,20 @@ def front_piece(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return label == int(np.argmax(score))
 
 
-def front_rim(vertices: np.ndarray, rim: np.ndarray, centre: np.ndarray, share: float = 0.8):
-    """(vertex ids in walking order, points) of the rim round the face: of the closed outlines a cut left that hold
-    CENTRE seen from the front and enclose at least SHARE of the largest such area, the nearest to the camera. An
-    inner skin a millimetre behind the face is cut along the same line and encloses the same area; it lies deeper."""
-    if not len(rim):
-        return np.zeros(0, dtype=np.int64), np.zeros((0, 3))
-    group = hh.weld_groups(np.asarray(vertices))
-    first = np.zeros(group.max() + 1, dtype=np.int64)
-    first[group[::-1]] = np.arange(len(group))[::-1]
-    edges = group[np.asarray(rim)]
-    directed = {(int(a), int(b)) for a, b in edges}
-    loops = [loop for loop in hh.chain_loops(edges)
-             if len(loop) >= 3 and (int(loop[-1]), int(loop[0])) in directed]          # closed ones only
-    points = [np.asarray(vertices)[first[loop]] for loop in loops]
-    holding = [(i, hh.loop_area(p, FRONT)) for i, p in enumerate(points) if hh.contains(p, FRONT, centre)]
-    if not holding:
-        return np.zeros(0, dtype=np.int64), np.zeros((0, 3))
-    largest = max(area for _, area in holding)
-    best = max((i for i, area in holding if area >= share * largest), key=lambda i: points[i][:, 2].mean())
-    return first[loops[best]], points[best]
-
-
-def loop_depth(loop: np.ndarray, points_xy: np.ndarray, near: int = 4) -> np.ndarray:
-    """The depth of the closed outline LOOP (points in walking order) where it passes nearest each of POINTS_XY seen
-    from the front: along its segments, not at its nearest corner. A coarse figure's rim has a point every few
-    millimetres and a fine face's many more between them; easing to the nearest corner left steps."""
-    loop = np.asarray(loop, dtype=np.float64)
-    q = np.asarray(points_xy, dtype=np.float64)
-    if len(loop) < 2:
-        return np.full(len(q), loop[0, 2] if len(loop) else 0.0)
-    _, corner = cKDTree(loop[:, :2]).query(q, k=min(near, len(loop)), workers=-1)
-    corner = corner.reshape(len(q), -1)
-    starts = np.concatenate([corner, (corner - 1) % len(loop)], axis=1)          # the segments either side
-    a, b = loop[starts], loop[(starts + 1) % len(loop)]
-    ab = b[..., :2] - a[..., :2]
-    t = np.clip(((q[:, None, :] - a[..., :2]) * ab).sum(-1) / np.maximum((ab * ab).sum(-1), 1e-30), 0.0, 1.0)
-    foot = a[..., :2] + t[..., None] * ab
-    best = np.argmin(((q[:, None, :] - foot) ** 2).sum(-1), axis=1)
-    pick = np.arange(len(q))
-    return a[pick, best, 2] + t[pick, best] * (b[pick, best, 2] - a[pick, best, 2])
-
-
-def ease_depth(points: np.ndarray, values: np.ndarray, rim_xy: np.ndarray, rim_dz: np.ndarray,
-               blend: float) -> np.ndarray:
-    """POINTS moved in depth by the change RIM_DZ of the rim point nearest each one (seen from the front), in full at
-    the seam (VALUES, the distance inside the window, 0) and fading out smoothly BLEND inside. The new face then
-    meets the figure's rim where they differ: hair under a brim, a cheek the line-up left a little proud."""
+def tuck(points: np.ndarray, values: np.ndarray, target: np.ndarray, blend: float, cap: float,
+         gap: float) -> np.ndarray:
+    """POINTS of the new face moved in depth toward TARGET less GAP (the figure's own surface where each point is,
+    from its front depth map): in full where VALUES (the distance inside the seam) is at most 0, the skirt under the
+    figure's cut edge, fading out smoothly over BLEND inside. Toward the back without limit: a new face standing proud
+    would show its edge. Toward the front at most CAP: at the Zauberer's brow the figure's own strand stood 0.012 in
+    front at the seam, and raising the face to it made a ramp across the brow; its cut end hides the edge instead.
+    Where TARGET is NaN (no figure there) a point stays."""
     p = np.array(points, dtype=np.float64)
-    if not len(rim_xy) or not len(p):
-        return p
-    _, nearest = cKDTree(np.asarray(rim_xy, dtype=np.float64)).query(p[:, :2], workers=-1)
     w = np.clip(1.0 - np.asarray(values, dtype=np.float64) / max(blend, 1e-12), 0.0, 1.0)
-    p[:, 2] += np.asarray(rim_dz, dtype=np.float64)[nearest] * (w * w * (3.0 - 2.0 * w))
+    w = w * w * (3.0 - 2.0 * w)
+    change = np.asarray(target, dtype=np.float64) - gap - p[:, 2]
+    change = np.where(np.isfinite(change), np.minimum(change, cap), 0.0)
+    p[:, 2] += w * change
     return p
 
 
@@ -665,34 +630,34 @@ def cut_face(face: dict, window: dict) -> tuple[dict, np.ndarray]:
 def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None = None,
                blend: float | None = None, ease: float | None = None) -> tuple[list[dict], dict, dict]:
     """PARTS (one model of the figure, part by part, in the figure's frame) with their face cut out along the
-    window's seam and the placed new FACE set in and stitched to the rim. Returns (the model's parts cut, the new face
-    part with its stitch, report).
+    window's seam and the placed new FACE set in. Returns (the model's parts cut, the new face part, report).
 
     What goes of the figure: inside the window, whatever is not more than BEHIND (default BEHIND_SHARE of the head's
     width) behind the new face or the figure's own front, so a strand in front of an eye, the eye under it and an
-    inner skin go, while a collar hidden behind the jaw stays. With skin weights (dense) the new face takes the
-    weights of the nearest old face point.
-
-    The new face's rim is eased in depth onto the figure's, at most EASE (default EASE_SHARE of the head's width);
-    a larger gap is left to the stitch, as a short wall. Where the seam crosses the figure's own strand, eased in
-    full, the face rose to the strand in a ramp across the brow (0.015 on the Zauberer)."""
+    inner skin go, while a collar hidden behind the jaw stays. The new face reaches SKIRT_PIXELS past the seam and is
+    tucked just behind the figure's surface there (`tuck`, at most EASE toward the front, default EASE_SHARE of the
+    head's width), so the figure's cut edge lies over it. Not stitched: Pixal3D builds skin and inner wall as one
+    surface joined all over (the Zauberer's figure and face both), so neither side's cut gives one clean rim, and a
+    stitch between two such rims tore across the face. With skin weights (dense) the new face takes the weights of
+    the nearest old face point."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
+    cap = EASE_SHARE * width if ease is None else ease
     box, pixel = window["box"], window["pixel"]
-    new, new_rim = cut_face(face, window)
+    skirt = SKIRT_PIXELS * pixel
+    new, _ = hh.cut_part_values(face, -(window_values(window, face["positions"]) + skirt))
     if not len(new["faces"]):
         raise ValueError("the new face does not reach into the window: check its placement")
-    new_depth, _ = depth_map(new["positions"], new["faces"], box, pixel)
-    new_depth = spread(new_depth, NEAR_PIXELS)
-    centre = np.array([box[0] + (window["seed"][1] + 0.5) * pixel, box[3] - (window["seed"][0] + 0.5) * pixel, 0.0])
+    new, _ = hh.keep_faces(new, front_piece(new["positions"], new["faces"]))
+    new_depth = spread(depth_map(new["positions"], new["faces"], box, pixel)[0], NEAR_PIXELS)
     out_parts, old_points, old_dense, report = [], [], [], {"parts": []}
-    body_index, body_rim, body = None, None, None
+    body_index, target, most = None, None, 0
     for index, part in enumerate(parts):
         p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
         values = window_values(window, p)
         middle = p[f].mean(axis=1)
-        reach = (values[f] > -NEAR_PIXELS * pixel).any(axis=1)
+        reach = (values[f] > -skirt - NEAR_PIXELS * pixel).any(axis=1)
         if not reach.any():
             out_parts.append(part)
             report["parts"].append({"cut": False})
@@ -706,36 +671,30 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             old_points.append(p[used])
             old_dense.append(np.asarray(part["dense"])[used])
         in_front = middle[gone, 2] - sample(new_depth, box, pixel, middle[gone], outside=-np.inf, nearest=True)
-        cut, rim = hh.cut_part_values(part, values, cuttable)
-        ids, loop = front_rim(cut["positions"], rim, centre)
-        report["parts"].append({"cut": True, "faces_removed": int(gone.sum()), "rim_points": int(len(ids)),
-                                "rim_pieces": len(hh.rim_pieces(cut["positions"], rim)),
+        cut, _ = hh.cut_part_values(part, values, cuttable)
+        report["parts"].append({"cut": True, "faces_removed": int(gone.sum()),
                                 "old_in_front_max": float(np.max(in_front[np.isfinite(in_front)], initial=0.0))})
-        if len(ids) and (body_rim is None or len(ids) > len(body_rim[0])):
-            body_index, body_rim, body = len(out_parts), (ids, loop), cut
+        if gone.sum() > most:
+            body_index, most = len(out_parts), int(gone.sum())
+            target = spread(own, NEAR_PIXELS)
         out_parts.append(cut)
-    if body is None:
-        raise ValueError("no part of the model has a closed rim round the face: check the window")
-    face_ids, face_loop = front_rim(new["positions"], new_rim, centre)
-    if not len(face_ids):
-        raise ValueError("the new face's cut left no closed rim round the face")
-    body_ids, body_loop = body_rim
-    rim_gap = loop_depth(body_loop, face_loop[:, :2]) - face_loop[:, 2]
-    limit = EASE_SHARE * width if ease is None else ease
-    rim_dz = np.clip(rim_gap, -limit, limit)
+    if target is None:
+        raise ValueError("nothing of the model lies in the window: check the window")
     values = window_values(window, new["positions"])
-    new = {**new, "positions": ease_depth(new["positions"], np.maximum(values, 0.0), face_loop[:, :2], rim_dz, blend)}
+    at = sample(np.where(np.isfinite(target), target, np.nan), box, pixel, new["positions"], outside=np.nan)
+    seam = np.abs(values) <= pixel
+    gaps = (at - TUCK_SHARE * width - new["positions"][:, 2])[seam]
+    gaps = gaps[np.isfinite(gaps)]
+    new = {**new, "positions": tuck(new["positions"], values, at, blend, cap, TUCK_SHARE * width)}
     if old_points:
         new["dense"] = hh.borrowed_weights(new["positions"], np.concatenate(old_points), np.concatenate(old_dense))
-        if body.get("dense") is None:
+        if parts[body_index].get("dense") is None:
             new.pop("dense")
-    stitched, band, alike = hh.join_rims(body, body_ids, new, face_ids, FRONT)
-    report.update({"body_part": body_index, "rim_points": [int(len(body_ids)), int(len(face_ids))],
-                   "stitch_faces": band, "rims_turn_alike": alike,
-                   "rim_gap_max": float(np.abs(rim_gap).max()), "rim_gap_median": float(np.median(np.abs(rim_gap))),
-                   "eased_share": float(np.mean(np.abs(rim_gap) <= limit)),
-                   "face_faces": int(len(new["faces"]))})
-    return out_parts, stitched, report
+    report.update({"body_part": body_index, "face_faces": int(len(new["faces"])),
+                   "seam_gap_median": float(np.median(np.abs(gaps))) if len(gaps) else 0.0,
+                   "seam_gap_max": float(np.abs(gaps).max()) if len(gaps) else 0.0,
+                   "seam_raised_short": float(np.mean(gaps > cap)) if len(gaps) else 0.0})
+    return out_parts, new, report
 
 
 # --- GLB in ---------------------------------------------------------------------------------------------------------

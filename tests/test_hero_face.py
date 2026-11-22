@@ -1,10 +1,9 @@
-"""Hero face: finding the face between a brim and a collar, lining a face built alone up on it, cutting both along one
-seam and stitching them.
+"""Hero face: finding the face between a brim and a collar, putting a face built alone where the picture has it, taking
+its skin seen from the front, and setting it in under the figure's cut edge.
 
 The shapes are small synthetic stand-ins for what the Zauberer showed (2026-11-22): a head under a wide brim, a
-strand standing in front of the face, a collar hidden behind the jaw, a new face a little larger than the old one.
-The graft's claim is tested as a mesh property, as for the hands: after the stitch every edge is shared by exactly two
-faces, so there is no gap and no overlap.
+strand standing in front of the face, a collar hidden behind the jaw, a new face a little larger than the old one,
+and a build that is a hollow shell with its inner wall joined to its skin.
 """
 from __future__ import annotations
 
@@ -58,17 +57,6 @@ def joined(*meshes):
         faces.append(np.asarray(f) + offset)
         offset += len(v)
     return np.concatenate(vertices), np.concatenate(faces)
-
-
-def closed_edges(vertices, faces):
-    """(edges used by other than two faces, directed edges used twice) of a mesh welded by position."""
-    group = hh.weld_groups(vertices)
-    f = group[np.asarray(faces)]
-    directed = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-    directed = directed[directed[:, 0] != directed[:, 1]]
-    _, counts = np.unique(np.sort(directed, 1), axis=0, return_counts=True)
-    _, same = np.unique(directed, axis=0, return_counts=True)
-    return int((counts != 2).sum()), int((same > 1).sum())
 
 
 def disk_window(radius, centre=(0.0, 0.0), width=0.2, pixel=0.002):
@@ -239,7 +227,7 @@ def test_depth_fit_moves_a_face_built_deep_and_turned_onto_the_figures_face():
     assert np.allclose(tf[:2], np.eye(4)[:2])                # X and Y stay where the picture put them
 
 
-# --- cutting and stitching ------------------------------------------------------------------------------------------
+# --- cutting and tucking --------------------------------------------------------------------------------------------
 
 def test_front_piece_keeps_the_front_not_the_back_of_the_head_or_specks():
     v, f = sphere(0.05)
@@ -264,18 +252,19 @@ def hollow_head(radius=0.05, wall=0.002):
     return v, f
 
 
-def test_face_relief_takes_the_skin_of_a_hollow_build_and_gives_one_clean_rim():
+def test_face_relief_takes_the_skin_of_a_hollow_build_and_nothing_behind_it():
     v, f = hollow_head()
     window = disk_window(0.035, width=0.1)
     frame = (np.zeros(3), 0.001, np.array([500.0, 500.0]))              # 1 mm a pixel, picture centre at 500
     face = hf.face_relief({"positions": v, "faces": f}, window, (400, 400, 600, 600), 1024, frame)
-    piece, rim = hf.cut_face(face, window)
-    ids, loop = hf.front_rim(piece["positions"], rim, np.zeros(3))
-    assert len(ids) > 50
-    assert hh.loop_area(loop, hf.FRONT) == pytest.approx(np.pi * 0.035 ** 2, rel=0.05)
+    piece, _ = hf.cut_face(face, window)
     assert np.abs(np.linalg.norm(piece["positions"], axis=1) - 0.05).max() < 1e-3     # all of it on the skin
     normals = hf.face_normals(piece["positions"], piece["faces"])
     assert (normals[:, 2] > 0).mean() > 0.99                                          # facing the camera
+    tri = piece["positions"][piece["faces"]]
+    seen = 0.5 * np.abs((tri[:, 1, 0] - tri[:, 0, 0]) * (tri[:, 2, 1] - tri[:, 0, 1])
+                        - (tri[:, 2, 0] - tri[:, 0, 0]) * (tri[:, 1, 1] - tri[:, 0, 1])).sum()
+    assert seen == pytest.approx(np.pi * 0.035 ** 2, rel=0.03)                     # one layer: no wall behind it
 
 
 def test_relief_puts_two_triangles_on_every_square_of_kept_pixels():
@@ -331,40 +320,23 @@ def test_front_piece_keeps_an_inner_skin_apart_that_touches_the_outer_at_an_edge
     inner_v[1:3] = outer[0][1:3]                  # ... and one edge beside it: four faces use that edge
     v, f = joined(outer, (inner_v, outer[1][:, ::-1]))
     window = disk_window(0.035)
-    cut, rim = hh.cut_part_values({"positions": v, "faces": f}, -hf.window_values(window, v))
+    cut, _ = hh.cut_part_values({"positions": v, "faces": f}, -hf.window_values(window, v))
     keep = hf.front_piece(cut["positions"], cut["faces"])
     middle = cut["positions"][cut["faces"][keep]].mean(axis=1)
     assert (np.linalg.norm(middle, axis=1) > 0.0495).all()      # the outer skin only
-    piece, piece_rim = hh.keep_faces(cut, keep, rim)
-    _, loop = hf.front_rim(piece["positions"], piece_rim, np.zeros(3))
-    assert hh.loop_area(loop, hf.FRONT) == pytest.approx(np.pi * 0.035 ** 2, rel=0.05)
 
 
-def test_front_rim_takes_the_outer_skin_not_the_inner_one_behind_it():
-    outer, inner = sphere(0.05), sphere(0.049)
-    inner = (inner[0], inner[1][:, ::-1])          # a second skin a millimetre inside, facing in
-    v, f = joined(outer, inner)
-    window = disk_window(0.03)
-    cut, rim = hh.cut_part_values({"positions": v, "faces": f}, hf.window_values(window, v),
-                                  v[f].mean(axis=1)[:, 2] > 0)
-    ids, loop = hf.front_rim(cut["positions"], rim, np.zeros(3))
-    assert len(ids) > 20
-    assert np.linalg.norm(loop, axis=1).mean() == pytest.approx(0.05, abs=2e-4)
-
-
-def test_ease_depth_moves_the_rim_in_full_and_the_middle_not_at_all():
-    points = np.array([[0.0, 0.0, 1.0], [0.9, 0.0, 1.0], [0.5, 0.0, 1.0]])
-    values = np.array([1.0, 0.0, 0.05])
-    rim_xy = np.array([[1.0, 0.0], [-1.0, 0.0]])
-    out = hf.ease_depth(points, values, rim_xy, np.array([-0.2, 0.4]), blend=0.1)
-    assert out[0, 2] == pytest.approx(1.0) and out[1, 2] == pytest.approx(0.8)
-    assert 0.8 < out[2, 2] < 1.0
-
-
-def test_loop_depth_reads_the_outline_between_its_corners():
-    square = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0]])
-    depth = hf.loop_depth(square, np.array([[0.25, -0.1], [1.2, 0.5], [0.5, 0.9], [0.0, 0.5]]))
-    assert np.allclose(depth, [0.25, 1.0, 0.5, 0.0])
+def test_tuck_moves_the_skirt_in_full_the_middle_not_at_all_and_forward_at_most_the_cap():
+    points = np.zeros((5, 3))
+    points[:, 2] = 1.0
+    values = np.array([1.0, -0.01, 0.05, -0.01, -0.01])
+    target = np.array([0.5, 0.5, 0.5, 2.0, np.nan])
+    out = hf.tuck(points, values, target, blend=0.1, cap=0.2, gap=0.01)
+    assert out[0, 2] == 1.0                              # the middle of the face is its own
+    assert out[1, 2] == pytest.approx(0.49)              # the skirt just behind the figure's surface
+    assert 0.49 < out[2, 2] < 1.0                        # in between, eased
+    assert out[3, 2] == pytest.approx(1.2)               # forward, at most the cap: a strand's cut end hides the rest
+    assert out[4, 2] == 1.0                              # no figure there: stays
 
 
 def test_reference_depth_takes_the_deeper_of_the_two_where_both_are():
@@ -386,27 +358,25 @@ def figure_head():
             "uvs": np.zeros((len(v), 2))}, len(head[0]), len(strand[0])
 
 
-def test_graft_face_leaves_one_closed_surface_without_the_strand_and_with_the_hidden_collar():
+def test_graft_face_takes_the_strand_keeps_the_hidden_collar_and_tucks_the_face_under_the_cut_edge():
     body, _, _ = figure_head()
-    new_v, new_f = sphere(0.052, rings=40, segments=56)          # the new face stands 2 mm proud of the old,
-    new_v = new_v @ turn_z(1.7).T                                # turned so no rim point of it lands on one of the old
+    new_v, new_f = sphere(0.052, rings=40, segments=56)          # the new face stands 2 mm proud of the old
     face = {"positions": new_v, "faces": new_f, "uvs": np.full((len(new_v), 2), 0.5)}
     window = disk_window(0.035, width=0.1)
-    parts, stitched, report = hf.graft_face([body], window, face)
-    v = np.concatenate([parts[0]["positions"], stitched["positions"]])
-    f = np.concatenate([parts[0]["faces"], stitched["faces"] + len(parts[0]["positions"])])
-    assert closed_edges(v, f) == (0, 0)
-    assert not report["rims_turn_alike"]
+    parts, new, report = hf.graft_face([body], window, face)
     kept = parts[0]["positions"]
     assert not ((kept[:, 2] > 0.052) & (kept[:, 0] < -0.011)).any()     # the strand went
     assert ((kept[:, 1] < -0.021) & (kept[:, 2] > 0.019)).any()         # the collar behind the jaw stayed
-    assert report["rim_gap_max"] == pytest.approx(0.0385 - 0.0357, abs=1e-3)   # the two spheres' depths at the seam
     assert report["parts"][0]["old_in_front_max"] > 0.004               # the strand stood that far in front
-    # the new face meets the old rim: its rim was eased to the figure's depth
-    rim = stitched["positions"][-3 * (report["stitch_faces"] // 3):]
-    assert np.abs(np.linalg.norm(rim, axis=1) - 0.05).max() < 1e-3
-    # the face took the front's weights, and the band the body's or the face's
-    assert np.allclose(stitched["dense"], [0.0, 1.0])
+    values = hf.window_values(window, new["positions"])
+    radius = np.linalg.norm(new["positions"], axis=1)
+    skirt = values < -0.5 * window["pixel"]
+    assert skirt.any() and values.min() > -(hf.SKIRT_PIXELS + 1) * window["pixel"]   # a few pixels past the seam
+    assert ((radius[skirt] < 0.05) & (radius[skirt] > 0.047)).all()                 # just behind the old surface
+    middle = values > hf.BLEND_SHARE * window["width"]
+    assert np.allclose(radius[middle], 0.052, atol=2e-4)                            # the middle is the new face's own
+    assert report["seam_gap_max"] == pytest.approx(0.0385 - 0.0357 + hf.TUCK_SHARE * 0.1, abs=1e-3)
+    assert np.allclose(new["dense"], [0.0, 1.0])                                    # the old face's weights
 
 
 def test_graft_face_leaves_parts_away_from_the_face_alone():

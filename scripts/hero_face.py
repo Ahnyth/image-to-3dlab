@@ -22,10 +22,11 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
               by the crop itself, so the eyes are the picture's own pixels.
   5. graft    the figure cut along the seam: what lies inside it and not clearly behind the new face goes (a strand
               in front of an eye, the eye under it, an inner skin); hat, collar and the hidden rest stay. The new
-              face, cut along the same seam, is eased in depth to meet the figure's rim and stitched to it as one
-              surface. A rigged figure keeps its skeleton; the new face takes the old face's skin weights. Every
-              --also model (the finer ones a game-ready step bakes paint and bumps from, in the same frame) gets the
-              same face.
+              face reaches a few pixels past the seam and is tucked just behind the figure's surface there, so the
+              figure's cut edge lies over it (Pixal3D's skin and inner wall are one surface, so neither cut gives a
+              clean rim to stitch). A rigged figure keeps its skeleton; the new face takes the old face's skin
+              weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
+              frame) gets the same face.
 
 Writes <out>/<model>_face.glb (and <out>/<also>_face.glb), with face.json (every number), window.png and a licence
 record. Every step skips when its output exists, so a rerun picks up after a fix. Where the code is unsure the log
@@ -249,12 +250,10 @@ def main(argv: list[str] | None = None) -> int:
         target_path.write_bytes(hh.regraft_glb(data, written))
         run.say(f"graft: {target_path.name}: {report}")
         summary["models"][model.name] = {"result": str(target_path), **report}
-        if report["rims_turn_alike"]:
-            run.flag(f"{model.name}: at the seam one side faces inward: the stitch is turned wrongly")
-        if report["eased_share"] < 0.9:
-            run.flag(f"{model.name}: along {1 - report['eased_share']:.0%} of the seam the figure stands more than "
-                     f"{hf.EASE_SHARE * window['width']:.4f} from the new face (up to {report['rim_gap_max']:.4f}): a "
-                     "short wall closes it there; look at the seam")
+        if report["seam_raised_short"] > 0.1:
+            run.flag(f"{model.name}: along {report['seam_raised_short']:.0%} of the seam the figure stands more than "
+                     f"{hf.EASE_SHARE * window['width']:.4f} in front of the new face (up to "
+                     f"{report['seam_gap_max']:.4f}): its cut edge hangs over the face there; look at the seam")
         write_derived_sidecar(model, target_path, operation="hero_face",
                               source_record=record if model == args.model else None,
                               component_records=[r for r in (face_record, upscaled) if r])
