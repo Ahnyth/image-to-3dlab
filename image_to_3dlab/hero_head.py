@@ -126,6 +126,11 @@ SKIN_DETAIL_RANGE = (0.6, 1.2)  # against its mean this share of the head's widt
 SKIN_PLAIN = 0.3            # ... the mean taken over its plain skin, within this share of its usual lightness
 SKIN_SIDE = 0.25            # further round than this share of a half turn from the nose, off the face, the picture
                             # sees the head edge-on and paints no skin
+FLAP_TURN = (0.3, 0.75)     # on the head's sides (these shares of a half turn from the nose) a piece standing out of
+FLAP_WIDE_SHARE = 0.15      # it, no wider than this share of the head's width either side (an ear) ...
+FLAP_LEAST_SHARE = 0.04     # ... and more than this share of it out, stands at most FLAP_STAND_SHARE of it out ...
+FLAP_STAND_SHARE = 0.12     # ... its rim rounded over FLAP_ROUND_SHARE of it (`round_flaps`)
+FLAP_ROUND_SHARE = 0.04
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -858,7 +863,7 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     first = np.where(known.any(axis=0), known.argmax(axis=0), frame["rows"] - 1)[None, :]
     highest = np.take_along_axis(radius, np.clip(first, 0, frame["rows"] - 1), axis=0)
     radius = np.where(rows < first, highest, radius)
-    radius = wrap_round(radius, ROUND_SHARE * width / pixel, ROUND_JUMP_SHARE * width)
+    radius = round_flaps(zone, wrap_round(radius, ROUND_SHARE * width / pixel, ROUND_JUMP_SHARE * width))
     heights = row_heights(frame)[:, None]
     turn = column_angles(frame)
     edge = unpolar(frame, turn, zone["cover"], np.full(len(turn), zone["plane"]["a"]))
@@ -924,6 +929,42 @@ def press_strands(zone: dict, radius: np.ndarray, inner: np.ndarray, known: np.n
     padded = np.concatenate([out[:, cols - pad:], out, out[:, :pad]], axis=1)
     along = ndimage.grey_opening(padded, size=(1, SPIKE_ROWS), mode="nearest")[:, pad:pad + cols]
     return np.where(out - along > STRAND_GAP_SHARE * width, along, out)
+
+
+def round_flaps(zone: dict, radius: np.ndarray) -> np.ndarray:
+    """RADIUS with the pieces standing out of the head's sides rounded: on its sides (FLAP_TURN from the nose), between
+    the chin and the brim's cut, whatever stands more than FLAP_LEAST_SHARE of the head's width out of the head round it
+    (its grey opening, FLAP_WIDE_SHARE either side: an ear) stands at most FLAP_STAND_SHARE of it out, its rim rounded
+    over FLAP_ROUND_SHARE of it, eased into the head round it. Unrolled round the head an ear is a fin whose rim the
+    rounding keeps as a wall (a step past ROUND_JUMP_SHARE), and the Zauberer's stood as a flat oval plate with a hard
+    rim (2026-11-23); the face's own steps (the nose, the chin) lie outside FLAP_TURN."""
+    frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
+    if zone.get("nose") is None:
+        return radius
+    nose, _ = polar(frame, np.asarray(zone["nose"], dtype=np.float64)[None])
+    turn = np.abs(np.angle(np.exp(1j * (column_angles(frame) - nose[0]))))
+    heights = row_heights(frame)
+    side = (turn > FLAP_TURN[0] * np.pi) & (turn < FLAP_TURN[1] * np.pi)
+    rows = (heights > zone.get("chin", zone["bottom"])) & (heights < zone["plane"]["a"] - zone["cut"])
+    cols = radius.shape[1]
+    size = 2 * max(1, int(round(FLAP_WIDE_SHARE * width / pixel))) + 1
+    pad = min(cols, size)
+    padded = np.concatenate([radius[:, cols - pad:], radius, radius[:, :pad]], axis=1)
+    base = ndimage.grey_opening(padded, size=(size, size), mode="nearest")[:, pad:pad + cols]
+    stand = radius - base
+    flap = (stand > FLAP_LEAST_SHARE * width) & rows[:, None] & side[None, :]
+    if not flap.any():
+        return radius
+    sigma = FLAP_ROUND_SHARE * width / pixel
+    limited = base + np.minimum(stand, FLAP_STAND_SHARE * width)
+    pad = min(cols, int(np.ceil(4 * sigma)) + 1)
+    padded = np.concatenate([limited[:, cols - pad:], limited, limited[:, :pad]], axis=1)
+    soft = ndimage.gaussian_filter(padded, sigma, mode="nearest")[:, pad:pad + cols]
+    near = wrap_grow(flap, int(np.ceil(2 * sigma))).astype(np.float64)
+    padded = np.concatenate([near[:, cols - pad:], near, near[:, :pad]], axis=1)
+    weight = np.clip(2 * ndimage.gaussian_filter(padded, sigma, mode="nearest")[:, pad:pad + cols], 0, 1)
+    # rounded from the ear's side only: its corners cut, the head round it as it was
+    return weight * np.minimum(soft, limited) + (1 - weight) * radius
 
 
 def neck_cover(zone: dict, radius: np.ndarray) -> np.ndarray:
