@@ -496,3 +496,64 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
     under_chin = (points[..., 1] < -0.034) & (points[..., 1] > -0.0365)
     assert out[under_chin][:, 0].min() > 160                    # ... eased to the chin's own skin under its edge
     assert np.allclose(out[lips], [210, 110, 120], atol=2)      # the chin above it keeps the picture
+
+
+# --- the hairline under the brim (2026-11-23) -------------------------------------------------------------------------
+
+def kinds_zone():
+    frame = frame_round()
+    zone = {"frame": frame, "bottom": -0.04, "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)},
+            "width": 0.08, "chin": -0.03, "nose": np.array([0.0, -0.005, 0.04])}
+    points, normals = hd.tube_points(zone, np.full((frame["rows"], frame["cols"]), 0.04), (40, 64))
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)            # the picture sees the front
+    turn = np.abs(np.arctan2(points[..., 0], points[..., 2]))
+    return zone, points, weight, turn
+
+
+SKIN, HAIR = [200.0, 150.0, 140.0], [210.0, 215.0, 230.0]
+
+
+def test_same_kind_keeps_the_figures_hair_where_the_build_has_no_paint():
+    zone, points, weight, _ = kinds_zone()
+    face = (weight > 0.5) & (points[..., 1] < 0.0)                     # the face under the brow
+    own = np.where(face[..., None], SKIN, HAIR)                         # the figure's own paint: hair over the face
+    build = np.where(face[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])   # the build's: its skin, blue hair
+    top = points[..., 1] > 0.015
+    build[top] = np.nan                       # over its own brim (and where the new head stands out of it) no paint
+    out = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[top], HAIR)        # the figure's hair under the brim stays hair, not its skin colour
+
+
+def test_same_kind_keeps_the_figures_hair_at_the_back_where_the_build_made_up_skin():
+    zone, points, weight, turn = kinds_zone()
+    face = (weight > 0.5) & (points[..., 1] < 0.0)
+    own = np.where(face[..., None], SKIN, HAIR)
+    build = np.where(face[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])
+    bald = (turn > 0.75 * np.pi) & (points[..., 1] < -0.01)            # built from the front, its back came out bald
+    build[bald] = [230.0, 170.0, 150.0]
+    out = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[bald], HAIR)       # the figure's own hair there stays, no tan patch at the back
+    cheek = face & (turn > 0.2 * np.pi) & (turn < 0.3 * np.pi) & (np.abs(points[..., 1] + 0.015) < 0.006)
+    own2 = np.where(cheek[..., None], HAIR, own)                        # a strand of the old head over the new cheek
+    assert np.allclose(hd.same_kind(own2, build, weight, points, zone)[cheek], SKIN, atol=40)   # still turned skin
+
+
+def test_figure_paint_carries_the_figures_hair_up_into_the_hat_over_the_old_head():
+    frame = frame_round()
+    radius = np.full((frame["rows"], frame["cols"]), 0.04)
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06), "reach": 0.06, "chin": -0.03,
+            "nose": np.array([0.0, -0.005, 0.04])}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    v, f = tube(0.039, -0.045, 0.012)          # the figure's old head: it ends under the new head's top (in the hat)
+    skin = v[:, 2] > 0
+    part = {"positions": v, "faces": f, "uvs": np.where(skin[:, None], [0.25, 0.5], [0.75, 0.5]),
+            "material": painted([200, 100, 100], right=[215, 215, 225])}
+    colour = np.full((40, 64, 3), [200.0, 100.0, 100.0])
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    picture = np.where((weight > 0.5)[..., None], colour, [50.0, 50.0, 200.0])    # elsewhere the build's own: blue
+    out, _ = hd.figure_paint(picture, points, part, zone, crop=(colour, weight))
+    high = (points[..., 1] > 0.02) & (normals[..., 2] < -0.5)
+    assert high.any() and np.allclose(out[high], [215, 215, 225], atol=3)   # the figure's hair, not the build's blue
+

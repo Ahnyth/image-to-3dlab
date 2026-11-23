@@ -71,6 +71,7 @@ CROP_FACING = (0.35, 0.8)   # the picture paints the new head fully where it fac
 OCCLUDE_SHARE = 0.02    # the picture shows a point unless the kept figure stands this far in front of it (a brim)
 BUILD_PAINT_SHARE = 0.05    # the build's paint is read within this share of the head's width of its surface
 PICTURE_WIDTH = 2048    # the new head's picture is this many texels round
+SKIN_TURN = 0.55        # the build's skin is believed this share of a half turn either side of the nose (face, ears)
 OFFSET_SHARE = 0.05     # the build's paint is moved to the picture's by offsets spread this share of the way round
 OFFSET_NEAR_SHARE = 0.02    # the figure's tone is read where its old head lay this close to the new one
 BLEND_ROWS = 6          # the head's picture reaches this many rows below the stitch
@@ -1036,16 +1037,46 @@ def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np
         return own
     # the build told by its own skin and hair (it paints them its own way: the Zauberer's hair blue and white)
     built = is_hair(np.nan_to_num(build), np.median(build[face & seen], axis=0), np.median(build[back & seen], axis=0))
-    vote = ndimage.uniform_filter(np.where(seen, built, 0.5), size=(7, 15), mode=("nearest", "wrap"))
-    new_hair = vote > 0.5
+    votes = ndimage.uniform_filter(np.where(seen, built, False).astype(np.float64), size=(7, 15),
+                                   mode=("nearest", "wrap"))
+    cast = ndimage.uniform_filter(seen.astype(np.float64), size=(7, 15), mode=("nearest", "wrap"))
+    told = cast > 1e-9
+    # where the build has no paint near (over its own brim, and where the new head stands out of it) the kind is the
+    # nearest one it tells: taken as skin there, the figure's own hair right under the Zauberer's brim was painted in
+    # his skin colour, a quarter of that band (2026-11-23)
+    new_hair = fill_nearest(np.where(told, votes > 0.5 * cast, False).astype(np.float64), told) > 0.5
     light = np.nan_to_num(build).sum(axis=-1)
     out = np.array(own)
-    for kind, colour in ((new_hair, hair), (~new_hair, skin)):
+    # the build's skin is taken only round the face and the ears: built from a front picture it makes up the back of
+    # the head, and the Zauberer's came out bald behind his ears, which painted the figure's own hair there in his skin
+    # colour, a tan patch at the back under the brim (2026-11-23)
+    front = turn < SKIN_TURN * np.pi
+    for kind, colour in ((new_hair, hair), (~new_hair & front, skin)):
         wrong = have & kind & (is_hair(np.nan_to_num(own)) != (colour is hair))
         if wrong.any():
             usual = np.median(light[kind & seen]) if (kind & seen).any() else 1.0
             shade = np.clip(light[wrong] / max(usual, 1e-6), 0.85, 1.15)
             out[wrong] = np.clip(colour[None, :] * shade[:, None], 0, 255)
+    return out
+
+
+def carry_up(values: np.ndarray) -> np.ndarray:
+    """VALUES (a picture of the new head: rows from the top down, columns round, channels; NaN where unknown) with the
+    unknown texels over each column's highest known one filled from the known ones under it, mirrored (the band under
+    them read upward): the figure's own paint carried up where the new head reaches into the hat over the old head's
+    cut. The figure has no surface there, and the build's paint that stood in painted a tan band with streaks right
+    under the Zauberer's brim (2026-11-23)."""
+    out = np.array(values, dtype=np.float64)
+    known = np.isfinite(out[..., 0])
+    rows, cols = known.shape
+    has = known.any(axis=0)
+    top = np.where(has, known.argmax(axis=0), rows)[None, :]
+    r = np.arange(rows)[:, None]
+    every = np.arange(cols)[None, :]
+    source = np.clip(2 * top - 1 - r, 0, rows - 1)
+    source = np.where(known[source, every], source, np.minimum(top, rows - 1))
+    above = (r < top) & has[None, :]
+    out[above] = out[source, every][above]
     return out
 
 
@@ -1126,7 +1157,7 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         offset = paint_offset(part, zone, np.where(weight > 0.5, colour, np.nan))
         shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
         raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
-        own = same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone)
+        own = carry_up(same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone))
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan

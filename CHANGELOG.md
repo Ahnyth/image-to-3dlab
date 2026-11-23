@@ -59,7 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved to the figure's tone read there, and elsewhere by the figure's own paint seen from the head's axis (its old
   head's outermost surface in that direction), kept where it is the kind, hair or skin, the build has there, else
   the figure's own hair or skin colour (the build's own paint painted the Zauberer's hair in blue, white and tan
-  patches, a helmet in close views); its neck, from the stitch up to the chin's
+  patches, a helmet in close views). Where the build has no paint to tell hair from skin (over its own brim, and where
+  the new head stands out of it) the nearest kind it tells holds, its skin counts only round the face and the ears (a
+  build from a front picture makes up the back of the head; the Zauberer's came out bald), and up in the hat, over the
+  old head's cut, the figure's own hair is carried up: right under the Zauberer's brim a quarter of the hair had been
+  painted in his skin colour, and the band over the cut in tan streaks. Its neck, from the stitch up to the chin's
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the
   chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw, rounded from side to side (a
   narrow neck under a wide jaw left a pocket that the game figure's few triangles spanned in the air, baked from the
