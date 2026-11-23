@@ -56,8 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the brim's smooth underside, not along the seam where the hair meets it, as jagged as the build's mesh
   there, and out past any old hair standing out under the brim beyond it; the opening is closed by a part of its own
   in the hat's colour (the figure's own paint on the brim next to it), spanning it like a film (a fan from its middle
-  folded where the outline turns back, dark spikes under the brim), so from below the brim's underside runs on to
-  the hair. The new head is the build's outermost surface (its own
+  folded where the outline turns back, dark spikes under the brim) that never rises over its own outline nearby, and
+  the cap of the hollow's inner wall over it is kept above it (on a saddle-shaped opening the two films crossed, and
+  the inner one, facing up, showed through from below as a see-through hole in the gallery), so from below the brim's
+  underside runs on to the hair. The new head is the build's outermost surface (its own
   brim and collar left out, and any plate of it the rays only graze or lying further out than the old head reached: a
   piece of its brim stood out as a comb of thin plates under the hat) and keeps its own width up into the hat: under
   the brim it eases to that width (a high percentile of the build's softened surface there, rounded round the head),
