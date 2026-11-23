@@ -717,9 +717,16 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
         # neck shows through the collar's open front. The Zauberer's did, down to 0.24 of his head's width, painted
         # with his old chin's shadow: a dark zigzag and a pale chevron under the new chin (2026-11-23)
         low = bottom - NECK_LOW_SHARE * width
+        shallow = side_limit
         frame = cylinder(axis, low - BLEND_ROWS * pixel, y_hi, pixel, FRAME_SHARE * width)
         hits = cylinder_hits(vertices, faces, frame)
         side_limit, collar, outer = collar_limit(vertices, faces, hits, frame, bottom, width, reach)
+        # over the stitch the region stays as the frame down to the stitch measured it (its rows are the same): lower
+        # down the Zauberer's air between collar and head opened to the outside, his collar's inside was measured 10
+        # to 15 mm further out round his back over the stitch, the cut took it away and the fans closing that showed
+        # as pink-white stripes beside his jaw (2026-11-23)
+        over = row_heights(frame)[:len(shallow)] > bottom
+        side_limit[:len(shallow)][over] = shallow[over]
     skin = np.full(frame["rows"] * frame["cols"], np.inf)      # the old figure's skin: the first surface facing out
     leaving = hits["facing"] > FACING_LIMIT
     np.minimum.at(skin, hits["pixel"][leaving], hits["radius"][leaving])
