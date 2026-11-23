@@ -432,3 +432,31 @@ def poking_out(samples, normals, directions, cast, first_hit, near: float, eps: 
         out[face] = any(not cast(p + back[(face + k) % len(back)] * eps, back[(face + k) % len(back)], face)
                         for p in samples[face] for k in range(len(back)))
     return out
+
+
+def keep_seen_rims(pairs, middles, doomed, seen, rounds: int = 8) -> tuple[np.ndarray, int]:
+    """(`doomed` less the faces whose drop would open an edge a camera sees, how many of them were put back).
+
+    A drop deletes faces; every edge between a doomed face and a kept one becomes an open edge. Where the drop cuts
+    through a surface that runs on out of the figure, that edge is seen: two surfaces crossing each other (hair going
+    up into a hat's brim) each lost their part inside the other, and since a thinned mesh's triangles are wide, the two
+    jagged rims left slits that showed the hat's inside from below (ten such edges on the Zauberer's game figure,
+    2026-11-23). `pairs` ((E, 2)) are the two faces on each shared edge, `middles` ((E, 3)) the edges' middles, and
+    `seen(points, doomed)` answers whether a ray from each point reaches the outside with the doomed faces gone. A seen
+    rim's doomed face stays, and the rims that opens are asked again, at most `rounds` times."""
+    doomed = np.asarray(doomed, dtype=bool).copy()
+    pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    middles = np.asarray(middles, dtype=float).reshape(-1, 3)
+    back = 0
+    for _ in range(rounds):
+        rim = np.flatnonzero(doomed[pairs[:, 0]] != doomed[pairs[:, 1]])
+        if not len(rim):
+            break
+        hit = np.asarray(seen(middles[rim], doomed), dtype=bool)
+        if not hit.any():
+            break
+        faces = pairs[rim[hit]]
+        put = np.unique(np.where(doomed[faces[:, 0]], faces[:, 0], faces[:, 1]))
+        doomed[put] = False
+        back += len(put)
+    return doomed, back

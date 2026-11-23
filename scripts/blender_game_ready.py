@@ -33,6 +33,7 @@ from visibility_cull import (
     first_air_sealed,
     hidden_from_rays,
     hollows_only,
+    keep_seen_rims,
     poking_out,
     sealed_air,
     shading_roofs,
@@ -734,6 +735,9 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list, check: list | None = None, p
         _pose_off(arm, shown)
 
     doomed_mask = hidden | poke
+    rims_kept = 0
+    if doomed_mask.any():           # never open an edge a camera sees: a slit between a hat's brim and the hair
+        doomed_mask, rims_kept = _keep_seen_rims(ob, s, doomed_mask)
     checked = None
     if check and doomed_mask.any() and final(total - int(doomed_mask.sum())):
         # the pose check (#153 of the AssetFurnace Support notes): what a game would show of the dropped faces in
@@ -749,10 +753,48 @@ def drop_hidden_wall(ob, arm, s: dict, poses: list, check: list | None = None, p
     doomed = np.flatnonzero(doomed_mask)
     _delete_faces(ob, doomed)
     result = {"faces": total, "enclosed": enclosed, "vetoed": vetoed, "poking_out": int(poke.sum()),
-              "poking_kept_for_poses": poke_vetoed, "dropped": int(len(doomed)), "left": total - int(len(doomed))}
+              "poking_kept_for_poses": poke_vetoed, "kept_for_seen_rims": rims_kept, "dropped": int(len(doomed)),
+              "left": total - int(len(doomed))}
     if checked is not None:
         result["pose_check"] = checked
     return result
+
+
+def _keep_seen_rims(ob, s: dict, doomed: np.ndarray) -> tuple[np.ndarray, int]:
+    """`keep_seen_rims` on `ob` as it stands: the faces on each shared edge, and a ray test from an edge's middle in
+    `rim_rays` directions against the faces not doomed (rebuilt each round)."""
+    bm = _world_bmesh(ob.data, ob.matrix_world)
+    size = max(max(v.co[k] for v in bm.verts) - min(v.co[k] for v in bm.verts) for k in range(3))
+    eps = size * 1e-5
+    pairs, middles = [], []
+    for e in bm.edges:
+        faces = [f.index for f in e.link_faces]
+        middle = tuple((e.verts[0].co + e.verts[1].co) / 2)
+        for i in range(len(faces)):
+            for j in range(i + 1, len(faces)):
+                pairs.append((faces[i], faces[j]))
+                middles.append(middle)
+    points = [tuple(v.co) for v in bm.verts]
+    polygons = [[v.index for v in f.verts] for f in bm.faces]
+    bm.free()
+    directions = [Vector(d) for d in fibonacci_directions(s["rim_rays"])]
+
+    def seen(at, doomed_now):
+        tree = BVHTree.FromPolygons(points, [p for p, gone in zip(polygons, doomed_now) if not gone])
+        out = np.zeros(len(at), dtype=bool)
+        for k, p in enumerate(at):
+            origin = Vector(tuple(p))
+            for d in directions:
+                if tree.ray_cast(origin + d * eps, d)[0] is None:
+                    out[k] = True
+                    break
+        return out
+
+    if not pairs:
+        return doomed, 0
+    kept, back = keep_seen_rims(np.array(pairs), np.array(middles), doomed, seen)
+    log(f"seen rims: {back} faces kept so the drop opens no edge a camera sees")
+    return kept, back
 
 
 def _delete_faces(ob, faces) -> None:

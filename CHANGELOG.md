@@ -144,6 +144,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 
 ### Fixed
+- `game_ready.py --drop-hidden` never opens an edge a camera sees. Where two surfaces cross (hair going up
+  into a hat's brim), each lost its part inside the other, and the thinned mesh's wide triangles left two
+  jagged rims with slits between them that showed the hat's inside from below: ten such edges on a wizard's
+  game figure, holes in a viewer that hides back faces. Before the drop, every edge it would open is asked
+  with rays from its middle; where one reaches the outside, the face on it stays, and the edges that opens
+  are asked again. The report counts them (`kept_for_seen_rims`).
 - `game_ready.py --normal-from` shades a dense model that came without vertex normals smooth before
   baking from it: a glTF without normals is flat by the spec, so a refiner's million small triangles
   put their facets into the normal map as noise (skin read as dirty on a knight).

@@ -100,6 +100,7 @@ FIXED = {
     "hidden_corner_reach": 0.66,  # a face is asked at its centre and this far toward each corner
     "poke_rays": 128,         # --drop-hidden also drops inner wall poking past the outer surface: seen from behind ...
     "poke_near": 0.02,        # ... (rays of these), its front facing another face's front within this share of the size
+    "rim_rays": 64,           # ... and keeps any face whose drop would open an edge a ray of these from its middle sees out
     "roof_near": 0.05,        # the sky-light bake looks through a piece over the surface this close that faces it
     "drop_tries": 3,          # thin-and-drop tries per figure, each aiming the thinning by what the last drop left ...
     "drop_slack": 0.03,       # ... until the figure lands within this share of --decimate-to

@@ -20,6 +20,7 @@ from scripts.visibility_cull import (
     hollows_only,
     in_sealed_air,
     index_to_color,
+    keep_seen_rims,
     poking_out,
     sealed_air,
     shading_roofs,
@@ -505,3 +506,84 @@ def test_what_a_roof_is_not():
     assert not _roofs(slab).any()
     assert shading_roofs(np.zeros((0, 4, 3)), np.zeros((0, 3)), fibonacci_directions(8), None, None, 0.1,
                          eps=1e-6).shape == (0,)
+
+
+# --- a drop never opens an edge a camera sees (2026-11-23) ------------------------------------------------------------
+
+def _strip(count, z=0.0):
+    """COUNT unit quads in a row along x at height Z: (triangles (2 COUNT, 3, 3), the pairs of triangles sharing an
+    edge, those edges' middles). Quad k is triangles 2k and 2k + 1."""
+    tris, pairs, middles = [], [], []
+    for k in range(count):
+        a, b, c, d = (k, 0, z), (k + 1, 0, z), (k + 1, 1, z), (k, 1, z)
+        tris += [[a, b, c], [a, c, d]]
+        pairs.append((2 * k, 2 * k + 1))
+        middles.append(((k + k + 1) / 2, 0.5, z))
+        if k:
+            pairs.append((2 * k - 2, 2 * k + 1))          # the edge between quad k - 1 and quad k
+            middles.append((k, 0.5, z))
+    return np.asarray(tris, float), np.asarray(pairs), np.asarray(middles, float)
+
+
+def _escapes(tris, directions):
+    """`seen` for `keep_seen_rims`: from each point, does a ray along one of DIRECTIONS meet none of the kept TRIS?"""
+    tris = np.asarray(tris, float)
+    e1, e2 = tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+
+    def meets(o, d, keep):
+        pv = np.cross(d, e2[keep])
+        det = (e1[keep] * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        tv = o - tris[keep, 0]
+        u = (tv * pv).sum(1) * inv
+        qv = np.cross(tv, e1[keep])
+        v = (qv * d).sum(1) * inv
+        t = (qv * e2[keep]).sum(1) * inv
+        return bool((ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9)).any())
+
+    def seen(points, doomed):
+        keep = ~np.asarray(doomed, bool)
+        return np.array([any(not meets(p + d * 1e-6, d, keep) for d in directions) for p in np.asarray(points)])
+
+    return seen
+
+
+def test_a_drop_whose_rim_a_camera_sees_is_put_back():
+    """A strip lying in the open: dropping its middle would open two edges anyone sees, so the middle stays."""
+    tris, pairs, middles = _strip(3)
+    doomed = np.zeros(len(tris), bool)
+    doomed[2:4] = True
+    kept, back = keep_seen_rims(pairs, middles, doomed, _escapes(tris, fibonacci_directions(32)))
+    assert not kept.any() and back == 2
+
+
+def test_a_drop_whose_rim_lies_inside_the_figure_stays():
+    """The same strip inside a closed box: no ray from its rims gets out, so the middle still goes."""
+    tris, pairs, middles = _strip(3, z=0.5)
+    box = np.asarray(_box_tris((-1.0, -1.0, -1.0), (4.0, 2.0, 2.0)), float)
+    doomed = np.zeros(len(tris) + len(box), bool)
+    doomed[2:4] = True
+    kept, back = keep_seen_rims(pairs, middles, doomed, _escapes(np.concatenate([tris, box]),
+                                                                fibonacci_directions(32)))
+    assert kept[2:4].all() and back == 0
+
+
+def test_rims_opened_by_what_was_put_back_are_asked_again():
+    """Five quads in the open with the middle three doomed: each round puts back the triangles on the rims the last one
+    opened, until the strip is whole; a single round puts back only the two next to kept quads."""
+    tris, pairs, middles = _strip(5)
+    doomed = np.zeros(len(tris), bool)
+    doomed[2:8] = True
+    seen = _escapes(tris, fibonacci_directions(32))
+    kept, back = keep_seen_rims(pairs, middles, doomed, seen)
+    assert not kept.any() and back == 6
+    once, back = keep_seen_rims(pairs, middles, doomed, seen, rounds=1)
+    assert back == 2 and np.flatnonzero(once).tolist() == [2, 4, 5, 7]
+
+
+def test_keep_seen_rims_asks_nothing_when_nothing_is_doomed():
+    calls = []
+    tris, pairs, middles = _strip(2)
+    kept, back = keep_seen_rims(pairs, middles, np.zeros(len(tris), bool), lambda p, d: calls.append(1) or [])
+    assert not kept.any() and back == 0 and not calls
