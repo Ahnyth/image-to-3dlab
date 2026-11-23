@@ -687,6 +687,26 @@ def test_tube_radius_keeps_the_new_head_at_its_own_width_up_into_the_hat():
     assert np.abs(out[high] - 0.03).max() < 0.002              # its own width, not widened to the old hair's 0.04
 
 
+def test_opening_cap_spans_a_saddle_shaped_notched_outline_smoothly_without_folds():
+    turn = np.linspace(0, 2 * np.pi, 120, endpoint=False)
+    radius = 0.05 * (1 + 0.15 * np.cos(2 * turn))              # an oval opening, 2 cm higher at the sides (a saddle)
+    notch = np.arange(30, 34)                                  # and a notch whose inner end turns back, as seen from
+    radius[notch] = [0.04, 0.03, 0.03, 0.04]                   # the middle (a fan from there folds over it)
+    turn = turn.copy()
+    turn[31] = turn[29] - 0.01
+    loop = np.stack([radius * np.sin(turn), 0.03 - 0.01 * np.cos(2 * turn), radius * np.cos(turn)], axis=1)
+    part = {"positions": loop, "faces": np.zeros((0, 3), np.int64), "uvs": np.zeros((120, 2))}
+    cap = hd.opening_cap(part, [np.arange(120)], material="hat")
+    tri = cap["positions"][cap["faces"]]
+    area = 0.5 * ((tri[:, 1, 0] - tri[:, 0, 0]) * (tri[:, 2, 2] - tri[:, 0, 2])
+                  - (tri[:, 2, 0] - tri[:, 0, 0]) * (tri[:, 1, 2] - tri[:, 0, 2]))
+    folded = np.abs(area[np.sign(area) != np.sign(area.sum())]).sum() / np.abs(area).sum()
+    assert folded < 0.005                                       # seen from below, no triangle turned over
+    longest = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max()
+    assert longest < 0.04                                       # no sliver across the opening, 0.1 wide
+    assert hd.open_edges([cap]) == 120                          # closed but for its rim, where the cut meets it
+
+
 def test_graft_head_closes_the_hats_opening_in_the_hats_colour():
     v, f, head_vertices = hat_figure()
     zone = hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))

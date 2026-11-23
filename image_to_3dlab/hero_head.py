@@ -84,6 +84,8 @@ CROWN_SPREAD = 0.15     # brim sets nothing), a running median over this share o
 HAT_RING_SHARE = 0.15   # the hat's colour is read on its brim's underside within this share of the head's width of the
                         # opening ...
 HAT_PAINT_SHARE = 0.15  # ... and the figure's paint in it on the head is not taken within this share of it under the cut
+MEMBRANE_RINGS = 4      # an outline the cut leaves at the hat's opening is spanned by a film with this many rings inside
+MEMBRANE_LEAST = 8      # ... when it has at least this many points (a smaller one by a fan)
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
 MIN_COLUMNS = 16
 AXIS_CELLS = 6          # this many cells round the axis count as solid in a column's section ...
@@ -688,7 +690,7 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
         row, col = np.divmod(hits["pixel"], frame["cols"])
         height = row_heights(frame)[row]
         hair = ((height > level[col]) & (height < opening[col] + OPENING_GAP_PIXELS * pixel) & ~brim[hits["face"]]
-                & (np.abs(hits["up"]) < SIDE_LIMIT) & (hits["radius"] < side_limit[row, col]))
+                & (hits["up"] < SIDE_LIMIT) & (hits["radius"] < side_limit[row, col]))    # not a brim's top
         stands = np.zeros(frame["cols"])
         np.maximum.at(stands, col[hair], hits["radius"][hair])
         size = max(3, int(OPENING_SPREAD * frame["cols"]) | 1)
@@ -1046,19 +1048,76 @@ def cap_loops(part: dict, loops: list[np.ndarray]) -> tuple[dict, int]:
     return out, len(loops)
 
 
+def membrane(outline: np.ndarray, rings: int = MEMBRANE_RINGS) -> tuple[np.ndarray, np.ndarray]:
+    """(points, triangles) of a film spanning OUTLINE (a closed loop's points, in order), as soap spans a wire: the
+    outline laid round a circle by its length, RINGS rings of points inside it and its middle, joined as the circle's
+    Delaunay triangles, and every inner point moved to the mean of its neighbours (the outline held), so the film is
+    smooth and its triangles are small near the outline. The outline's points come first, in order. A fan from the
+    middle folds where the outline turns back; triangles from outline point to outline point alone ran across a
+    saddle-shaped opening as long slivers (the Zauberer's, 2 cm higher at his ears than at his back, 2026-11-23)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import spsolve
+    from scipy.spatial import Delaunay
+
+    outline = np.asarray(outline, dtype=np.float64)
+    n = len(outline)
+    step = np.linalg.norm(np.roll(outline, -1, axis=0) - outline, axis=1)
+    turn = 2 * np.pi * np.r_[0.0, np.cumsum(step)[:-1]] / max(step.sum(), 1e-18)
+    flat = [np.stack([np.cos(turn), np.sin(turn)], axis=1)]
+    for k in range(1, rings + 1):
+        share = 1 - k / (rings + 1)
+        count = max(3, int(round(n * share)))
+        inner = 2 * np.pi * (np.arange(count) + 0.5 * k) / count
+        flat.append(share * np.stack([np.cos(inner), np.sin(inner)], axis=1))
+    flat.append(np.zeros((1, 2)))
+    flat = np.concatenate(flat)
+    triangles = Delaunay(flat).simplices.astype(np.int64)
+    a, b, c = flat[triangles[:, 0]], flat[triangles[:, 1]], flat[triangles[:, 2]]
+    turned = ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) < 0
+    triangles[turned] = triangles[turned][:, ::-1]
+    edges = np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    m = len(flat)
+    links = coo_matrix((np.ones(2 * len(edges)), (np.r_[edges[:, 0], edges[:, 1]], np.r_[edges[:, 1], edges[:, 0]])),
+                       shape=(m, m)).tocsr()
+    degree = np.asarray(links.sum(axis=1)).ravel()
+    free = np.arange(n, m)
+    lap = (coo_matrix((degree[free], (np.arange(len(free)), np.arange(len(free)))), shape=(len(free), len(free)))
+           - links[free][:, free]).tocsc()
+    points = np.zeros((m, 3))
+    points[:n] = outline
+    points[free] = np.stack([spsolve(lap, links[free][:, :n] @ outline[:, k]) for k in range(3)], axis=1)
+    return points, triangles
+
+
 def opening_cap(part: dict, loops: list[np.ndarray], material=None) -> dict:
     """A part of its own closing every outline of LOOPS (vertex ids of PART, in the order its own faces' boundary runs,
-    `cycles`) with a fan from its middle, as `cap_loops` does: its corners at the outlines' places (welded by place,
-    so nothing opens), with their skin weights and the normals of its faces. With a MATERIAL (one colour, the hat's)
-    every corner takes one texture coordinate; without one it takes the part's own, as `cap_loops` gives them."""
+    `cycles`), facing as `cap_loops` would: a film spanning it (`membrane`), or a fan from its middle for a small one.
+    Its outline's corners lie at the outlines' places (welded by place, so nothing opens), with their skin weights; its
+    inner ones take the nearest corner's; the normals are its faces'. With a MATERIAL (one colour, the hat's) every
+    corner takes one texture coordinate; without one it takes the part's own, as `cap_loops` gives them."""
     vertices = np.asarray(part["positions"], dtype=np.float64)
     points, faces, source = [], [], []
     for ids in loops:
         start = sum(len(p) for p in points)
+        ring = start + np.arange(len(ids))
+        fan = np.stack([np.full(len(ids), start + len(ids)), np.roll(ring, -1), ring], axis=1)
+        if len(ids) >= MEMBRANE_LEAST:
+            film, triangles = membrane(vertices[ids])
+            nearest = np.r_[np.arange(len(ids)), np.argmin(np.linalg.norm(
+                film[len(ids):, None, :] - vertices[ids][None, :, :], axis=2), axis=1)]
+            points.append(film)
+            source.append(ids[nearest])
+            triangles = start + triangles
+            p = np.concatenate(points)
+            fan_points = np.concatenate([p[:start + len(ids)], vertices[ids].mean(axis=0)[None]])
+            if (hf.face_normals(p, triangles).sum(axis=0) @ hf.face_normals(fan_points, fan).sum(axis=0)) < 0:
+                triangles = triangles[:, ::-1]
+            faces.append(triangles)
+            continue
         points.append(np.concatenate([vertices[ids], vertices[ids].mean(axis=0)[None]]))
         source.append(np.r_[ids, ids[0]])
-        ring = start + np.arange(len(ids))
-        faces.append(np.stack([np.full(len(ids), start + len(ids)), np.roll(ring, -1), ring], axis=1))
+        faces.append(fan)
     out = {"positions": np.concatenate(points), "faces": np.concatenate(faces)}
     source = np.concatenate(source)
     for key in ("dense", "marks"):
