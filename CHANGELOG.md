@@ -50,29 +50,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hair with gaps through which the hat's inside showed. The head is unrolled round an axis through skull and neck;
   the brim's tilted underside is read from below, the collar told from the neck by where the air between them opens to
   the outside (a collar's own wall is hollow too), and the neck followed down to where it fuses with the collar. The
-  old head goes, hat and collar stay whole; the new head is the build's outermost surface (its own brim and collar
-  left out, and any plate of it the rays only graze or lying further out than the old head reached: a piece of its
-  brim stood out as a comb of thin plates under the hat), as
-  wide as the old head that stays over the cut so no gap shows, reaching up into the hat and capped there. It widens
-  to that evenly from about the ears up, and its own surface is softened more and more toward the brim, so no puffy
-  roll sits just under the brim and no notch shows where the build ran into its own brim (on the Zauberer it widened
-  in a band a fifth of the head's width tall, by up to a third of that width). It is
-  stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
-  round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels),
+  old head goes, hat and collar stay whole, and so does the hair under the brim: the hat's opening, where the hair
+  meets the brim's underside (read from below, the brim's down-facing underside followed in from its ring), is found
+  all round, and the old head is cut out up to just over it and the brim's innermost ring with it, so the cut runs
+  through the brim's smooth underside, not along the seam where the hair meets it, as jagged as the build's mesh
+  there, and out past any old hair standing out under the brim beyond it; the opening is closed by a part of its own
+  in the hat's colour (the figure's own paint on the brim next to it), spanning it like a film (a fan from its middle
+  folded where the outline turns back, dark spikes under the brim), so from below the brim's underside runs on to
+  the hair. The new head is the build's outermost surface (its own
+  brim and collar left out, and any plate of it the rays only graze or lying further out than the old head reached: a
+  piece of its brim stood out as a comb of thin plates under the hat) and keeps its own width up into the hat: under
+  the brim it eases to that width (a high percentile of the build's softened surface there, rounded round the head),
+  so a notch or a stray plate near the build's own brim sets nothing. On the Zauberer the old hair flaring out under
+  the brim had stayed, and the new head was widened by up to 1.7 cm to cover it: a shelf wider than the head, a cap or
+  a mushroom from below and behind. Without a brim found round the head the old head stays over the cut and the new
+  head widens evenly to cover it, as before. It is stitched to the figure's own neck inside the collar, with every
+  outline the cut leaves closed: no edge stays open round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels),
   moved to the figure's tone read there, and elsewhere by the figure's own paint seen from the head's axis (its old
   head's outermost surface in that direction), kept where it is the kind, hair or skin, the build has there, else
   the figure's own hair or skin colour (the build's own paint painted the Zauberer's hair in blue, white and tan
   patches, a helmet in close views). Where the build has no paint to tell hair from skin (over its own brim, and where
-  the new head stands out of it) the nearest kind it tells holds, its skin counts only round the face and the ears (a
+  the new head stands out of it) the head is hair, its skin counts only round the face and the ears (a
   build from a front picture makes up the back of the head; the Zauberer's came out bald), and up in the hat, over the
   old head's cut, the figure's own hair is carried up: right under the Zauberer's brim a quarter of the hair had been
-  painted in his skin colour, and the band over the cut in tan streaks. The picture paints none of it over the cut,
+  painted in his skin colour, and the band over the cut in tan streaks; taken as the nearest kind the build tells, his
+  forehead's skin stood under the brim as a tan band. The hat's own colour, which Pixel Match bled onto the figure's
+  hairline, is not taken onto the hair under the brim: the hair under it is carried up (cut up to the hat's opening,
+  the Zauberer's head wore it as a plum strip with white specks all round, a fifth of the band under the brim; now
+  none, and 97 % of that band is hair). The picture paints none of it over the cut,
   where it shows the hat: a dark band with teal flecks stood over his forehead. Its neck, from the stitch up to the
   chin's
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the
   chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw, rounded from side to side (a
   narrow neck under a wide jaw left a pocket that the game figure's few triangles spanned in the air, baked from the
-  collar's dark inside). Bits of the old head the cut leaves just past the region's edge
+  collar's dark inside). The neck reaches up to the jaw's edge beside the chin too (on the Zauberer 0.15 to 0.23 of
+  the head's width over the stitch, where a groove under the jaw had stayed), the chin's and the jaw's lower edge are
+  rounded (the build's chin has a flat underside, and seen from below it stood as a squared block), and the figure's
+  own paint there is never taken darker than its skin by more than 30 (L*): beside the jaw its neck lies in the
+  collar's dark, a black mark under his ears. Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
   head's paint.
 - **Hero parts** (`scripts/hero_parts.py`): any small part of a figure built again on its own at full detail and set

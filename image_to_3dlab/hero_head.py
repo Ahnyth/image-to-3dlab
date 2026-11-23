@@ -13,13 +13,15 @@ each horizontal ray from the axis the model's crossings (`cylinder_hits`). From 
 ears, the face), the skin (the first surface the ray leaves going out) and whatever stands round the head beyond a gap
 (a collar, facing the head) (`layers`). A collar is told from a strand standing off the skull by reaching down to the
 bottom of the picture, into the body (`collar_mask`). The brim's underside is a plane read from below in a ring round
-the head (`brim_plane`). The region to replace lies under that plane, above a height a little below the chin, and inside
-the collar wherever there is one (`head_zone`, `zone_values`).
+the head (`brim_plane`), and the hat's opening, where the hair meets it, is found all round from the brim's own faces
+(`brim_faces`, `hat_opening`). The region to replace lies under that plane and up to the opening, above a height a
+little below the chin, and inside the collar wherever there is one (`head_zone`, `zone_values`).
 
 The new head is a tube round the same axis: its radius in every column and row is the build's outermost head surface,
-or its skin behind a collar (`tube_radius`), kept inside the figure's collar, at least as wide as the old head just under
-the brim (so the old cut lies inside it), its creases rounded. It is laid out as a grid closed all round (`tube_part`),
-capped inside the hat and stitched to the figure's own neck inside the collar (`graft_head`), so no seam is open.
+or its skin behind a collar (`tube_radius`), kept inside the figure's collar, at its own width up into the hat
+(`crown_width`), its creases rounded. It is laid out as a grid closed all round (`tube_part`), capped inside the hat and
+stitched to the figure's own neck inside the collar (`graft_head`); the hat's opening is closed in the hat's colour
+(`opening_cap`, `hat_colour`), so no seam is open.
 
 Models face +Z (glTF's front) with Y up, as Pixal3D builds them.
 """
@@ -67,6 +69,25 @@ BRIM_LEAST = 0.4        # at least this share of the ring must hold a brim, or t
 BRIM_KEEP = 0.75        # the plane is fitted on the closest three quarters (a strand hanging into the ring is no brim)
 BRIM_DIP = 0.0          # the cut stays under all but this share of the brim's underside where it dips below the plane
                         # (a cut brim's dip, closed by a cap, stood out under the brim as a fin)
+BRIM_TURN = 0.5         # a brim's underside faces down at least this much (its normal's height part) and not out from
+                        # the axis; it is followed from what the ring reads from below within this share of the head's
+BRIM_SEED_SHARE = 0.15  # width of the brim's plane
+OPENING_GAP_PIXELS = 2  # the old head is cut out up to this many pixels over the hat's opening (where its hair meets
+OPENING_RIM_SHARE = 0.02    # the brim) and this share of the head's width beyond it, the brim's innermost ring with it
+OPENING_LEAST = 0.5     # a brim found round less than this share of the head has no opening to cut up to
+OPENING_SPREAD = 0.015  # the opening is taken at its highest and furthest out over this share of the way round
+CROWN_EASE = (0.4, 0.75)    # up the band under the brim the new head eases from the build's surface to its own width
+                            # between these shares of the band ...
+CROWN_READ = 0.3        # ... read over the band from this share of it up to the cut, where the build shows its head ...
+CROWN_PERCENTILE = 75   # ... as this percentile of its softened surface (a notch or a stray plate near the build's own
+CROWN_SPREAD = 0.15     # brim sets nothing), a running median over this share of the way round, softened after
+HAT_RING_SHARE = 0.15   # the hat's colour is read on its brim's underside within this share of the head's width of the
+                        # opening ...
+HAT_PAINT_SHARE = 0.15  # ... and the figure's paint in it on the head is not taken within this share of it under the cut
+BAND_DARK = 30          # on the new neck the figure's own paint this much darker (L*) than its skin is the collar's dark:
+BAND_SHADE = 0.85       # it takes the skin's colour this much shaded
+MEMBRANE_RINGS = 4      # an outline the cut leaves at the hat's opening is spanned by a film with this many rings inside
+MEMBRANE_LEAST = 8      # ... when it has at least this many points (a smaller one by a fan)
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
 MIN_COLUMNS = 16
 AXIS_CELLS = 6          # this many cells round the axis count as solid in a column's section ...
@@ -83,8 +104,10 @@ BLEND_ROWS = 6          # the head's picture reaches this many rows below the st
 NECK_EASE_ROWS = 1      # the new head eases onto the figure's neck at the stitch over this many rows
 NECK_STEP_SHARE = 0.08  # the new head's neck runs up from the stitch until it stands out this share of the head's
                         # width (a chin, a jaw) ...
-NECK_BAND_SHARE = 0.1   # ... at most this share of it over the stitch; the figure's own paint covers it
-NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round
+NECK_BAND_SHARE = 0.25  # ... at most this share of it over the stitch (the Zauberer's jaw beside his chin is 0.15 to
+                        # 0.23 of it over the stitch); the figure's own paint covers it
+NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round ...
+EDGE_ROUND_SHARE = 0.02 # ... and the chin's and the jaw's lower edge over this share of the head's width
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -427,6 +450,128 @@ def plane_height(plane: dict, x: np.ndarray, z: np.ndarray) -> np.ndarray:
         np.asarray(z, dtype=np.float64) - az)
 
 
+def face_neighbours(faces: np.ndarray, group: np.ndarray, among: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Pairs of faces (indices into AMONG, face ids) that share an edge, the corners welded by GROUP."""
+    g = group[np.asarray(faces, dtype=np.int64)[among]]
+    edges = np.sort(np.concatenate([g[:, [0, 1]], g[:, [1, 2]], g[:, [2, 0]]]), axis=1)
+    owner = np.tile(np.arange(len(among)), 3)
+    key = edges[:, 0] * (int(group.max()) + 1) + edges[:, 1]
+    order = np.argsort(key, kind="stable")
+    key, owner = key[order], owner[order]
+    same = key[1:] == key[:-1]
+    return owner[:-1][same], owner[1:][same]
+
+
+def brim_faces(vertices: np.ndarray, faces: np.ndarray, plane: dict, start: float, width: float, pixel: float,
+               ring: tuple[float, float] = BRIM_RING) -> np.ndarray:
+    """Which faces make the brim's underside: those `brim_plane` reads from below in its RING round the plane's axis
+    (over height START, within BRIM_SEED_SHARE of the head's WIDTH of the plane), and every face joined to them across
+    an edge that faces down too (its normal BRIM_TURN or more downward) and not out from the axis: followed inward to
+    where the brim turns into the head (a hair's flare under a brim faces down and out) and out to its rim. The
+    Zauberer's brim droops toward its rim, so near his head its underside lies lower than where his hair meets it: the
+    region cut up to there must stay inside it (2026-11-23)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    v = np.asarray(vertices, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    out = np.zeros(len(f), bool)
+    if not len(f):
+        return out
+    ax, az = plane["axis"]
+    outer = ring[1] * width
+    corners = v[f]
+    middle = corners.mean(axis=1)
+    normals = hf.face_normals(v, f)
+    away = np.stack([middle[:, 0] - ax, np.zeros(len(f)), middle[:, 2] - az], axis=1)
+    facing = (normals * away).sum(axis=1) / np.maximum(np.linalg.norm(away, axis=1), 1e-12)
+    high = corners[:, :, 1].min(axis=1) > start
+    down = high & (normals[:, 1] < -BRIM_TURN) & (facing <= FACING_LIMIT)
+    index = np.flatnonzero(high & (np.hypot(away[:, 0], away[:, 2]) < 1.3 * outer))
+    if not down.any() or not len(index):
+        return out
+    seen = np.stack([v[:, 0], -v[:, 2], -v[:, 1]], axis=1)        # from below, as `brim_plane` reads the brim
+    box = (ax - outer - 2 * pixel, ax + outer + 2 * pixel, -az - outer - 2 * pixel, -az + outer + 2 * pixel)
+    depth, owner = hf.depth_map(seen, f[index], box, pixel)
+    rows, cols = depth.shape
+    gx, gz = np.meshgrid(box[0] + (np.arange(cols) + 0.5) * pixel, -(box[3] - (np.arange(rows) + 0.5) * pixel))
+    distance = np.hypot(gx - ax, gz - az)
+    with np.errstate(invalid="ignore"):
+        seed = ((owner >= 0) & (distance >= ring[0] * width) & (distance <= outer)
+                & (np.abs(-depth - plane_height(plane, gx, gz)) < BRIM_SEED_SHARE * width))
+    seeds = np.unique(index[owner[seed]])
+    seeds = seeds[down[seeds]]
+    if not len(seeds):
+        return out
+    among = np.flatnonzero(down)
+    a, b = face_neighbours(f, hh.weld_groups(v), among)
+    _, label = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(len(among), len(among))),
+                                    directed=False)
+    out[among[np.isin(label, label[np.searchsorted(among, seeds)])]] = True
+    return out
+
+
+def brim_ceiling(vertices: np.ndarray, faces: np.ndarray, brim: np.ndarray, axis: dict, height: float, reach: float,
+                 pixel: float) -> dict:
+    """The brim's underside (BRIM, `brim_faces`) seen from straight below round AXIS (its middle at HEIGHT, the brim's)
+    out to REACH: {"height" (its lowest surface's height in every pixel, inf where there is none), "box" (x0, x1,
+    -z1, -z0: the picture's x is the model's, its y the model's -z), "pixel"}. Rays from the axis graze a brim that is
+    nearly flat, so they bound it poorly; from below it is plain."""
+    v = np.asarray(vertices, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)[np.asarray(brim, bool)]
+    cx, cz = centre(axis, np.array([height]))
+    x0, z0 = float(cx[0]), float(cz[0])
+    half = reach + 2 * pixel
+    box = (x0 - half, x0 + half, -z0 - half, -z0 + half)
+    if not len(f):
+        return {"height": np.full(hf.canvas(box, pixel), np.inf), "box": box, "pixel": float(pixel)}
+    depth, _ = hf.depth_map(np.stack([v[:, 0], -v[:, 2], -v[:, 1]], axis=1), f, box, pixel)
+    return {"height": -depth, "box": box, "pixel": float(pixel)}
+
+
+def hat_opening(ceiling: dict, axis: dict, height: float, angles: np.ndarray,
+                reach: float) -> tuple[np.ndarray, np.ndarray]:
+    """(height, distance from the axis) of the hat's opening at every one of ANGLES round AXIS: where the brim's
+    underside (CEILING, `brim_ceiling`) ends nearest the axis, the hair under it meeting the hat. Read along each angle
+    out from the axis (its middle at HEIGHT, the brim's) to REACH, and taken at its highest and furthest out over
+    OPENING_SPREAD of the way round, softened: the old head is cut out up to there, so the cut runs through the brim's
+    smooth underside and the hat's inside, not along the seam where the hair meets the brim, as jagged as the build's
+    mesh there (cut along it, a torn fringe stood round the Zauberer's new head, 2026-11-23). NaN everywhere when the
+    brim is found round less than OPENING_LEAST of the head. On the Zauberer the opening lies 0.5 mm under the brim's
+    plane at his back and 8 mm over it at his ears, where the hat rises."""
+    nothing = np.full(len(angles), np.nan), np.full(len(angles), np.nan)
+    pixel, box, lift = ceiling["pixel"], ceiling["box"], ceiling["height"]
+    cx, cz = centre(axis, np.array([height]))
+    x0, z0 = float(cx[0]), float(cz[0])
+    steps = (np.arange(int(reach / pixel)) + 1.0) * pixel
+    a = np.asarray(angles, dtype=np.float64)[:, None]
+    col = np.floor((x0 + steps[None, :] * np.sin(a) - box[0]) / pixel).astype(np.int64)
+    row = np.floor((box[3] + z0 + steps[None, :] * np.cos(a)) / pixel).astype(np.int64)
+    inside = (row >= 0) & (row < lift.shape[0]) & (col >= 0) & (col < lift.shape[1])
+    lowest = np.where(inside, lift[np.clip(row, 0, lift.shape[0] - 1), np.clip(col, 0, lift.shape[1] - 1)], np.inf)
+    found = np.isfinite(lowest)
+    first = found.argmax(axis=1)
+    has = found.any(axis=1)
+    if has.mean() < OPENING_LEAST:
+        return nothing
+    pick = np.arange(len(a))
+    heights = fill_nearest(np.where(has, lowest[pick, first], 0.0)[None, :], has[None, :])[0]
+    radii = fill_nearest(np.where(has, steps[first], 0.0)[None, :], has[None, :])[0]
+    size = max(3, int(OPENING_SPREAD * len(a)) | 1)
+    heights = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(heights, size, mode="wrap"), size / 6, mode="wrap")
+    radii = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(radii, size, mode="wrap"), size / 6, mode="wrap")
+    return heights, radii
+
+
+def sample_columns(values: np.ndarray, frame: dict, angle: np.ndarray) -> np.ndarray:
+    """VALUES (one per column of FRAME) at ANGLE, between column middles in a straight line, round the back."""
+    values = np.asarray(values, dtype=np.float64)
+    at = (np.asarray(angle, dtype=np.float64) + np.pi) / frame["turn"] - 0.5
+    low = np.floor(at).astype(np.int64)
+    t = at - low
+    return (1 - t) * values[low % len(values)] + t * values[(low + 1) % len(values)]
+
+
 # --- The region to replace ------------------------------------------------------------------------------------------
 
 def nose_point(window: dict) -> tuple[float, float, float]:
@@ -450,13 +595,17 @@ def hit_points(frame: dict, hits: dict) -> np.ndarray:
     return unpolar(frame, column_angles(frame)[col], hits["radius"], row_heights(frame)[row])
 
 
-def slab_values(points: np.ndarray, axis: dict, plane: dict, cut: float, bottom: float, reach: float) -> np.ndarray:
-    """How far inside the slab each point lies (positive inside): under the brim's PLANE less CUT, over BOTTOM (the
-    stitch) and nearer the AXIS than REACH (a number, or a picture of the frame's pixels)."""
+def slab_values(points: np.ndarray, axis: dict, plane: dict, cut: float, bottom: float, reach: float,
+                top: np.ndarray | None = None) -> np.ndarray:
+    """How far inside the slab each point lies (positive inside): under the brim's PLANE less CUT (or under TOP, one
+    height a point, where that is higher), over BOTTOM (the stitch) and nearer the AXIS than REACH (a number, or a
+    picture of the frame's pixels)."""
     p = np.asarray(points, dtype=np.float64)
     x, z = centre(axis, p[:, 1])
-    top = plane_height(plane, p[:, 0], p[:, 2]) - cut - p[:, 1]
-    return np.minimum(np.minimum(top, p[:, 1] - bottom), reach - np.hypot(p[:, 0] - x, p[:, 2] - z))
+    level = plane_height(plane, p[:, 0], p[:, 2]) - cut
+    if top is not None:
+        level = np.maximum(level, top)
+    return np.minimum(np.minimum(level - p[:, 1], p[:, 1] - bottom), reach - np.hypot(p[:, 0] - x, p[:, 2] - z))
 
 
 def collar_limit(vertices: np.ndarray, faces: np.ndarray, hits: dict, frame: dict, bottom: float, width: float,
@@ -491,14 +640,18 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     """The region of a figure (its mesh in the frame of `hero_face.face_window`'s WINDOW) that the new head replaces, and
     how the new head must lie in it.
 
-    The region (`zone_values`) lies under the brim's underside (`brim_plane`, cut a little below its lowest dip), over
-    the neck's lowest section free of the collar (`neck_and_axis`), and inside the collar wherever one stands round the
-    head (`collar_limit`); elsewhere within REACH_SHARE of the head's width from the axis. Hat and collar stay whole.
+    The region (`zone_values`) lies under the brim's underside (`brim_plane`, cut a little below its lowest dip) and,
+    where the hat's opening is found all round (`brim_faces`, `hat_opening`), up to just over it and out to its rim
+    (and to any old hair standing out under the brim beyond it), over the neck's lowest section free of the collar
+    (`neck_and_axis`), and inside the collar wherever one stands round the head (`collar_limit`); elsewhere within
+    REACH_SHARE of the head's width from the axis. Hat and collar stay whole, but for the brim's innermost ring.
     Returns the "frame" (the head unrolled round its leaning "axis", `cylinder`), "limit" (in every pixel, how far out
-    the region and the new head reach), "collar", "outer" (the old outermost surface), the brim's "plane", the heights
-    ("cut" under the plane, "bottom"), "cover" (per column, how far out the old head reaches round the cut: the new head
-    must be at least that wide there, so the old cut lies inside it) and "band" (from where under the cut that holds),
-    the nose, the chin and the neck's record. Raises ValueError when the figure has no brim or no neck under its chin."""
+    the region and the new head reach; "side_limit" without the opening's rim), "collar", "outer" (the old outermost
+    surface), the brim's "plane" and "brim" faces, the heights ("cut" under the plane, "bottom"), per column the hat's
+    "opening" height, its rim ("opening_radius") and the region's "top" over it (all None without an opening), "cover"
+    (per column, how far out the old head reaches round the cut: without an opening the new head must be at least
+    that wide there, so the old cut lies inside it) and "band" (from where under the cut that holds), the nose, the
+    chin and the neck's record. Raises ValueError when the figure has no brim or no neck under its chin."""
     width, pixel = window["width"], window["pixel"]
     if window.get("floor") is None:
         raise ValueError("no hat brim above the face: the head under a brim needs one (the face alone needs none)")
@@ -520,9 +673,35 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     turn = np.linspace(-np.pi, np.pi, 64, endpoint=False)
     rim = unpolar({"axis": axis}, turn, np.full(64, reach), np.full(64, floor))
     y_hi = float(plane_height(plane, rim[:, 0], rim[:, 2]).max()) + (TOP_SHARE + 0.1) * width
+    # the hat's opening: where the hair meets the brim's underside, the old head is cut up to it (its hair flaring out
+    # under the brim stood round the Zauberer's new head as a shelf, covered by a new head as wide: a mushroom from below)
+    brim = brim_faces(vertices, faces, plane, nose[1], width, pixel)
+    ceiling = brim_ceiling(vertices, faces, brim, axis, plane["a"], 1.2 * reach, pixel)
+    angles = column_angles(cylinder(axis, bottom, y_hi, pixel, FRAME_SHARE * width))
+    opening, opening_radius = hat_opening(ceiling, axis, plane["a"], angles, 1.2 * reach)
+    if np.isfinite(opening).any():
+        y_hi = max(y_hi, float(np.nanmax(opening)) + (TOP_SHARE + 0.05) * width)
     frame = cylinder(axis, bottom - BLEND_ROWS * pixel, y_hi, pixel, FRAME_SHARE * width)
     hits = cylinder_hits(vertices, faces, frame)
-    limit, collar, outer = collar_limit(vertices, faces, hits, frame, bottom, width, reach)
+    side_limit, collar, outer = collar_limit(vertices, faces, hits, frame, bottom, width, reach)
+    limit = side_limit
+    found = bool(np.isfinite(opening).all())
+    if found:
+        # over the old cut the region reaches out to the opening's rim, and to any of the old hair standing out under
+        # the brim beyond it (on the Zauberer a bulge of it at his left temple): the brim beyond them stays whole
+        side = unpolar(frame, column_angles(frame), np.full(frame["cols"], 0.6 * reach), np.full(frame["cols"], floor))
+        level = plane_height(plane, side[:, 0], side[:, 2]) - cut
+        row, col = np.divmod(hits["pixel"], frame["cols"])
+        height = row_heights(frame)[row]
+        hair = ((height > level[col]) & (height < opening[col] + OPENING_GAP_PIXELS * pixel) & ~brim[hits["face"]]
+                & (hits["up"] < SIDE_LIMIT) & (hits["radius"] < side_limit[row, col]))    # not a brim's top
+        stands = np.zeros(frame["cols"])
+        np.maximum.at(stands, col[hair], hits["radius"][hair])
+        size = max(3, int(OPENING_SPREAD * frame["cols"]) | 1)
+        stands = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(stands, size, mode="wrap"), size / 6, mode="wrap")
+        opening_radius = np.maximum(opening_radius, stands) + OPENING_RIM_SHARE * width
+        over = row_heights(frame)[:, None] > level[None, :] - 2 * pixel
+        limit = np.where(over, np.minimum(side_limit, opening_radius[None, :]), side_limit)
     # how far out the old head reaches in a band under the brim: its sides do, not the brim's underside (a tilted brim
     # faces the rays a little too); above the cut it is the old head inside the hat, which stays and must be covered
     points = hit_points(frame, hits)
@@ -544,21 +723,26 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     # stood out of a closer fit as fins, and so did the caps closing their cut
     cover = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(cover, 2 * COVER_SMOOTH + 1, mode="wrap"),
                                       COVER_SOFTEN, mode="wrap")
-    return {"frame": frame, "axis": axis, "limit": limit, "collar": collar, "outer": np.where(collar, -np.inf, outer),
+    return {"frame": frame, "axis": axis, "limit": limit, "side_limit": side_limit, "collar": collar,
+            "outer": np.where(collar, -np.inf, outer),
             "plane": plane, "band": band, "cut": float(cut), "bottom": float(bottom), "cover": cover,
             "width": float(width), "pixel": float(pixel), "nose": nose, "chin": float(chin), "neck": neck,
-            "reach": float(reach)}
+            "reach": float(reach), "brim": brim, "opening": opening if found else None,
+            "opening_radius": opening_radius if found else None,
+            "top": opening + OPENING_GAP_PIXELS * pixel if found else None}
 
 
 def zone_values(zone: dict, points: np.ndarray) -> np.ndarray:
     """How far inside the region to replace each point lies (positive inside, negative outside): the least of its
-    depth under the cut, its height over the stitch and its distance inside the region's reach from the axis (zone
-    "limit": inside a collar, its inside less a margin)."""
+    depth under the cut (or under the region's top over the hat's opening, zone "top", where that is higher), its
+    height over the stitch and its distance inside the region's reach from the axis (zone "limit": inside a collar,
+    its inside less a margin; over the old cut, the opening's rim)."""
     p = np.asarray(points, dtype=np.float64)
     frame = zone["frame"]
     angle, _ = polar(frame, p)
     row, col = pixel_of(frame, angle, p[:, 1])
-    return slab_values(p, zone["axis"], zone["plane"], zone["cut"], zone["bottom"], zone["limit"][row, col])
+    top = None if zone.get("top") is None else sample_columns(zone["top"], frame, angle)
+    return slab_values(p, zone["axis"], zone["plane"], zone["cut"], zone["bottom"], zone["limit"][row, col], top)
 
 
 # --- The new head -----------------------------------------------------------------------------------------------------
@@ -616,13 +800,15 @@ def wrap_round(radius: np.ndarray, sigma: float, jump: float) -> np.ndarray:
 def tube_radius(zone: dict, built: dict) -> np.ndarray:
     """The new head's radius in every pixel of the zone's picture: the build's (`build_radius`) where it has its head,
     and above that (under the build's own brim, which a face crop cuts lower than the hat's) its highest row carried on
-    up; creases rounded over ROUND_SHARE of the head's width (`wrap_round`); and in the band under the brim at least as
-    wide as the old head there (zone "cover": the widest of it round each column, softened, and reached in full at the
-    cut), so the old head's cut and the caps closing it lie inside the new one and no gap shows between hat and hair,
-    and not wider than that by more than COVER_CAP_SHARE of the head's width (a drooping piece of the build's brim stood
-    out there as a comb of plates). The figure's own surface there is its old hair: taken as it is, its spikes stood out
-    of the new head as fins (the Zauberer, 2026-11-22). Under the chin and the jaw the neck slopes down to the stitch
-    (`neck_fill`)."""
+    up; creases rounded over ROUND_SHARE of the head's width (`wrap_round`). Where the old head is cut up to the hat's
+    opening (zone "opening") the new head keeps its own width under the brim (`crown_width`), eased into over
+    CROWN_EASE of the band. Without an opening the old head stays over the cut, and in the band under the brim the
+    new head is at least as wide as the old head there (zone "cover": the widest of it round each column, softened,
+    and reached in full at the cut), so the old head's cut and the caps closing it lie inside the new one and no gap
+    shows between hat and hair. Either way not wider than the old head there by more than COVER_CAP_SHARE of the
+    head's width (a drooping piece of the build's brim stood out there as a comb of plates). The figure's own surface
+    there is its old hair: taken as it is, its spikes stood out of the new head as fins (the Zauberer, 2026-11-22).
+    Under the chin and the jaw the neck slopes down to the stitch (`neck_fill`)."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     radius = np.array(built["radius"], dtype=np.float64)
     known = built["known"]
@@ -647,13 +833,41 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     foot = ndimage.gaussian_filter1d(radius[foot_row, np.arange(frame["cols"])], FLARE_SMOOTH * frame["cols"],
                                      mode="wrap")[None, :]
     ease = s * s * (3 - 2 * s)
-    flare = foot + ease * np.maximum(least - foot, 0)
-    take = np.clip(s / FLARE_FADE, 0, 1)
-    radius = soft + take * take * (3 - 2 * take) * np.maximum(flare - soft, 0)
     # at most a little wider than the old head there, or than the new one at the band's foot where that is wider
     most = np.maximum(least, foot) + COVER_CAP_SHARE * width
+    if zone.get("opening") is not None:
+        # the old head is cut up to the hat's opening and the opening closed (`graft_head`): nothing of it is left to
+        # cover, so the new head keeps its own width up into the hat. Widened to the old hair flaring out under the
+        # brim, the Zauberer's stood under his hat as a shelf a centimetre wider than his head, a mushroom seen from
+        # below and behind (2026-11-23)
+        crown = np.minimum(crown_width(soft, built["known"], s)[None, :], most)
+        take = np.clip((s - CROWN_EASE[0]) / (CROWN_EASE[1] - CROWN_EASE[0]), 0, 1)
+        radius = soft + take * take * (3 - 2 * take) * (crown - soft)
+    else:
+        flare = foot + ease * np.maximum(least - foot, 0)
+        take = np.clip(s / FLARE_FADE, 0, 1)
+        radius = soft + take * take * (3 - 2 * take) * np.maximum(flare - soft, 0)
     radius = np.minimum(radius, radius + ease * np.minimum(most - radius, 0))
     return neck_fill(zone, radius)
+
+
+def crown_width(soft: np.ndarray, known: np.ndarray, share: np.ndarray) -> np.ndarray:
+    """The new head's own width under the brim, one per column: its softened surface (SOFT, `blur_up`) where the build
+    shows its head (KNOWN) in the band from CROWN_READ of it up to the cut (SHARE, 0 at the band's foot, 1 at the
+    cut), its CROWN_PERCENTILE, a running median over CROWN_SPREAD of the way round and softened. Columns with none
+    take the nearest. The build's surface right under its own brim is no guide: on the Zauberer a notch where its hair
+    ended stood 1.4 cm inside his head on one side, and a stray plate of its brim 1 cm out on the other."""
+    upper = known & (share > CROWN_READ) & (share < 1)
+    crown = np.full(soft.shape[1], np.nan)
+    have = upper.any(axis=0)
+    for column in np.flatnonzero(have):
+        crown[column] = np.percentile(soft[upper[:, column], column], CROWN_PERCENTILE)
+    if not have.any():                  # nothing shown in the band: the surface at the cut, as it is
+        top = np.clip(np.argmin(np.abs(share - 1), axis=0), 0, soft.shape[0] - 1)
+        crown, have = soft[top, np.arange(soft.shape[1])], np.ones(soft.shape[1], bool)
+    crown = fill_nearest(np.where(have, crown, 0.0)[None, :], have[None, :])[0]
+    size = max(3, int(CROWN_SPREAD * len(crown)) | 1)
+    return ndimage.gaussian_filter1d(ndimage.median_filter(crown, size, mode="wrap"), size / 6, mode="wrap")
 
 
 def blur_up(radius: np.ndarray, share: np.ndarray, most: float) -> np.ndarray:
@@ -694,8 +908,18 @@ def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:
     rise = np.maximum(ndimage.gaussian_filter1d(rise, sigma, mode="wrap"), 0)
     share = np.clip((h[:, None] - h[-1]) / np.maximum(over - h[-1], frame["pixel"])[None, :], 0, 1)
     line = np.minimum(sub[-1][None, :] + share * rise[None, :], zone["limit"][above])
+    filled = np.where(band, np.maximum(sub, line), sub)
+    # the chin's and the jaw's lower edge rounded: where the neck's slope meets them they stood as a squared block seen
+    # from below (the build's chin has a flat underside, 0.18 to 0.28 of the head's width deep), and a game figure's
+    # few triangles made it blockier still (the Zauberer, 2026-11-23). Only taken in, never out (a corner pointing out)
+    tall = EDGE_ROUND_SHARE * zone["width"] / frame["pixel"]
+    wide = tall * frame["pixel"] / max(float(np.median(sub[np.isfinite(sub)])) * frame["turn"], 1e-12)
+    pad = min(sub.shape[1], int(np.ceil(4 * wide)) + 1)
+    padded = np.concatenate([filled[:, -pad:], filled, filled[:, :pad]], axis=1)
+    soft = ndimage.gaussian_filter(padded, (tall, wide), mode=("nearest", "wrap"))[:, pad:pad + sub.shape[1]]
+    near = (np.arange(len(h))[:, None] >= (top - 2 * tall)[None, :]) & band.any(axis=0)[None, :]
     out = np.array(radius, dtype=np.float64)
-    out[above] = np.where(band, np.maximum(sub, line), sub)
+    out[above] = np.where(near, np.minimum(filled, soft), filled)
     return out
 
 
@@ -709,9 +933,12 @@ def sample_map(frame: dict, values: np.ndarray, angle: np.ndarray, height: np.nd
 
 def tube_top(zone: dict, angle: np.ndarray, radius: np.ndarray) -> np.ndarray:
     """The height the new head reaches up to at ANGLE: TOP_SHARE of the head's width over the brim's plane where the
-    head's side (RADIUS) meets it, inside the hat."""
+    head's side (RADIUS) meets it, or over the hat's opening (zone "top") where that is higher, inside the hat."""
     rim = unpolar(zone["frame"], angle, radius, np.full(len(angle), zone["plane"]["a"]))
-    return plane_height(zone["plane"], rim[:, 0], rim[:, 2]) + TOP_SHARE * zone["width"]
+    top = plane_height(zone["plane"], rim[:, 0], rim[:, 2])
+    if zone.get("top") is not None:
+        top = np.maximum(top, sample_columns(zone["top"], zone["frame"], angle))
+    return top + TOP_SHARE * zone["width"]
 
 
 def tube_part(zone: dict, radius: np.ndarray, step: float, bottom: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
@@ -835,6 +1062,123 @@ def cap_loops(part: dict, loops: list[np.ndarray]) -> tuple[dict, int]:
     return out, len(loops)
 
 
+def membrane(outline: np.ndarray, rings: int = MEMBRANE_RINGS) -> tuple[np.ndarray, np.ndarray]:
+    """(points, triangles) of a film spanning OUTLINE (a closed loop's points, in order), as soap spans a wire: the
+    outline laid round a circle by its length, RINGS rings of points inside it and its middle, joined as the circle's
+    Delaunay triangles, and every inner point moved to the mean of its neighbours (the outline held), so the film is
+    smooth and its triangles are small near the outline. The outline's points come first, in order. A fan from the
+    middle folds where the outline turns back; triangles from outline point to outline point alone ran across a
+    saddle-shaped opening as long slivers (the Zauberer's, 2 cm higher at his ears than at his back, 2026-11-23)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import spsolve
+    from scipy.spatial import Delaunay
+
+    outline = np.asarray(outline, dtype=np.float64)
+    n = len(outline)
+    step = np.linalg.norm(np.roll(outline, -1, axis=0) - outline, axis=1)
+    turn = 2 * np.pi * np.r_[0.0, np.cumsum(step)[:-1]] / max(step.sum(), 1e-18)
+    flat = [np.stack([np.cos(turn), np.sin(turn)], axis=1)]
+    for k in range(1, rings + 1):
+        share = 1 - k / (rings + 1)
+        count = max(3, int(round(n * share)))
+        inner = 2 * np.pi * (np.arange(count) + 0.5 * k) / count
+        flat.append(share * np.stack([np.cos(inner), np.sin(inner)], axis=1))
+    flat.append(np.zeros((1, 2)))
+    flat = np.concatenate(flat)
+    triangles = Delaunay(flat).simplices.astype(np.int64)
+    a, b, c = flat[triangles[:, 0]], flat[triangles[:, 1]], flat[triangles[:, 2]]
+    turned = ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) < 0
+    triangles[turned] = triangles[turned][:, ::-1]
+    edges = np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    m = len(flat)
+    links = coo_matrix((np.ones(2 * len(edges)), (np.r_[edges[:, 0], edges[:, 1]], np.r_[edges[:, 1], edges[:, 0]])),
+                       shape=(m, m)).tocsr()
+    degree = np.asarray(links.sum(axis=1)).ravel()
+    free = np.arange(n, m)
+    lap = (coo_matrix((degree[free], (np.arange(len(free)), np.arange(len(free)))), shape=(len(free), len(free)))
+           - links[free][:, free]).tocsc()
+    points = np.zeros((m, 3))
+    points[:n] = outline
+    points[free] = np.stack([spsolve(lap, links[free][:, :n] @ outline[:, k]) for k in range(3)], axis=1)
+    return points, triangles
+
+
+def opening_cap(part: dict, loops: list[np.ndarray], material=None) -> dict:
+    """A part of its own closing every outline of LOOPS (vertex ids of PART, in the order its own faces' boundary runs,
+    `cycles`), facing as `cap_loops` would: a film spanning it (`membrane`), or a fan from its middle for a small one.
+    Its outline's corners lie at the outlines' places (welded by place, so nothing opens), with their skin weights; its
+    inner ones take the nearest corner's; the normals are its faces'. With a MATERIAL (one colour, the hat's) every
+    corner takes one texture coordinate; without one it takes the part's own, as `cap_loops` gives them."""
+    vertices = np.asarray(part["positions"], dtype=np.float64)
+    points, faces, source = [], [], []
+    for ids in loops:
+        start = sum(len(p) for p in points)
+        ring = start + np.arange(len(ids))
+        fan = np.stack([np.full(len(ids), start + len(ids)), np.roll(ring, -1), ring], axis=1)
+        if len(ids) >= MEMBRANE_LEAST:
+            film, triangles = membrane(vertices[ids])
+            nearest = np.r_[np.arange(len(ids)), np.argmin(np.linalg.norm(
+                film[len(ids):, None, :] - vertices[ids][None, :, :], axis=2), axis=1)]
+            points.append(film)
+            source.append(ids[nearest])
+            triangles = start + triangles
+            p = np.concatenate(points)
+            fan_points = np.concatenate([p[:start + len(ids)], vertices[ids].mean(axis=0)[None]])
+            if (hf.face_normals(p, triangles).sum(axis=0) @ hf.face_normals(fan_points, fan).sum(axis=0)) < 0:
+                triangles = triangles[:, ::-1]
+            faces.append(triangles)
+            continue
+        points.append(np.concatenate([vertices[ids], vertices[ids].mean(axis=0)[None]]))
+        source.append(np.r_[ids, ids[0]])
+        faces.append(fan)
+    out = {"positions": np.concatenate(points), "faces": np.concatenate(faces)}
+    source = np.concatenate(source)
+    for key in ("dense", "marks"):
+        if part.get(key) is not None:
+            out[key] = np.asarray(part[key])[source]
+    if material is not None:
+        out["uvs"], out["material"] = np.full((len(source), 2), 0.5), material
+    elif part.get("uvs") is not None:
+        out["uvs"], out["material"] = np.asarray(part["uvs"])[source], part.get("material")
+    from image_to_3dlab.pixal3d_native import smooth_normals
+
+    out["normals"] = smooth_normals(out["positions"], out["faces"])
+    return out
+
+
+def colour_material(rgb) -> tuple[dict, bytes, int]:
+    """A material of one colour (RGB, 0..255), as `hero_face.picture_material` makes one."""
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), tuple(int(round(float(c))) for c in rgb)).save(buffer, format="PNG")
+    return hf.picture_material(buffer.getvalue(), name="HeroHatOpening")
+
+
+def hat_colour(part: dict, zone: dict) -> np.ndarray | None:
+    """The figure's own paint on its brim's underside round the hat's opening (PART: one model's body as it was): the
+    median of the corners of its faces there facing down (BRIM_TURN), within HAT_RING_SHARE of the head's width outside
+    the opening (zone "opening", "opening_radius") and of its height. None without paint or an opening."""
+    paint = hf.part_paint(part)
+    if paint is None or zone.get("opening") is None:
+        return None
+    v = np.asarray(part["positions"], dtype=np.float64)
+    f = np.asarray(part["faces"], dtype=np.int64)
+    middle = v[f].mean(axis=1)
+    angle, distance = polar(zone["frame"], middle)
+    edge = sample_columns(zone["opening_radius"], zone["frame"], angle)
+    height = sample_columns(zone["opening"], zone["frame"], angle)
+    band = HAT_RING_SHARE * zone["width"]
+    near = ((hf.face_normals(v, f)[:, 1] < -BRIM_TURN) & (distance > edge - zone["pixel"])
+            & (distance < edge + band) & (np.abs(middle[:, 1] - height) < band))
+    if near.sum() < 3:
+        return None
+    return np.median(hf.paint_at(paint, np.asarray(part["uvs"])[f[near]].reshape(-1, 2)), axis=0)
+
+
 def winding(loop: np.ndarray, point: np.ndarray) -> int:
     """How many times the outline LOOP goes round POINT seen from above (signed). Unlike the even-odd rule it stays
     right when the outline crosses itself: the Zauberer's neck outline at the stitch takes in his chin's tip, whose
@@ -941,11 +1285,29 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
     if stitched:
         head, band, alike = hh.join_rims(body, ids, head, head["bottom_ids"], up)
         report["stitch_turns_alike"] = alike
-    body, closed = cap_loops(body, [loop for loop in loops if loop is not ids])
+    rest = [loop for loop in loops if loop is not ids]
+    opening = []
+    if zone.get("top") is not None:
+        # the outlines the cut leaves at the hat's opening are closed by a part of their own in the hat's colour: from
+        # below, round the slim new head, it reads as the brim's underside running on to the hair
+        old = plane_height(zone["plane"], p[:, 0], p[:, 2]) - zone["cut"]
+        high = [np.median(p[loop, 1] - old[loop]) > -2 * zone["pixel"] for loop in rest]
+        opening = [loop for loop, at in zip(rest, high) if at]
+        rest = [loop for loop, at in zip(rest, high) if not at]
+    cap = None
+    if opening:
+        colour = hat_colour(parts[body_index], zone)
+        cap = opening_cap(body, opening, None if colour is None else colour_material(colour))
+        report["hat_colour"] = None if colour is None else [round(float(c), 1) for c in colour]
+    body, closed = cap_loops(body, rest)
     out_parts[body_index] = body
+    if cap is not None:
+        report["opening_cap"] = len(out_parts)
+        out_parts.append(cap)
     report.update({"body_part": body_index, "stitched": bool(stitched), "stitch_faces": int(band),
-                   "neck_rim_points": int(len(ids)), "outlines_closed": int(closed),
-                   "head_faces": int(len(head["faces"])), "grid": list(head["grid"])})
+                   "neck_rim_points": int(len(ids)), "outlines_closed": int(closed + len(opening)),
+                   "opening_outlines": len(opening), "head_faces": int(len(head["faces"])),
+                   "grid": list(head["grid"])})
     head = {k: v for k, v in head.items() if k not in ("bottom_ids", "cap", "grid")}
     report["open_edges_near"] = open_edges(out_parts + [head], zone_box(zone))
     return out_parts, head, report
@@ -1041,13 +1403,35 @@ def own_paint(part: dict, zone: dict, points: np.ndarray) -> np.ndarray:
     return seen[row * frame["cols"] + col].reshape(points.shape)
 
 
-def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> np.ndarray:
+def lab(rgb) -> np.ndarray:
+    """RGB (0..255, sRGB) as CIE L*a*b* (D65): distances there are about as the eye sees them."""
+    c = np.clip(np.asarray(rgb, dtype=np.float64) / 255.0, 0, 1)
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = (c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
+           / np.array([0.9505, 1.0, 1.089]))
+    g = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * g[..., 1] - 16, 500 * (g[..., 0] - g[..., 1]), 200 * (g[..., 1] - g[..., 2])], axis=-1)
+
+
+def figure_skin(own: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> np.ndarray | None:
+    """The figure's own skin colour (OWN, `own_paint`): its median where the picture sees the face (WEIGHT) between the
+    chin and the nose; None where it sees too little of it."""
+    height = points[..., 1]
+    face = np.isfinite(own[..., 0]) & (weight > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
+    return np.median(own[face], axis=0) if face.sum() >= 3 else None
+
+
+def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict,
+              hat: np.ndarray | None = None) -> np.ndarray:
     """OWN (`own_paint`) kept where it is the kind the new head has there, hair or skin, else the figure's own colour of
     that kind (its median, shaded by the build's paint). The kind is told by the colour's hue (its share of red, green
     and blue): the figure's skin is read where the picture sees the face under the nose (WEIGHT), its hair at the back
     over the nose; the new head's kind by the build's own paint (BUILD), each texel as most of its neighbours. On the
     Zauberer the new hair lay over the old head's ears and cheeks, and their skin stood in it as patches
-    (2026-11-22)."""
+    (2026-11-22). With the HAT's colour (`hat_colour`), OWN nearer it than to the hair and the skin (in L*a*b*) under
+    the brim, within HAT_PAINT_SHARE of the head's width under the old cut, takes the kind's colour too: Pixel Match
+    painted the brim's dark onto the Zauberer's hairline, and cut up to the hat's opening his new head wore it as a
+    plum strip with white specks all round (2026-11-23)."""
     flat = points.reshape(-1, 3)
     angle, _ = polar(zone["frame"], flat)
     nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
@@ -1076,22 +1460,39 @@ def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np
                                    mode=("nearest", "wrap"))
     cast = ndimage.uniform_filter(seen.astype(np.float64), size=(7, 15), mode=("nearest", "wrap"))
     told = cast > 1e-9
-    # where the build has no paint near (over its own brim, and where the new head stands out of it) the kind is the
-    # nearest one it tells: taken as skin there, the figure's own hair right under the Zauberer's brim was painted in
-    # his skin colour, a quarter of that band (2026-11-23)
-    new_hair = fill_nearest(np.where(told, votes > 0.5 * cast, False).astype(np.float64), told) > 0.5
+    # where the build has no paint near (over its own brim, and where the new head stands out of it) the head is hair:
+    # taken as skin there, the figure's own hair right under the Zauberer's brim was painted in his skin colour, a
+    # quarter of that band, and taken as the nearest kind the build tells, his forehead's skin was carried up under
+    # the brim as a tan band round the front, his ears' up his temples (2026-11-23)
+    new_hair = np.where(told, votes > 0.5 * cast, True)
     light = np.nan_to_num(build).sum(axis=-1)
     out = np.array(own)
     # the build's skin is taken only round the face and the ears: built from a front picture it makes up the back of
     # the head, and the Zauberer's came out bald behind his ears, which painted the figure's own hair there in his skin
     # colour, a tan patch at the back under the brim (2026-11-23)
     front = turn < SKIN_TURN * np.pi
-    for kind, colour in ((new_hair, hair), (~new_hair & front, skin)):
+    hatted = np.zeros(have.shape, bool)
+    if hat is not None:
+        seen_as = lab(np.nan_to_num(own))
+        near_hat = np.linalg.norm(seen_as - lab(hat), axis=-1)
+        level = plane_height(zone["plane"], points[..., 0], points[..., 2]) - zone.get("cut", 0.0)
+        hatted = (have & (height > level - HAT_PAINT_SHARE * zone["width"])
+                  & (near_hat < np.linalg.norm(seen_as - lab(hair), axis=-1))
+                  & (near_hat < np.linalg.norm(seen_as - lab(skin), axis=-1)))
+    for kind, colour in ((new_hair, hair), (~new_hair & front, skin), (~new_hair & ~front, hair)):
         wrong = have & kind & (is_hair(np.nan_to_num(own)) != (colour is hair))
+        if colour is hair and kind is not new_hair:
+            wrong = np.zeros(have.shape, bool)       # behind the face the build's skin is not believed (`front`)
+        wrong |= hatted & kind
         if wrong.any():
             usual = np.median(light[kind & seen]) if (kind & seen).any() else 1.0
             shade = np.clip(light[wrong] / max(usual, 1e-6), 0.85, 1.15)
             out[wrong] = np.clip(colour[None, :] * shade[:, None], 0, 255)
+    # the hat's colour over all the head's own paint in its column is left unknown, so the figure's paint under it is
+    # carried up there (`carry_up`): one flat colour stood there as a band
+    fine = have & ~hatted
+    first = np.where(fine.any(axis=0), fine.argmax(axis=0), own.shape[0])[None, :]
+    out[hatted & (np.arange(own.shape[0])[:, None] < first)] = np.nan
     return out
 
 
@@ -1196,7 +1597,10 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         offset = paint_offset(part, zone, np.where(weight > 0.5, colour, np.nan))
         shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
         raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
-        own = carry_up(same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone))
+        hat = hat_colour(part, zone) if zone.get("opening") is not None else None
+        seen_own = own_paint(part, zone, points)
+        skin = figure_skin(seen_own, weight[..., 0], points, zone) if "chin" in zone and "nose" in zone else None
+        own = carry_up(same_kind(seen_own, raw, weight[..., 0], points, zone, hat=hat))
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan
@@ -1216,6 +1620,11 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     known = np.isfinite(out[..., 0])
     if not known.all() and known.any():
         out = np.stack([fill_nearest(np.nan_to_num(out[..., k]), known) for k in range(3)], axis=-1)
+    if crop is not None and skin is not None:
+        # beside the jaw and behind it the figure's own neck lies in its collar's dark, and taken onto the new neck, now
+        # reaching up to the jaw's edge, it stood under the Zauberer's ears as a black mark (2026-11-23)
+        dark = band & (lab(out)[..., 0] < lab(skin)[0] - BAND_DARK)
+        out[dark] = np.asarray(skin, dtype=np.float64) * BAND_SHADE
     # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
     # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
     rows, cols = band.shape

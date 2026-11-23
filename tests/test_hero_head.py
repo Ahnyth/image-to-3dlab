@@ -290,7 +290,9 @@ def test_head_zone_cuts_under_the_brim_inside_the_collar_and_above_where_the_nec
     assert values[skull_top] < 0                                # the skull's top is under the hat: it stays
     side = ids["skull"][np.abs(v[ids["skull"], 1] - 0.005) < 0.002]
     assert (values[side] > 0).all()                             # the face's sides go
-    assert (values[ids["collar"]] < 0).all() and (values[ids["brim"]] < 0).all()   # collar and brim stay whole
+    brim = ids["brim"][np.hypot(v[ids["brim"], 0], v[ids["brim"], 2]) > 0.036 + 0.03 * zone["width"]]
+    assert (values[ids["collar"]] < 0).all() and (values[brim] < 0).all()   # collar and brim stay whole (but the
+    # brim's innermost ring at the hat's opening, which goes with the head so the cut runs smooth)
 
 
 def test_graft_head_sets_a_new_head_in_closed_all_round():
@@ -410,7 +412,7 @@ def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch(
     frame = frame_round()
     heights = hd.row_heights(frame)[:, None]
     turn = hd.column_angles(frame)[None, :]
-    jaw = np.where(np.cos(turn) > 0.5, -0.034, -0.025)          # the chin's underside low, the jaw's at the back high
+    jaw = np.where(np.cos(turn) > 0.5, -0.034, -0.015)          # the chin's underside low, the jaw's at the back high
     radius = np.where(heights < jaw, 0.02, 0.04) * np.ones_like(turn)
     side = (np.sin(turn[0]) > 0.7) & (np.cos(turn[0]) > 0.5)    # a collar's edge under one side of the chin
     limit = np.where(side[None, :], 0.026, 0.06) * np.ones_like(heights)
@@ -420,10 +422,13 @@ def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch(
     row = np.argmin(np.abs(heights[:, 0] - (-0.035)))           # halfway between the stitch and the chin's edge
     assert 0.028 < filled[row, front] < 0.032                   # on the slope from the stitch's 0.02 to the chin's 0.04
     assert filled[row + 1, front] < filled[row, front]          # lower down, nearer the stitch's
-    assert (filled[row, side] <= 0.026 + 1e-12).all() and (filled[row, side] > 0.024).all()   # filled, not into
+    assert (filled[row, side] <= 0.026 + 1e-12).all() and (filled[row, side] > 0.022).all()   # filled, not into
+    # the collar (its edge columns a little less, rounded into the neck beside them)
     back = np.argmax(np.abs(turn[0]))
     assert np.allclose(filled[:, back], radius[:, back])        # a jaw higher than the neck's reach: left as it is
-    assert np.allclose(filled[heights[:, 0] > -0.03], radius[heights[:, 0] > -0.03])    # the head above stays
+    chin = np.cos(turn[0]) > 0.6
+    assert np.allclose(filled[heights[:, 0] > -0.03][:, chin], radius[heights[:, 0] > -0.03][:, chin], atol=1e-4)   # the head
+    # above the chin stays (beside it the slope runs round into the higher jaw)
     assert np.allclose(filled[heights[:, 0] < -0.04], radius[heights[:, 0] < -0.04])    # nothing under the stitch
 
 
@@ -438,6 +443,34 @@ def test_neck_fill_rounds_a_narrow_chin_into_the_jaw_beside_it():
     row = np.argmin(np.abs(heights[:, 0] - (-0.036)))
     steps = np.abs(np.diff(np.r_[filled[row], filled[row, :1]]))
     assert steps.max() < 0.002                                  # its underside runs round into the jaw, no wall
+
+
+def test_neck_fill_fills_the_groove_under_a_high_jaw_beside_the_chin():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    side = (np.abs(np.cos(turn)) < 0.8) & (np.cos(turn) > 0)           # the jaw beside the chin, its edge 0.15 of the
+    jaw = np.where(side, -0.04 + 0.15 * 0.08, -0.034)                  # head's width over the stitch (the Zauberer's)
+    radius = np.where(heights < jaw, 0.02, 0.04) * np.ones_like(turn)
+    groove = side & (heights > jaw - 0.004) & (heights < jaw)           # under its edge the build's skin dips in
+    radius = np.where(groove, 0.016, radius)
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "pixel": 0.002, "limit": np.full(radius.shape, 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    under = side & (heights > -0.04) & (heights < jaw - 0.002)
+    assert filled[under].min() >= 0.02 - 1e-9                   # no groove under the jaw (a dark mark in the game)
+
+
+def test_neck_fill_rounds_the_chins_lower_edge():
+    frame = frame_round(pixel=0.0005)
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.0375, 0.02, 0.04) * np.ones((1, frame["cols"]))   # a chin 2.5 mm over the stitch
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "pixel": 0.0005, "limit": np.full(radius.shape, 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    front = np.argmin(np.abs(hd.column_angles(frame)))
+    corner = (heights[:, 0] > -0.0375) & (heights[:, 0] < -0.0365)
+    assert filled[corner, front].max() < 0.0395                  # its front turns in toward the underside, no edge
+    above = heights[:, 0] > -0.03
+    assert np.allclose(filled[above, front], 0.04)               # the chin above it as it was
 
 
 def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_builds_paint_behind():
@@ -482,7 +515,8 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
             "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
     points, _ = hd.tube_points(zone, radius, (40, 64))
     picture = np.full((40, 64, 3), [200.0, 170.0, 160.0])                       # the face
-    lips = (points[..., 1] > -0.032) & (points[..., 1] < -0.028)
+    lips = (points[..., 1] > -0.031) & (points[..., 1] < -0.027)     # over the chin's lower edge, which goes with
+    # the neck (its underside)
     picture[lips] = [220.0, 120.0, 120.0]
     picture[points[..., 1] < -0.034] = [100.0, 75.0, 70.0]      # under the chin the throat in its shadow, a shirt
     turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
@@ -497,6 +531,27 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
     under_chin = (points[..., 1] < -0.034) & (points[..., 1] > -0.0365)
     assert out[under_chin][:, 0].min() > 160                    # ... eased to the chin's own skin under its edge
     assert np.allclose(out[lips], [210, 110, 120], atol=2)      # the chin above it keeps the picture
+
+
+def test_figure_paint_takes_no_collar_dark_onto_the_neck_beside_the_jaw():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.034, 0.02, 0.04) * np.ones((1, frame["cols"]))
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius, "chin": -0.034,
+            "nose": np.array([0.0, -0.005, 0.04]), "limit": np.full((frame["rows"], frame["cols"]), 0.06),
+            "reach": 0.06}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    skin = [200.0, 160.0, 150.0]
+    old, faces = joined(tube(0.021, -0.0399, -0.0335, segments=96, rings=8), tube(0.039, -0.0335, 0.02, segments=96))
+    aside = (np.abs(np.sin(np.arctan2(old[:, 0], old[:, 2]))) > 0.6) & (old[:, 1] < -0.034)
+    part = {"positions": old, "faces": faces, "uvs": np.where(aside[:, None], [0.75, 0.5], [0.25, 0.5]),
+            "material": painted(skin, right=[25, 25, 45])}      # beside the jaw the figure's neck in the collar's dark
+    colour = np.full((40, 64, 3), skin)
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, colour))
+    neck = (points[..., 1] < -0.035) & (np.abs(points[..., 0]) > 0.6 * np.hypot(points[..., 0], points[..., 2]))
+    assert neck.any() and out[neck].sum(axis=-1).min() > 0.7 * sum(skin)   # its skin, a little shaded, not black
 
 
 # --- the hairline under the brim (2026-11-23) -------------------------------------------------------------------------
@@ -537,6 +592,31 @@ def test_same_kind_keeps_the_figures_hair_at_the_back_where_the_build_made_up_sk
     cheek = face & (turn > 0.2 * np.pi) & (turn < 0.3 * np.pi) & (np.abs(points[..., 1] + 0.015) < 0.006)
     own2 = np.where(cheek[..., None], HAIR, own)                        # a strand of the old head over the new cheek
     assert np.allclose(hd.same_kind(own2, build, weight, points, zone)[cheek], SKIN, atol=40)   # still turned skin
+
+
+def test_same_kind_keeps_hair_under_the_brim_where_the_build_has_no_paint_over_its_forehead():
+    zone, points, weight, turn = kinds_zone()
+    forehead = (weight > 0.5) & (points[..., 1] < 0.015)               # the build shows its face up to its own brim
+    build = np.where(forehead[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])
+    build[points[..., 1] > 0.015] = np.nan                              # and nothing over it
+    own = np.where(((weight > 0.5) & (points[..., 1] < 0.0))[..., None], SKIN, HAIR)
+    top_front = (turn < 0.2 * np.pi) & (points[..., 1] > 0.022)
+    out = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[top_front], HAIR)   # the figure's hair under the brim, not the build's forehead carried up
+
+
+def test_same_kind_takes_no_hat_colour_onto_the_hair_under_the_brim():
+    zone, points, weight, _ = kinds_zone()
+    face = (weight > 0.5) & (points[..., 1] < 0.0)
+    hat = np.array([42.0, 39.0, 75.0])                                  # the brim's underside, navy
+    own = np.where(face[..., None], SKIN, HAIR)
+    strip = points[..., 1] > 0.02                                       # right under the brim the figure's paint is
+    own[strip] = [70.0, 45.0, 90.0]                                     # the hat's, plum (Pixel Match bled it there)
+    build = np.where(face[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])
+    out = hd.carry_up(hd.same_kind(own, build, weight, points, zone, hat=hat))
+    assert np.allclose(out[strip], HAIR, atol=1)                        # the figure's hair carried up, no dark strip
+    plain = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[~strip], plain[~strip])                      # the rest as without the hat's colour
 
 
 def test_figure_paint_carries_the_figures_hair_up_into_the_hat_over_the_old_head():
@@ -586,6 +666,122 @@ def test_head_zone_covers_only_the_old_head_that_stays_over_the_cut():
     v2, f2 = joined((v, f), skirt)
     zone = hd.head_zone(v2, f2, hf.face_window(v2, f2, v2[:, 1] > -0.06))
     assert (zone["cover"] - plain["cover"]).max() < 0.001    # the new head is not pushed out to cover what goes
+
+
+# --- the slim head under the hat (2026-11-23) --------------------------------------------------------------------------
+
+def lathe(profile, centre=(0.0, 0.0), segments=64):
+    """A closed surface turned round a vertical axis through CENTRE (x, z) from PROFILE, (radius, height) pairs from the
+    bottom pole up the outside to the top pole, faces out."""
+    cx, cz = centre
+    turn = np.linspace(0, 2 * np.pi, segments, endpoint=False)
+    rings = profile[1:-1]
+    v = [[cx, profile[0][1], cz]]
+    for r, y in rings:
+        v += [[cx + r * np.sin(a), y, cz + r * np.cos(a)] for a in turn]
+    v.append([cx, profile[-1][1], cz])
+    ids = 1 + np.arange(len(rings) * segments).reshape(len(rings), segments)
+    a, b = ids[:-1], np.roll(ids[:-1], -1, axis=1)
+    c, d = np.roll(ids[1:], -1, axis=1), ids[1:]
+    f = [np.stack([a, c, b], -1).reshape(-1, 3), np.stack([a, d, c], -1).reshape(-1, 3),
+         np.stack([np.zeros(segments, int), np.roll(ids[0], -1), ids[0]], 1),
+         np.stack([np.full(segments, len(v) - 1), ids[-1], np.roll(ids[-1], -1)], 1)]
+    v, f = np.asarray(v, dtype=float), np.concatenate(f)
+    if np.einsum("ij,ij->i", v[f[:, 0]], np.cross(v[f[:, 1]], v[f[:, 2]])).sum() < 0:
+        f = f[:, ::-1]
+    return v, f
+
+
+HAIR_LINE = [(0.032 * np.sin(p), 0.005 - 0.032 * np.cos(p)) for p in np.linspace(0, np.pi / 2, 9)[1:]] + [
+    (0.032, 0.016), (0.034, 0.021), (0.037, 0.025), (0.040, 0.0275)]           # the head, its hair flaring under the brim
+BRIM_LINE = [(0.041, 0.028), (0.05, 0.0275), (0.06, 0.026), (0.075, 0.023), (0.09, 0.019), (0.1, 0.017)]   # droops
+HAT_LINE = [(0.1, 0.021), (0.09, 0.023), (0.075, 0.027), (0.06, 0.030), (0.045, 0.032), (0.042, 0.034), (0.03, 0.06),
+       (0.01, 0.085)]
+
+
+def hat_figure():
+    """A head and its hat as one closed surface, as Pixal3D builds them: the hair flares out under the brim into its
+    underside, the brim droops toward its rim, so near the head its underside lies lower than where the hair meets it
+    (the Zauberer's back, 2026-11-23); a neck and a high collar as `figure`'s."""
+    head = lathe([(0.0, -0.027)] + HAIR_LINE + BRIM_LINE + HAT_LINE + [(0.0, 0.09)], centre=(0.0, 0.006))
+    middle = (0.0, -0.005)
+    neck = joined(tube(0.018, -0.0455, -0.01, centre=middle), tube(0.034, -0.09, -0.045, centre=middle))
+    collar = collar_ring(0.034, 0.04, -0.09, -0.015, -0.04, middle)
+    v, f = joined(head, neck, collar)
+    return v, f, len(head[0])
+
+
+def hat_zone():
+    v, f, _ = hat_figure()
+    return hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))
+
+
+def ring_points(radius, height, centre=(0.0, 0.006), count=32):
+    turn = np.linspace(0, 2 * np.pi, count, endpoint=False)
+    return np.stack([centre[0] + radius * np.sin(turn), np.full(count, height), centre[1] + radius * np.cos(turn)], 1)
+
+
+def test_head_zone_reaches_up_to_where_the_hair_meets_the_brim_and_leaves_the_brim():
+    zone = hat_zone()
+    assert zone["plane"]["a"] - zone["cut"] < 0.0255          # the old cut lay under the brim's drooping underside
+    flare = ring_points(0.039, 0.0268)                         # the hair flaring out just under where it meets the brim
+    assert (hd.zone_values(zone, flare) > 0).all()             # it goes with the old head: no shelf of it stays
+    for radius, height in BRIM_LINE[1:3]:                     # the brim's underside, lower than that further out
+        assert (hd.zone_values(zone, ring_points(radius, height)) < 0).all()   # stays whole
+
+
+def test_tube_radius_keeps_the_new_head_at_its_own_width_up_into_the_hat():
+    zone = hat_zone()
+    frame = zone["frame"]
+    heights = hd.row_heights(frame)
+    radius = np.full((frame["rows"], frame["cols"]), 0.03)     # the build: a head 0.03 round, narrower than the flare
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    high = heights > zone["plane"]["a"] - zone["cut"]          # over the old cut, up into the hat
+    assert np.abs(out[high] - 0.03).max() < 0.002              # its own width, not widened to the old hair's 0.04
+
+
+def test_opening_cap_spans_a_saddle_shaped_notched_outline_smoothly_without_folds():
+    turn = np.linspace(0, 2 * np.pi, 120, endpoint=False)
+    radius = 0.05 * (1 + 0.15 * np.cos(2 * turn))              # an oval opening, 2 cm higher at the sides (a saddle)
+    notch = np.arange(30, 34)                                  # and a notch whose inner end turns back, as seen from
+    radius[notch] = [0.04, 0.03, 0.03, 0.04]                   # the middle (a fan from there folds over it)
+    turn = turn.copy()
+    turn[31] = turn[29] - 0.01
+    loop = np.stack([radius * np.sin(turn), 0.03 - 0.01 * np.cos(2 * turn), radius * np.cos(turn)], axis=1)
+    part = {"positions": loop, "faces": np.zeros((0, 3), np.int64), "uvs": np.zeros((120, 2))}
+    cap = hd.opening_cap(part, [np.arange(120)], material="hat")
+    tri = cap["positions"][cap["faces"]]
+    area = 0.5 * ((tri[:, 1, 0] - tri[:, 0, 0]) * (tri[:, 2, 2] - tri[:, 0, 2])
+                  - (tri[:, 2, 0] - tri[:, 0, 0]) * (tri[:, 1, 2] - tri[:, 0, 2]))
+    folded = np.abs(area[np.sign(area) != np.sign(area.sum())]).sum() / np.abs(area).sum()
+    assert folded < 0.005                                       # seen from below, no triangle turned over
+    longest = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max()
+    assert longest < 0.04                                       # no sliver across the opening, 0.1 wide
+    assert hd.open_edges([cap]) == 120                          # closed but for its rim, where the cut meets it
+
+
+def test_graft_head_closes_the_hats_opening_in_the_hats_colour():
+    v, f, head_vertices = hat_figure()
+    zone = hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))
+    rings = 1 + np.arange(head_vertices - 2) // 64             # each lathe vertex's profile point
+    profile = [(0.0, -0.027)] + HAIR_LINE + BRIM_LINE + HAT_LINE
+    brim = np.zeros(len(v), bool)
+    brim[1:head_vertices - 1] = (rings >= len(HAIR_LINE) + 1) & (rings <= len(HAIR_LINE) + len(BRIM_LINE) + 1)
+    assert profile[len(HAIR_LINE) + 1] == BRIM_LINE[0]
+    body = {"positions": v, "faces": f, "uvs": np.where(brim[:, None], [0.25, 0.5], [0.75, 0.5]),
+            "material": painted([30, 30, 70], right=[210, 215, 230]), "dense": np.tile([1.0, 0.0], (len(v), 1))}
+    built = hd.build_radius(zone, *joined(sphere(0.03, centre=(0.0, 0.005, 0.006)),
+                                          tube(0.019, -0.09, -0.01, centre=(0.0, -0.005))))
+    radius = hd.tube_radius(zone, built)
+    parts, _, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
+    assert report["open_edges_near"] == 0 and report["stitched"]
+    cap = parts[report["opening_cap"]]
+    normals = hf.face_normals(cap["positions"], cap["faces"])
+    middle = cap["positions"][cap["faces"]].mean(axis=1)
+    _, distance = hd.polar(zone["frame"], middle)
+    outside = distance > 0.032                                 # the cap's ring round the slim new head, seen from below
+    assert outside.any() and (normals[outside, 1] < -0.5).all()
+    assert np.allclose(hd.hat_colour(body, zone), [30, 30, 70], atol=2)   # the brim's underside, not the hair's silver
 
 
 def test_figure_paint_takes_no_picture_over_the_old_heads_cut():
