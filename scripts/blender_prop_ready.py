@@ -121,8 +121,10 @@ def hull_object(objects, faces: int, name: str):
     for point in world_points(objects):
         bm.verts.new(point)
     result = bmesh.ops.convex_hull(bm, input=bm.verts[:])
-    bmesh.ops.delete(bm, geom=[g for g in result["geom_interior"] + result["geom_unused"]
-                               if isinstance(g, bmesh.types.BMVert)], context="VERTS")
+    # a vertex can be both interior and unused: Blender 5.2's delete refuses one listed twice (a tree's hull failed)
+    inside = dict.fromkeys(g for g in result["geom_interior"] + result["geom_unused"]
+                           if isinstance(g, bmesh.types.BMVert))
+    bmesh.ops.delete(bm, geom=list(inside), context="VERTS")
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
