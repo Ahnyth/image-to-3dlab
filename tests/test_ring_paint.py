@@ -25,21 +25,24 @@ def _camera(size: int = 256, z: float = 3.0, fov: float = 0.5) -> pp.View:
     return pp.View(image, c2w, fov, "front")
 
 
-def _ring(segments: int = 180, radius: float = 0.5, height: float = 0.3, tilt_deg: float = 0.0):
-    """A closed tube (outer wall only, open top and bottom), UVs: u round the ring from the back, v down it."""
+def _ring(segments: int = 180, radius: float = 0.5, height: float = 0.3, tilt_deg: float = 0.0, rows: int = 8):
+    """A tube (outer wall only, open top and bottom) in ROWS bands, UVs: u round the ring from the back, v down it."""
     angle = np.linspace(-np.pi, np.pi, segments + 1)
-    top = np.stack([radius * np.sin(angle), np.full_like(angle, height / 2), radius * np.cos(angle)], 1)
-    bottom = top * [1, -1, 1]
-    positions = np.concatenate([top, bottom])
-    u = (angle + np.pi) / (2 * np.pi)
-    uvs = np.concatenate([np.stack([u, np.zeros_like(u)], 1), np.stack([u, np.ones_like(u)], 1)])
     n = segments + 1
+    positions, uvs = [], []
+    for r in range(rows + 1):
+        v = r / rows
+        positions.append(np.stack([radius * np.sin(angle), np.full_like(angle, height / 2 - v * height),
+                                   radius * np.cos(angle)], 1))
+        uvs.append(np.stack([(angle + np.pi) / (2 * np.pi), np.full_like(angle, v)], 1))
     faces = []
-    for i in range(segments):
-        faces += [[i, n + i, n + i + 1], [i, n + i + 1, i + 1]]
+    for r in range(rows):
+        for i in range(segments):
+            a, b = r * n + i, (r + 1) * n + i
+            faces += [[a, b, b + 1], [a, b + 1, a + 1]]
     tilt = np.radians(tilt_deg)
     turn = np.array([[1, 0, 0], [0, np.cos(tilt), -np.sin(tilt)], [0, np.sin(tilt), np.cos(tilt)]])
-    return positions @ turn.T, np.array(faces), uvs
+    return np.concatenate(positions) @ turn.T, np.array(faces), np.concatenate(uvs)
 
 
 def _striped(width: int = 360, height: int = 32, seen_deg: float = 50.0, period_deg: float = 12.0):
@@ -161,3 +164,18 @@ def test_a_face_spread_over_the_whole_picture_is_left_out():
     faces = np.array([[0, 1, 2], [3, 4, 5]])
     index, face, _ = rp.texels(uvs, faces, (512, 512))
     assert len(index) > 0 and set(face.tolist()) == {0}
+
+
+def test_a_tilted_band_is_repainted_over_its_own_height_not_the_boxs_rows():
+    # the box marks the band where the picture shows it, in front; a band tilted back sits higher behind, beyond the
+    # box's rows, and must still take the pattern over its whole height (it kept ragged old paint at its edges)
+    positions, faces, uvs = _ring(tilt_deg=12.0)
+    texture = _striped()
+    view = _camera()
+    x, y, _ = pp.project(positions, view)
+    front = positions[:, 2] > 0.45
+    box = (x.min() - 2, y[front].min(), x.max() + 2, y[front].max())
+    out, report = rp.paint_ring(texture, positions, uvs, faces, view, box, frame=IDENTITY)
+    column = int((170 + 180) / 360 * texture.shape[1])     # 170 degrees: behind
+    top_rows = out[1:6, column - 8:column + 8].astype(float)
+    assert report["repainted"] > 0 and top_rows.std() > 80

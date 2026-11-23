@@ -17,7 +17,7 @@ Pure numpy + scipy; the GLB helpers change only the one base colour image, every
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from PIL import Image
@@ -36,6 +36,9 @@ GUTTER_PX = 4          # repainted texels grow this far into the UV gutter (as p
 # A face whose UV box spans more than this share of the picture has no island of its own: a cut's closing cap given
 # corner UVs (the Zauberer's colour model after the Hero head had 601, each over up to 25 million texels). Skipped.
 MAX_FACE_SHARE = 1.0 / 256
+TILT_ROUNDS = 4        # rounds of fitting the band's tilt to the band found round it
+BAND_MARGIN = 0.05     # the band's height, as the picture shows it in front, widened by this share at each edge
+TILT_REACH = 1.0       # faces this many box heights above and below the box are looked at for the band's tilted rest
 MAX_FACE_FLOOR = 256 * 256   # ... but a box this small is never too big (a small picture's faces span much of it)
 
 
@@ -62,29 +65,37 @@ def angles(points: np.ndarray, cx: float, cz: float, zero: float = 0.0) -> np.nd
     return (np.arctan2(points[:, 0] - cx, points[:, 2] - cz) - zero + np.pi) % (2 * np.pi) - np.pi
 
 
-def ring_frame(points: np.ndarray, normals: np.ndarray, rounds: int = 3) -> RingFrame:
+def ring_frame(points: np.ndarray, normals: np.ndarray, rounds: int = 3, fit: np.ndarray | None = None) -> RingFrame:
     """The ring that POINTS (with their NORMALS) mostly lie on: its middle and radius from its side walls, refitted on
-    its outer wall alone, and its tilt as the best sine of height round it."""
+    its outer wall alone, and its tilt as the best sine of height round it. Only the FIT points (all by default) find
+    the ring; `outward` is told for every point."""
+    fit = np.ones(len(points), dtype=bool) if fit is None else fit
     side = np.abs(normals[:, 1]) < SIDE
-    if side.sum() < 3:
+    if (side & fit).sum() < 3:
         raise ValueError("no side walls to find a ring by")
-    cx, cz, radius = circle_fit(points[side, 0], points[side, 2])
+    cx, cz, radius = circle_fit(points[side & fit, 0], points[side & fit, 2])
     radial = np.stack([points[:, 0] - cx, np.zeros(len(points)), points[:, 2] - cz], axis=1)
     length = np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
-    flip = -1.0 if np.median((normals[side] * radial[side]).sum(axis=1) / length[side]) < 0 else 1.0
+    walls = side & fit
+    flip = -1.0 if np.median((normals[walls] * radial[walls]).sum(axis=1) / length[walls]) < 0 else 1.0
     outward = side
     for _ in range(rounds):
         radial = np.stack([points[:, 0] - cx, np.zeros(len(points)), points[:, 2] - cz], axis=1)
         length = np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
         outward = (side & (flip * (normals * radial).sum(axis=1) / length > OUTWARD)
                    & (np.abs(length - radius) < RADIUS_BAND * radius))
-        if outward.sum() < 3:
+        if (outward & fit).sum() < 3:
             raise ValueError("no outer wall round the fitted ring")
-        cx, cz, radius = circle_fit(points[outward, 0], points[outward, 2])
-    theta = angles(points, cx, cz)
-    design = np.stack([np.ones(len(points)), np.cos(theta), np.sin(theta)], axis=1)
-    tilt = np.linalg.lstsq(design[outward], points[outward, 1], rcond=None)[0]
-    return RingFrame(cx, cz, radius, tuple(float(t) for t in tilt), outward, flip)
+        cx, cz, radius = circle_fit(points[outward & fit, 0], points[outward & fit, 2])
+    tilt = fit_tilt(points, cx, cz, outward & fit)
+    return RingFrame(cx, cz, radius, tilt, outward, flip)
+
+
+def fit_tilt(points: np.ndarray, cx: float, cz: float, mask: np.ndarray) -> tuple:
+    """(y0, a, b): the ring's middle height y0 + a cos(theta) + b sin(theta) round it, least squares on MASK."""
+    theta = angles(points[mask], cx, cz)
+    design = np.stack([np.ones(len(theta)), np.cos(theta), np.sin(theta)], axis=1)
+    return tuple(float(t) for t in np.linalg.lstsq(design, points[mask, 1], rcond=None)[0])
 
 
 def ring_coords(points: np.ndarray, frame: RingFrame, zero: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
@@ -217,17 +228,25 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
                box, mesh_scale: float = 1.0, frame=pp.PIXAL3D_FRAME, settings: pp.Settings | None = None,
                trusted: float = TRUSTED, gutter: int = GUTTER_PX) -> tuple[np.ndarray, dict]:
     """TEXTURE with the ring inside BOX (x0, y0, x1, y1 in VIEW's pixels: the band as the picture shows it) repainted
-    round from its seen arc. Returns the new texture and a report (the ring found, the arc, texels repainted)."""
+    round from its seen arc. Returns the new texture and a report (the ring found, the arc, texels repainted).
+
+    The box finds the ring and its height on the band; the ring is then repainted over that height all round, also
+    where a tilted band leaves the box's rows behind (a hat tilted back carries its band higher at the back, and the
+    rows alone left its edges in the old paint, ragged)."""
     settings = settings or pp.DEFAULT_SETTINGS
     shape = texture.shape[:2]
     view_pos = pp.to_view_space(positions, frame, mesh_scale)
     x, y, _ = pp.project(view_pos, view)
     fx, fy = x[faces].mean(axis=1), y[faces].mean(axis=1)
-    region = np.flatnonzero((fx >= box[0]) & (fx <= box[2]) & (fy >= box[1]) & (fy <= box[3]))
-    report = {"box": [float(v) for v in box], "faces_in_box": int(len(region)), "repainted": 0}
-    if not len(region):
+    across = (fx >= box[0]) & (fx <= box[2])
+    in_box = across & (fy >= box[1]) & (fy <= box[3])
+    reach = TILT_REACH * (box[3] - box[1])
+    region = np.flatnonzero(across & (fy >= box[1] - reach) & (fy <= box[3] + reach))
+    report = {"box": [float(v) for v in box], "faces_in_box": int(in_box.sum()), "repainted": 0}
+    if not in_box.any():
         return texture.copy(), report
     index, face, bary = texels(uvs, faces[region], shape)
+    seed = in_box[region][face]
     corners = faces[region][face]
     points = (bary[:, :, None] * positions[corners]).sum(axis=1)
     outward_sign = pp.outward_sign(view_pos, faces)
@@ -236,7 +255,7 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
     trust, _ = pp.view_weights(pp.to_view_space(points, frame, mesh_scale), pp.to_view_space(normals, frame),
                                view, view_pos, faces, settings, outward_sign)
     try:
-        ring = ring_frame(points, normals)
+        ring = ring_frame(points, normals, fit=seed)
     except ValueError as error:
         report["skipped"] = str(error)
         return texture.copy(), report
@@ -245,15 +264,25 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
     theta, height = ring_coords(points, ring, zero)
     flat = texture.reshape(-1, texture.shape[2]).astype(np.float64)
     colours = flat[index, :3]
-    seen = ring.outward & (trust >= trusted)
+    seen = seed & ring.outward & (trust >= trusted)
     report.update(radius=ring.radius, middle=[ring.cx, ring.cz], tilt=list(ring.tilt), seen=int(seen.sum()))
     if seen.sum() < MIN_SEEN:
         report["skipped"] = "the picture trusts too little of the ring to repeat"
         return texture.copy(), report
     arc = cut_arc(theta, colours @ np.array([0.3, 0.59, 0.11]), seen)
     in_arc = (theta >= arc[0]) & (theta <= arc[1])
+    # the band's height: as the box marks it in front (its edges count, though the picture's fades trust them less)
+    low, high = np.percentile(height[seed & ring.outward & in_arc], [1, 99])
+    low, high = low - BAND_MARGIN * (high - low), high + BAND_MARGIN * (high - low)
+    band = ring.outward & (height >= low) & (height <= high)
+    for _ in range(TILT_ROUNDS):     # the box saw the band's front: its tilt comes from the whole band, found round
+        ring = replace(ring, tilt=fit_tilt(points, ring.cx, ring.cz, band))
+        theta, height = ring_coords(points, ring, zero)
+        band = ring.outward & (height >= low) & (height <= high)
+    report["tilt"] = list(ring.tilt)
+    in_arc = (theta >= arc[0]) & (theta <= arc[1])
     source = seen & in_arc
-    target = ring.outward & ~(in_arc & (trust >= trusted))
+    target = band & ~(in_arc & (trust >= trusted))
     flat = flat.copy()
     flat[index[target], :3] = repeat_arc(theta, height, colours, source, target, arc, ring.radius)
     grown = grow_into_gutter(flat, index[target], covered(uvs, faces, shape), shape, gutter)
