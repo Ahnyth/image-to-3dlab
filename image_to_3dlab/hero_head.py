@@ -124,8 +124,6 @@ STRAND_RELIEF_SHARE = 0.02  # is laid onto the skin, standing at most this share
 SKIN_DETAIL_SHARE = 0.05    # the skin the picture does not see: the face's colour, shaded by the build's lightness
 SKIN_DETAIL_RANGE = (0.6, 1.2)  # against its mean this share of the head's width round, within these bounds ...
 SKIN_PLAIN = 0.3            # ... the mean taken over its plain skin, within this share of its usual lightness
-SKIN_SIDE = 0.25            # further round than this share of a half turn from the nose, off the face, the picture
-                            # sees the head edge-on and paints no skin
 FLAP_TURN = (0.3, 0.75)     # on the head's sides (these shares of a half turn from the nose) a piece standing out of
 FLAP_WIDE_SHARE = 0.15      # it, no wider than this share of the head's width either side (an ear) ...
 FLAP_LEAST_SHARE = 0.04     # ... and more than this share of it out, stands at most FLAP_STAND_SHARE of it out ...
@@ -1678,11 +1676,31 @@ def nose_turn(points: np.ndarray, zone: dict) -> np.ndarray:
     return np.abs(np.angle(np.exp(1j * (angle - nose[0])))).reshape(points.shape[:-1])
 
 
-def face_texels(points: np.ndarray, zone: dict) -> np.ndarray:
-    """Which texels of the new head (POINTS) lie on the face the picture shows: inside the face's window seen from the
-    front (zone "window", `hero_face.face_window`), on the head's front half."""
-    inside = hf.window_values(zone["window"], points.reshape(-1, 3)).reshape(points.shape[:-1]) > 0
-    return inside & (nose_turn(points, zone) < 0.5 * np.pi)
+def ear_texels(points: np.ndarray, zone: dict) -> np.ndarray:
+    """How surely each texel of the new head (POINTS, its picture's rows by its columns once round) lies on an ear,
+    0 to 1: on the head's sides (FLAP_TURN from the nose), over the chin, what stands more than FLAP_LEAST_SHARE of the
+    head's width out of the head round it (its grey opening, FLAP_WIDE_SHARE of the width either side), as
+    `round_flaps` finds an ear, eased out round it over FLAP_ROUND_SHARE of the width."""
+    width = zone["width"]
+    _, r = polar(zone["frame"], points.reshape(-1, 3))
+    r = r.reshape(points.shape[:2])
+    across = max(float(np.median(np.linalg.norm(np.diff(points, axis=1), axis=-1))), 1e-9)
+    down = max(float(np.median(np.linalg.norm(np.diff(points, axis=0), axis=-1))), 1e-9)
+    size = (2 * max(1, int(round(FLAP_WIDE_SHARE * width / down))) + 1,
+            2 * max(1, int(round(FLAP_WIDE_SHARE * width / across))) + 1)
+    cols = r.shape[1]
+    pad = min(cols, size[1])
+    padded = np.concatenate([r[:, cols - pad:], r, r[:, :pad]], axis=1)
+    base = ndimage.grey_opening(padded, size=size, mode="nearest")[:, pad:pad + cols]
+    turn = nose_turn(points, zone)
+    side = (turn > FLAP_TURN[0] * np.pi) & (turn < FLAP_TURN[1] * np.pi)
+    core = (r - base > FLAP_LEAST_SHARE * width) & side & (points[..., 1] > zone.get("chin", zone["bottom"]))
+    if not core.any():
+        return np.zeros(r.shape)
+    sigma = (FLAP_ROUND_SHARE * width / down, FLAP_ROUND_SHARE * width / across)
+    pad = min(cols, int(np.ceil(4 * sigma[1])) + 1)
+    padded = np.concatenate([core[:, cols - pad:], core, core[:, :pad]], axis=1).astype(np.float64)
+    return np.clip(2 * ndimage.gaussian_filter(padded, sigma, mode="nearest")[:, pad:pad + cols], 0, 1)
 
 
 def head_kinds(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> dict | None:
@@ -1923,12 +1941,12 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
             toned, skin_at = build_skin_paint(raw, kinds, painted, points, zone["width"])
             skin_at &= height < level                   # up in the hat, over the old head's cut, it is hair
             own = np.where(skin_at[..., None], toned, own)
-            if zone.get("window") is not None:
-                # ... and on the head's sides the picture paints skin only on the face: there it sees the head
-                # edge-on, and what it shows is a strand or the brim's shadow (on the Zauberer's ears, 2026-11-23);
-                # under the face (the chin, the neck between a collar's fronts) it sees the skin from the front
-                aside = skin_at & ~face_texels(points, zone) & (nose_turn(points, zone) > SKIN_SIDE * np.pi)
-                weight = np.where(aside[..., None], 0.0, weight)
+            if zone.get("nose") is not None:
+                # ... and on an ear the picture paints no skin: it sees the ear edge-on, and what it shows there is a
+                # strand or the brim's shadow (on the Zauberer's right ear, 2026-11-23). Elsewhere on the head's sides
+                # it stays: gated on all the skin off the face, a lock laid onto his temple turned skin and the gate's
+                # edge stood as a hard line down both temples (2026-11-23)
+                weight = weight * (1 - ear_texels(points, zone) * skin_at)[..., None]
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan
