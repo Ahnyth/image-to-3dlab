@@ -108,6 +108,24 @@ NECK_BAND_SHARE = 0.25  # ... at most this share of it over the stitch (the Zaub
                         # 0.23 of it over the stitch); the figure's own paint covers it
 NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round ...
 EDGE_ROUND_SHARE = 0.02 # ... and the chin's and the jaw's lower edge over this share of the head's width
+NECK_COLLAR_LEAST = 0.5 # a collar round at least this share of the head hides the neck's lower part: the new neck
+                        # reaches down into it (`head_zone` "low") ...
+NECK_LOW_SHARE = 0.3    # ... this share of the head's width under the stitch (the Zauberer's old neck showed down to
+                        # 0.24 of it through his collar's open front, painted with his old chin's shadow) ...
+NECK_COVER_SHARE = 0.01 # ... at least this share of the head's width round the old neck there (`neck_cover`) ...
+NECK_COVER_REACH = 0.08 # ... where that lies within this share of it of the new neck (a collar's inside or a chest
+                        # further out stays in front of it) ...
+NECK_DIVE_SHARE = 0.05  # ... and its lowest this share of the head's width under the old surface, so it ends inside
+                        # the body (at the bottom of the Zauberer's collar front a piece of the build's collar stood 5 mm
+                        # out of his shirt there, 2026-11-23)
+STRAND_GAP_SHARE = 0.04     # a narrow piece of the build standing off its own skin by more than this share of the
+STRAND_WIDE_SHARE = 0.05    # head's width (a strand over the forehead: no wider than this share of it either side)
+STRAND_RELIEF_SHARE = 0.02  # is laid onto the skin, standing at most this share of the head's width off it (`press_strands`)
+SKIN_DETAIL_SHARE = 0.05    # the skin the picture does not see: the face's colour, shaded by the build's lightness
+SKIN_DETAIL_RANGE = (0.6, 1.2)  # against its mean this share of the head's width round, within these bounds ...
+SKIN_PLAIN = 0.3            # ... the mean taken over its plain skin, within this share of its usual lightness
+SKIN_SIDE = 0.25            # further round than this share of a half turn from the nose, off the face, the picture
+                            # sees the head edge-on and paints no skin
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -651,7 +669,10 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     "opening" height, its rim ("opening_radius") and the region's "top" over it (all None without an opening), "cover"
     (per column, how far out the old head reaches round the cut: without an opening the new head must be at least
     that wide there, so the old cut lies inside it) and "band" (from where under the cut that holds), the nose, the
-    chin and the neck's record. Raises ValueError when the figure has no brim or no neck under its chin."""
+    chin and the neck's record; "low", how far down the new neck reaches (into a collar round at least
+    NECK_COLLAR_LEAST of the head, NECK_LOW_SHARE of the head's width under the stitch; else the stitch itself), "skin"
+    (the old figure's first surface facing out in every pixel) and the face's "window". Raises ValueError when the
+    figure has no brim or no neck under its chin."""
     width, pixel = window["width"], window["pixel"]
     if window.get("floor") is None:
         raise ValueError("no hat brim above the face: the head under a brim needs one (the face alone needs none)")
@@ -684,6 +705,18 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     frame = cylinder(axis, bottom - BLEND_ROWS * pixel, y_hi, pixel, FRAME_SHARE * width)
     hits = cylinder_hits(vertices, faces, frame)
     side_limit, collar, outer = collar_limit(vertices, faces, hits, frame, bottom, width, reach)
+    low = bottom
+    if collar.any(axis=0).mean() >= NECK_COLLAR_LEAST:
+        # a collar hides the neck's lower part: the new neck reaches down into it (`neck_cover`), so nothing of the old
+        # neck shows through the collar's open front. The Zauberer's did, down to 0.24 of his head's width, painted
+        # with his old chin's shadow: a dark zigzag and a pale chevron under the new chin (2026-11-23)
+        low = bottom - NECK_LOW_SHARE * width
+        frame = cylinder(axis, low - BLEND_ROWS * pixel, y_hi, pixel, FRAME_SHARE * width)
+        hits = cylinder_hits(vertices, faces, frame)
+        side_limit, collar, outer = collar_limit(vertices, faces, hits, frame, bottom, width, reach)
+    skin = np.full(frame["rows"] * frame["cols"], np.inf)      # the old figure's skin: the first surface facing out
+    leaving = hits["facing"] > FACING_LIMIT
+    np.minimum.at(skin, hits["pixel"][leaving], hits["radius"][leaving])
     limit = side_limit
     found = bool(np.isfinite(opening).all())
     if found:
@@ -724,7 +757,8 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     cover = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(cover, 2 * COVER_SMOOTH + 1, mode="wrap"),
                                       COVER_SOFTEN, mode="wrap")
     return {"frame": frame, "axis": axis, "limit": limit, "side_limit": side_limit, "collar": collar,
-            "outer": np.where(collar, -np.inf, outer),
+            "outer": np.where(collar, -np.inf, outer), "skin": skin.reshape(frame["rows"], frame["cols"]),
+            "low": float(low), "window": window,
             "plane": plane, "band": band, "cut": float(cut), "bottom": float(bottom), "cover": cover,
             "width": float(width), "pixel": float(pixel), "nose": nose, "chin": float(chin), "neck": neck,
             "reach": float(reach), "brim": brim, "opening": opening if found else None,
@@ -759,7 +793,8 @@ def build_radius(zone: dict, vertices: np.ndarray, faces: np.ndarray) -> dict:
     piece of brim reached out to the region's edge at the back, and carried up into the hat it stood out of the new
     head as a comb of thin plates (2026-11-22). Returns
     {"radius", "known", "plane", "skin" (which of its faces make that outermost surface: its paint is read there, not on
-    the inner wall of its hollow shell just behind)}."""
+    the inner wall of its hollow shell just behind), "inner" (the build's own skin in every pixel, the first surface
+    facing out: a strand standing off the forehead lies further out with air between, `press_strands`)}."""
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     middle = centre(zone["axis"], zone["plane"]["a"])
     plane = (brim_plane(vertices, faces, middle, zone["nose"][1], width, pixel)
@@ -779,13 +814,18 @@ def build_radius(zone: dict, vertices: np.ndarray, faces: np.ndarray) -> dict:
     np.maximum.at(outer, pixel_id[valid], radius[valid])
     skin = np.zeros(len(np.asarray(faces)), bool)          # the faces the outermost surface is made of
     skin[hits["face"][valid & (radius >= outer[pixel_id])]] = True
+    inner = np.full(frame["rows"] * frame["cols"], np.inf)    # its own skin: the first surface facing out
+    leaving = valid & (hits["facing"] > FACING_LIMIT)
+    np.minimum.at(inner, pixel_id[leaving], radius[leaving])
     outer = outer.reshape(frame["rows"], frame["cols"])
     opened = ndimage.grey_opening(outer, size=(SPIKE_ROWS, 1), mode="nearest")   # an empty pixel counts as low
     with np.errstate(invalid="ignore"):
         outer = np.where(outer - opened > SPIKE_SHARE * width, -np.inf, outer)
     known = np.isfinite(outer)
-    return {"radius": fill_nearest(np.where(known, outer, 0.0), known), "known": known, "plane": plane,
-            "skin": skin}
+    filled = fill_nearest(np.where(known, outer, 0.0), known)
+    inner = inner.reshape(frame["rows"], frame["cols"])
+    return {"radius": filled, "known": known, "plane": plane, "skin": skin,
+            "inner": np.where(known & np.isfinite(inner), np.minimum(inner, filled), filled)}
 
 
 def wrap_round(radius: np.ndarray, sigma: float, jump: float) -> np.ndarray:
@@ -812,6 +852,8 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
     radius = np.array(built["radius"], dtype=np.float64)
     known = built["known"]
+    if built.get("inner") is not None:
+        radius = press_strands(zone, radius, np.asarray(built["inner"], dtype=np.float64), known)
     rows = np.arange(frame["rows"])[:, None]
     first = np.where(known.any(axis=0), known.argmax(axis=0), frame["rows"] - 1)[None, :]
     highest = np.take_along_axis(radius, np.clip(first, 0, frame["rows"] - 1), axis=0)
@@ -848,7 +890,84 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
         take = np.clip(s / FLARE_FADE, 0, 1)
         radius = soft + take * take * (3 - 2 * take) * np.maximum(flare - soft, 0)
     radius = np.minimum(radius, radius + ease * np.minimum(most - radius, 0))
-    return neck_fill(zone, radius)
+    return neck_cover(zone, neck_fill(zone, radius))
+
+
+def press_strands(zone: dict, radius: np.ndarray, inner: np.ndarray, known: np.ndarray) -> np.ndarray:
+    """RADIUS (the build's outermost surface, `build_radius`) with every narrow piece standing off the build's own skin
+    (INNER) laid onto it: where the outermost surface stands more than STRAND_GAP_SHARE of the head's width off the
+    skin, with air between (a strand of hair in front of the forehead), and no square STRAND_WIDE_SHARE of it either
+    side fits in it (a lock of hair is wider and keeps its volume), it stands at most STRAND_RELIEF_SHARE of it off the
+    skin, never under what lies round it. Unrolled round the head such a strand became a fin: on the Zauberer one stood
+    8 mm off his forehead over his right eye, 4 mm wide, and its sides read as a dark notch (2026-11-23). An ear seen
+    edge-on stands off the head with no air behind it along the rays, and stays."""
+    width, pixel = zone["width"], zone["pixel"]
+    cols = radius.shape[1]
+    size = 2 * max(1, int(round(STRAND_WIDE_SHARE * width / pixel))) + 1
+    pad = min(cols, size)
+    padded = np.concatenate([radius[:, cols - pad:], radius, radius[:, :pad]], axis=1)
+    opened = ndimage.grey_opening(padded, size=(size, size), mode="nearest")[:, pad:pad + cols]
+    gap = radius - inner
+    with np.errstate(invalid="ignore"):
+        strand = (np.asarray(known, bool) & np.isfinite(inner) & (gap > STRAND_GAP_SHARE * width)
+                  & (radius - opened > STRAND_GAP_SHARE * width))
+    out = np.array(radius, dtype=np.float64)
+    if strand.any():
+        strand = wrap_grow(strand, 2) & np.isfinite(inner)      # its edges too, where the gap closes
+        pressed = np.maximum(inner + np.clip(gap, 0, STRAND_RELIEF_SHARE * width), opened)
+        out = np.where(strand, np.minimum(out, pressed), out)
+    # what is left of a strand's tip, a blade fewer than SPIKE_ROWS pixels thin standing out of the head, goes down to
+    # what lies round it: two such stood behind the Zauberer's right ear, 3 to 8 mm out (2026-11-23)
+    across = ndimage.grey_opening(out, size=(SPIKE_ROWS, 1), mode="nearest")
+    out = np.where(out - across > STRAND_GAP_SHARE * width, across, out)
+    pad = min(cols, SPIKE_ROWS)
+    padded = np.concatenate([out[:, cols - pad:], out, out[:, :pad]], axis=1)
+    along = ndimage.grey_opening(padded, size=(1, SPIKE_ROWS), mode="nearest")[:, pad:pad + cols]
+    return np.where(out - along > STRAND_GAP_SHARE * width, along, out)
+
+
+def neck_cover(zone: dict, radius: np.ndarray) -> np.ndarray:
+    """RADIUS (a picture of the zone's frame) under the stitch, where the new neck reaches down into a collar (zone
+    "low"): at least NECK_COVER_SHARE of the head's width outside the old figure's skin (zone "skin") wherever that lies
+    within NECK_COVER_REACH of it (the old neck standing free under the stitch, and its front between the collar's open
+    fronts), as a smooth envelope, so nothing of the old neck, its old paint and its ledges shows through it; a collar's
+    inside or a chest further out stays in front of the new neck, which never reaches past the zone's limit there (a
+    collar's inside less a margin) nor keeps what stands narrow out of the build's neck. Its lowest NECK_DIVE_SHARE of
+    the head's width lies under the old surface, so it ends inside the body. RADIUS as it is without a deep neck."""
+    low, bottom = zone.get("low", zone["bottom"]), zone["bottom"]
+    if low >= bottom or zone.get("skin") is None:
+        return radius
+    frame, width, pixel = zone["frame"], zone["width"], zone["pixel"]
+    heights = row_heights(frame)[:, None] * np.ones((1, frame["cols"]))
+    skin = np.asarray(zone["skin"], dtype=np.float64)
+    under = (heights <= bottom + pixel) & (heights >= low - BLEND_ROWS * pixel)
+    limit = np.asarray(zone["limit"], dtype=np.float64)
+    # under the stitch the build's neck without what stands narrow out of it: a piece of its own collar's edge stood
+    # out of the Zauberer's new neck as a violet chip beside the collar's front (2026-11-23)
+    cols = radius.shape[1]
+    size = 2 * max(1, int(round(STRAND_WIDE_SHARE * width / pixel))) + 1
+    pad = min(cols, size)
+    padded = np.concatenate([radius[:, cols - pad:], radius, radius[:, :pad]], axis=1)
+    opened = ndimage.grey_opening(padded, size=(size, size), mode="nearest")[:, pad:pad + cols]
+    radius = np.where(under & (heights < bottom - pixel), np.minimum(radius, opened), radius)
+    with np.errstate(invalid="ignore"):
+        near = (under & np.isfinite(skin) & (skin < radius + NECK_COVER_REACH * width)
+                & (skin + NECK_COVER_SHARE * width <= limit))      # a collar's inside is no neck to cover
+    need = np.where(near, skin + NECK_COVER_SHARE * width, -np.inf)
+    out = np.array(radius, dtype=np.float64)
+    if near.any():
+        grown = ndimage.maximum_filter(need, size=5, mode=("nearest", "wrap"))
+        have = np.isfinite(grown)
+        num = ndimage.gaussian_filter(np.where(have, grown, 0.0), 2.0, mode=("nearest", "wrap"))
+        den = ndimage.gaussian_filter(have.astype(np.float64), 2.0, mode=("nearest", "wrap"))
+        soft = np.divide(num, den, out=np.full(num.shape, -np.inf), where=den > 1e-6)
+        out = np.where(have, np.maximum(out, np.maximum(soft, need)), out)
+    out = np.where(under, np.minimum(out, limit), out)          # never out through the collar
+    # under the old surface at the bottom, eased from over it to under it over the band's top third
+    depth = np.clip((low + NECK_DIVE_SHARE * width - heights) / (NECK_DIVE_SHARE * width / 3), 0, 1)
+    with np.errstate(invalid="ignore"):
+        dive = (heights < low + NECK_DIVE_SHARE * width) & np.isfinite(skin)
+    return np.where(dive, np.minimum(out, skin + NECK_COVER_SHARE * width * (1 - 2 * depth)), out)
 
 
 def crown_width(soft: np.ndarray, known: np.ndarray, share: np.ndarray) -> np.ndarray:
@@ -902,10 +1021,12 @@ def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:
     top = np.clip(len(h) - 1 - band.sum(axis=0), 0, len(h) - 1)     # the row just over the neck, column by column
     rise = sub[top, np.arange(sub.shape[1])] - sub[-1]
     # round it from column to column, so a narrow chin's underside runs into the jaw beside it instead of standing
-    # under it as a squared tab (the Zauberer's game figure, 2026-11-22)
+    # under it as a squared tab (the Zauberer's game figure, 2026-11-22). Where the head over the neck is narrower (a
+    # nape under the hair) the line runs in to it: held at the stitch's width up to the band's top, the Zauberer's neck
+    # ended there in a shelf 3 mm deep all round the back (2026-11-23)
     sigma = NECK_ROUND_SHARE * sub.shape[1]
     over = ndimage.gaussian_filter1d(h[top], sigma, mode="wrap")
-    rise = np.maximum(ndimage.gaussian_filter1d(rise, sigma, mode="wrap"), 0)
+    rise = ndimage.gaussian_filter1d(rise, sigma, mode="wrap")
     share = np.clip((h[:, None] - h[-1]) / np.maximum(over - h[-1], frame["pixel"])[None, :], 0, 1)
     line = np.minimum(sub[-1][None, :] + share * rise[None, :], zone["limit"][above])
     filled = np.where(band, np.maximum(sub, line), sub)
@@ -941,24 +1062,32 @@ def tube_top(zone: dict, angle: np.ndarray, radius: np.ndarray) -> np.ndarray:
     return top + TOP_SHARE * zone["width"]
 
 
-def tube_part(zone: dict, radius: np.ndarray, step: float, bottom: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
+def tube_low(zone: dict) -> float:
+    """How far down the new head reaches: into a collar (zone "low", `head_zone`), else to the stitch."""
+    return float(zone.get("low", zone["bottom"]))
+
+
+def tube_part(zone: dict, radius: np.ndarray, step: float, bottom: tuple[np.ndarray, np.ndarray] | None = None,
+              close_bottom: bool = False) -> dict:
     """The new head laid out as a grid round the axis, every STEP apart (about square), closed all round, from the
-    zone's bottom up into the hat (`tube_top`), capped there, its faces out. RADIUS is `tube_radius`'s picture. BOTTOM
-    (angles, radii of the figure's own neck at the stitch) puts the lowest row onto it (NECK_EASE_ROWS: on the Zauberer
-    the stitch lies 1.2 mm under the chin, and easing six rows pulled the chin in), so the stitch is a band of one row:
-    the chin's underside. Texture coordinates run once round (u, the back at 0 and 1) and down (v, the top at
-    0); the back's column is doubled for that. Returns a part with "bottom_ids" (the lowest row round, in the order the
-    angle grows) and "cap" (the cap's faces)."""
+    zone's bottom (`tube_low`) up into the hat (`tube_top`), capped there, its faces out. RADIUS is `tube_radius`'s
+    picture. BOTTOM (angles, radii of the figure's own neck at the stitch) puts the lowest row onto it (NECK_EASE_ROWS:
+    on the Zauberer the stitch lies 1.2 mm under the chin, and easing six rows pulled the chin in), so the stitch is a
+    band of one row: the chin's underside. CLOSE_BOTTOM caps the lowest row too (a neck reaching down into a collar,
+    stitched to nothing). Texture coordinates run once round (u, the back at 0 and 1) and down (v, the top at 0); the
+    back's column is doubled for that. Returns a part with "bottom_ids" (the lowest row round, in the order the angle
+    grows) and "cap" (the caps' faces)."""
     frame = zone["frame"]
+    low = tube_low(zone)
     mean = float(np.median(radius[np.isfinite(radius)]))
     cols = max(MIN_COLUMNS, int(round(2 * np.pi * mean / step)))
     turn = -np.pi + np.arange(cols + 1) * (2 * np.pi / cols)
     mid = sample_map(frame, radius, turn, np.full(cols + 1, zone["bottom"] + 0.5 * (frame["y_hi"] - zone["bottom"])))
     top = tube_top(zone, turn, mid)
-    span = float(np.max(top) - zone["bottom"])
+    span = float(np.max(top) - low)
     rows = max(2, int(round(span / step)))
     s = np.linspace(0.0, 1.0, rows + 1)
-    height = zone["bottom"] + s[:, None] * (top[None, :] - zone["bottom"])
+    height = low + s[:, None] * (top[None, :] - low)
     angle = np.broadcast_to(turn[None, :], height.shape)
     r = sample_map(frame, radius, angle.reshape(-1), height.reshape(-1)).reshape(height.shape)
     if bottom is not None:
@@ -979,8 +1108,16 @@ def tube_part(zone: dict, radius: np.ndarray, step: float, bottom: tuple[np.ndar
     centre_id = len(points)
     cap = np.stack([np.full(cols, centre_id), rim, np.roll(rim, -1)], axis=1)
     cap[-1, 2] = ids[-1, -1]                                   # the doubled back column closes the last one
-    return {"positions": np.concatenate([points, middle]), "faces": np.concatenate([faces, cap]),
-            "uvs": np.concatenate([uvs, [[0.5, 0.0]]]), "bottom_ids": ids[0, :-1], "cap": len(cap),
+    extra, extra_uvs = [middle], [[0.5, 0.0]]
+    if close_bottom:
+        ring = ids[0, :-1]
+        under = np.stack([np.full(cols, centre_id + 1), np.roll(ring, -1), ring], axis=1)
+        under[-1, 1] = ids[0, -1]
+        cap = np.concatenate([cap, under])
+        extra.append(points[ring].mean(axis=0)[None, :])
+        extra_uvs.append([0.5, 1.0])
+    return {"positions": np.concatenate([points] + extra), "faces": np.concatenate([faces, cap]),
+            "uvs": np.concatenate([uvs, extra_uvs]), "bottom_ids": ids[0, :-1], "cap": len(cap),
             "grid": (rows + 1, cols + 1)}
 
 
@@ -1257,9 +1394,10 @@ def open_edges(parts: list[dict], near: np.ndarray | None = None) -> int:
 def zone_box(zone: dict) -> tuple[float, ...]:
     """A box round the region and the new head's top (x0, x1, y0, y1, z0, z1), for counting what is open there."""
     frame = zone["frame"]
-    x, z = centre(frame["axis"], np.array([zone["bottom"], frame["y_hi"]]))
+    low = tube_low(zone)
+    x, z = centre(frame["axis"], np.array([low, frame["y_hi"]]))
     r = zone["reach"] * 1.2
-    return (float(x.min() - r), float(x.max() + r), zone["bottom"] - 4 * zone["pixel"], frame["y_hi"],
+    return (float(x.min() - r), float(x.max() + r), low - 4 * zone["pixel"], frame["y_hi"],
             float(z.min() - r), float(z.max() + r))
 
 
@@ -1275,6 +1413,8 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
     capped inside the hat. With skin weights (dense) the new head takes those of the nearest old point it replaces."""
     frame = zone["frame"]
     up = np.array([0.0, 1.0, 0.0])
+    low = tube_low(zone)
+    deep = low < zone["bottom"] - 1e-12
     out_parts, body_index, most, old_points, old_dense, rims = [], None, 0, [], [], []
     report = {"parts": [], "slivers_dropped": 0}
     for part in parts:
@@ -1287,7 +1427,9 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
             continue
         gone = (values[f] > 0).all(axis=1)
         if part.get("dense") is not None:
-            used = np.unique(f[(values[f] > 0).any(axis=1)])
+            # the skin weights of what the new head replaces, and of the old neck its own neck covers in the collar
+            reach = values if not deep else np.maximum(values, zone_values({**zone, "bottom": low}, part["positions"]))
+            used = np.unique(f[(reach[f] > 0).any(axis=1)])
             old_points.append(np.asarray(part["positions"])[used])
             old_dense.append(np.asarray(part["dense"])[used])
         cut, rim = hh.cut_part_values(part, values)
@@ -1310,8 +1452,10 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
                   and abs(winding(p[loop], middle)) >= 1]
     ids = max(round_neck, key=lambda loop: hh.loop_area(p[loop], up)) if round_neck else np.zeros(0, np.int64)
     loop = p[ids]
-    stitched = len(ids) >= 3
-    head = tube_part(zone, radius, step, polar(frame, loop) if stitched else None)
+    # a neck reaching down into a collar is stitched to nothing: the old neck's outline at the stitch is closed with
+    # the others, inside the new neck (`neck_cover`), and the new neck's end is capped deep in the collar
+    stitched = len(ids) >= 3 and not deep
+    head = tube_part(zone, radius, step, polar(frame, loop) if stitched else None, close_bottom=deep)
     if old_points:
         head["dense"] = hh.borrowed_weights(head["positions"], np.concatenate(old_points), np.concatenate(old_dense))
         if body.get("dense") is None:
@@ -1320,7 +1464,7 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
     if stitched:
         head, band, alike = hh.join_rims(body, ids, head, head["bottom_ids"], up)
         report["stitch_turns_alike"] = alike
-    rest = [loop for loop in loops if loop is not ids]
+    rest = [loop for loop in loops if loop is not ids or not stitched]
     opening = []
     if zone.get("top") is not None:
         # the outlines the cut leaves at the hat's opening are closed by a part of their own in the hat's colour: from
@@ -1340,6 +1484,7 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
         report["opening_cap"] = len(out_parts)
         out_parts.append(cap)
     report.update({"body_part": body_index, "stitched": bool(stitched), "stitch_faces": int(band),
+                   "neck": "into the collar" if deep else ("stitched" if stitched else "open"),
                    "neck_rim_points": int(len(ids)), "outlines_closed": int(closed + len(opening)),
                    "opening_outlines": len(opening), "head_faces": int(len(head["faces"])),
                    "grid": list(head["grid"])})
@@ -1355,11 +1500,12 @@ def tube_points(zone: dict, radius: np.ndarray, size: tuple[int, int]) -> tuple[
     once round from the back (u), rows from the top down (v), as `tube_part` lays its texture out."""
     rows, cols = size
     frame = zone["frame"]
+    low = tube_low(zone)
     turn = -np.pi + (np.arange(cols) + 0.5) * (2 * np.pi / cols)
     s = 1.0 - (np.arange(rows) + 0.5) / rows
     mid = sample_map(frame, radius, turn, np.full(cols, zone["bottom"] + 0.5 * (frame["y_hi"] - zone["bottom"])))
     top = tube_top(zone, turn, mid)
-    height = zone["bottom"] + s[:, None] * (top[None, :] - zone["bottom"])
+    height = low + s[:, None] * (top[None, :] - low)
     angle = np.broadcast_to(turn[None, :], height.shape)
     r = sample_map(frame, radius, angle.reshape(-1), height.reshape(-1)).reshape(height.shape)
     points = unpolar(frame, angle, r, height)
@@ -1456,6 +1602,90 @@ def figure_skin(own: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: d
     return np.median(own[face], axis=0) if face.sum() >= 3 else None
 
 
+def nose_turn(points: np.ndarray, zone: dict) -> np.ndarray:
+    """How far round the head from the nose each of POINTS lies (radians, 0 to pi)."""
+    flat = points.reshape(-1, 3)
+    angle, _ = polar(zone["frame"], flat)
+    nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
+    return np.abs(np.angle(np.exp(1j * (angle - nose[0])))).reshape(points.shape[:-1])
+
+
+def face_texels(points: np.ndarray, zone: dict) -> np.ndarray:
+    """Which texels of the new head (POINTS) lie on the face the picture shows: inside the face's window seen from the
+    front (zone "window", `hero_face.face_window`), on the head's front half."""
+    inside = hf.window_values(zone["window"], points.reshape(-1, 3)).reshape(points.shape[:-1]) > 0
+    return inside & (nose_turn(points, zone) < 0.5 * np.pi)
+
+
+def head_kinds(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> dict | None:
+    """Which texels of the new head (POINTS) are hair and which skin, and the colours to tell them by; None when too
+    little is seen to tell. The figure's own (OWN, `own_paint`) skin is read where the picture sees the face under the
+    nose (WEIGHT), its hair at the back over the nose; the build's (BUILD) the same way, and the new head's kind by the
+    build's paint, each texel as most of its neighbours ("new_hair"). Where the build has no paint near (over its own
+    brim, and where the new head stands out of it) the head is hair: taken as skin there, the figure's own hair right
+    under the Zauberer's brim was painted in his skin colour, a quarter of that band, and taken as the nearest kind the
+    build tells, his forehead's skin was carried up under the brim as a tan band round the front, his ears' up his
+    temples (2026-11-23). The build's skin is believed only round the face and the ears ("front", SKIN_TURN): built from
+    a front picture it makes up the back of the head, and the Zauberer's came out bald behind his ears (2026-11-23).
+    Returns {"skin", "hair" (the figure's), "build_skin", "build_hair", "new_hair", "front", "seen" (where the build has
+    paint), "is_hair" (a colour test by hue, the figure's colours by default)}."""
+    flat = points.reshape(-1, 3)
+    angle, _ = polar(zone["frame"], flat)
+    nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
+    turn = np.abs(np.angle(np.exp(1j * (angle - nose[0])))).reshape(points.shape[:2])
+    height = points[..., 1]
+    have = np.isfinite(own[..., 0])
+    face = have & (weight > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
+    back = have & (turn > 0.8 * np.pi) & (height > zone["nose"][1])
+    seen = np.isfinite(build[..., 0])
+    if face.sum() < 3 or back.sum() < 3 or (face & seen).sum() < 3 or (back & seen).sum() < 3:
+        return None
+
+    def hue(rgb):
+        return rgb / np.maximum(rgb.sum(axis=-1, keepdims=True), 1e-6)
+
+    skin, hair = np.median(own[face], axis=0), np.median(own[back], axis=0)
+
+    def is_hair(rgb, skin=skin, hair=hair):
+        return np.linalg.norm(hue(rgb) - hue(hair), axis=-1) < np.linalg.norm(hue(rgb) - hue(skin), axis=-1)
+
+    # the build told by its own skin and hair (it paints them its own way: the Zauberer's hair blue and white)
+    build_skin, build_hair = np.median(build[face & seen], axis=0), np.median(build[back & seen], axis=0)
+    built = is_hair(np.nan_to_num(build), build_skin, build_hair)
+    votes = ndimage.uniform_filter(np.where(seen, built, False).astype(np.float64), size=(7, 15),
+                                   mode=("nearest", "wrap"))
+    cast = ndimage.uniform_filter(seen.astype(np.float64), size=(7, 15), mode=("nearest", "wrap"))
+    new_hair = np.where(cast > 1e-9, votes > 0.5 * cast, True)
+    return {"skin": skin, "hair": hair, "build_skin": build_skin, "build_hair": build_hair, "new_hair": new_hair,
+            "front": turn < SKIN_TURN * np.pi, "seen": seen, "is_hair": is_hair}
+
+
+def build_skin_paint(build: np.ndarray, kinds: dict, skin: np.ndarray, points: np.ndarray,
+                     width: float) -> tuple[np.ndarray, np.ndarray]:
+    """(the face's SKIN shaded by the build's own paint, where the new head is skin): on the texels KINDS
+    (`head_kinds`) call skin round the face, where the build (BUILD, `build_colour`) has paint, the face's skin colour
+    times the build's lightness against its mean over SKIN_DETAIL_SHARE of the head's WIDTH round (on its skin alone),
+    within SKIN_DETAIL_RANGE. The build painted the head it built, so its shading fits the new shape (an ear's bowl
+    darker, its rim lighter); its colours do not (it paints the head's sides orange where the Zauberer's face is pale),
+    nor does the figure's own paint, which lay on the old head: it painted his new ears in the old ears' pink,
+    misplaced, and the right one in his hat's dark violet (2026-11-23). POINTS are the texels' places."""
+    where = ~kinds["new_hair"] & kinds["front"] & kinds["seen"]
+    light = np.nan_to_num(build) @ np.array([0.2126, 0.7152, 0.0722])
+    if not where.any():
+        return np.zeros(build.shape), where
+    across = np.median(np.linalg.norm(np.diff(points, axis=1), axis=-1))
+    down = np.median(np.linalg.norm(np.diff(points, axis=0), axis=-1))
+    sigma = (SKIN_DETAIL_SHARE * width / max(down, 1e-9), SKIN_DETAIL_SHARE * width / max(across, 1e-9))
+    # the mean over the plain skin round each texel: an ear's dark bowl left out, or the skin round it came out lighter
+    usual = float(np.median(light[where]))
+    plain = (where & (np.abs(light - usual) < SKIN_PLAIN * usual)).astype(np.float64)
+    num = ndimage.gaussian_filter(light * plain, sigma, mode=("nearest", "wrap"))
+    den = ndimage.gaussian_filter(plain, sigma, mode=("nearest", "wrap"))
+    mean = np.divide(num, den, out=np.full_like(num, usual), where=den > 1e-3)
+    shade = np.clip(light / np.maximum(mean, 1e-6), *SKIN_DETAIL_RANGE)
+    return np.clip(np.asarray(skin, dtype=np.float64)[None, None, :] * shade[..., None], 0, 255), where
+
+
 def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict,
               hat: np.ndarray | None = None) -> np.ndarray:
     """OWN (`own_paint`) kept where it is the kind the new head has there, hair or skin, else the figure's own colour of
@@ -1467,45 +1697,13 @@ def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np
     the brim, within HAT_PAINT_SHARE of the head's width under the old cut, takes the kind's colour too: Pixel Match
     painted the brim's dark onto the Zauberer's hairline, and cut up to the hat's opening his new head wore it as a
     plum strip with white specks all round (2026-11-23)."""
-    flat = points.reshape(-1, 3)
-    angle, _ = polar(zone["frame"], flat)
-    nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
-    turn = np.abs(np.angle(np.exp(1j * (angle - nose[0])))).reshape(points.shape[:2])
-    height = points[..., 1]
-    have = np.isfinite(own[..., 0])
-    face = have & (weight > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
-    back = have & (turn > 0.8 * np.pi) & (height > zone["nose"][1])
-    if face.sum() < 3 or back.sum() < 3:
+    kinds = head_kinds(own, build, weight, points, zone)
+    if kinds is None:
         return own
-
-    def hue(rgb):
-        return rgb / np.maximum(rgb.sum(axis=-1, keepdims=True), 1e-6)
-
-    skin, hair = np.median(own[face], axis=0), np.median(own[back], axis=0)
-
-    def is_hair(rgb, skin=skin, hair=hair):
-        return np.linalg.norm(hue(rgb) - hue(hair), axis=-1) < np.linalg.norm(hue(rgb) - hue(skin), axis=-1)
-
-    seen = np.isfinite(build[..., 0])
-    if (face & seen).sum() < 3 or (back & seen).sum() < 3:
-        return own
-    # the build told by its own skin and hair (it paints them its own way: the Zauberer's hair blue and white)
-    built = is_hair(np.nan_to_num(build), np.median(build[face & seen], axis=0), np.median(build[back & seen], axis=0))
-    votes = ndimage.uniform_filter(np.where(seen, built, False).astype(np.float64), size=(7, 15),
-                                   mode=("nearest", "wrap"))
-    cast = ndimage.uniform_filter(seen.astype(np.float64), size=(7, 15), mode=("nearest", "wrap"))
-    told = cast > 1e-9
-    # where the build has no paint near (over its own brim, and where the new head stands out of it) the head is hair:
-    # taken as skin there, the figure's own hair right under the Zauberer's brim was painted in his skin colour, a
-    # quarter of that band, and taken as the nearest kind the build tells, his forehead's skin was carried up under
-    # the brim as a tan band round the front, his ears' up his temples (2026-11-23)
-    new_hair = np.where(told, votes > 0.5 * cast, True)
+    skin, hair, new_hair, front, seen = kinds["skin"], kinds["hair"], kinds["new_hair"], kinds["front"], kinds["seen"]
+    is_hair, have, height = kinds["is_hair"], np.isfinite(own[..., 0]), points[..., 1]
     light = np.nan_to_num(build).sum(axis=-1)
     out = np.array(own)
-    # the build's skin is taken only round the face and the ears: built from a front picture it makes up the back of
-    # the head, and the Zauberer's came out bald behind his ears, which painted the figure's own hair there in his skin
-    # colour, a tan patch at the back under the brim (2026-11-23)
-    front = turn < SKIN_TURN * np.pi
     hatted = np.zeros(have.shape, bool)
     if hat is not None:
         seen_as = lab(np.nan_to_num(own))
@@ -1596,14 +1794,25 @@ def neck_band(points: np.ndarray, zone: dict) -> np.ndarray:
     column from the stitch up while the head stays within NECK_STEP_SHARE of its width of the lowest texel's distance
     from the axis, or faces down (a chin's underside goes with the neck), at most NECK_BAND_SHARE of the width over the
     stitch. The picture shows the throat there in the chin's shadow, often the shirt's dark opening under it, and the
-    build's paint copies it: on the Zauberer both painted a dark beard under the new chin (2026-11-22)."""
+    build's paint copies it: on the Zauberer both painted a dark beard under the new chin (2026-11-22). A neck reaching
+    down into a collar (`tube_low`) has its band from the stitch up too: under it the picture and the build paint it."""
     _, r = polar(zone["frame"], points.reshape(-1, 3))
     r = r.reshape(points.shape[:2])
     height = points[..., 1]
+    up = height >= zone["bottom"] - 0.5 * zone.get("pixel", 0.0)
+    base = stitch_rows(up)
+    lowest = r[base, np.arange(r.shape[1])][None, :]
     near = np.ones(r.shape, bool)
-    near[:-1] = (r[:-1] < r[-1:] + NECK_STEP_SHARE * zone["width"]) | (r[:-1] - r[1:] > height[:-1] - height[1:])
+    near[:-1] = (r[:-1] < lowest + NECK_STEP_SHARE * zone["width"]) | (r[:-1] - r[1:] > height[:-1] - height[1:])
     near &= height - zone["bottom"] < NECK_BAND_SHARE * zone["width"]
-    return np.logical_and.accumulate(near[::-1], axis=0)[::-1]
+    return np.logical_and.accumulate((near | ~up)[::-1], axis=0)[::-1] & up
+
+
+def stitch_rows(up: np.ndarray) -> np.ndarray:
+    """In every column of a picture of the new head (rows from the top down), the lowest row of UP (at or over the
+    stitch): the last row when the head ends at the stitch."""
+    rows = up.shape[0]
+    return np.where(up.any(axis=0), rows - 1 - np.argmax(up[::-1], axis=0), rows - 1)
 
 
 def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict,
@@ -1636,6 +1845,22 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         seen_own = own_paint(part, zone, points)
         skin = figure_skin(seen_own, weight[..., 0], points, zone) if "chin" in zone and "nose" in zone else None
         own = carry_up(same_kind(seen_own, raw, weight[..., 0], points, zone, hat=hat))
+        kinds = head_kinds(seen_own, raw, weight[..., 0], points, zone) if skin is not None else None
+        if kinds is not None:
+            # the new head's skin in the face's colour as the picture paints it, shaded by the build's own paint (its
+            # ears' bowls, the jaw's shadow) ...
+            height = points[..., 1]
+            face = (weight[..., 0] > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
+            painted = np.median((colour + shift)[face], axis=0) if face.sum() >= 3 else skin
+            toned, skin_at = build_skin_paint(raw, kinds, painted, points, zone["width"])
+            skin_at &= height < level                   # up in the hat, over the old head's cut, it is hair
+            own = np.where(skin_at[..., None], toned, own)
+            if zone.get("window") is not None:
+                # ... and on the head's sides the picture paints skin only on the face: there it sees the head
+                # edge-on, and what it shows is a strand or the brim's shadow (on the Zauberer's ears, 2026-11-23);
+                # under the face (the chin, the neck between a collar's fronts) it sees the skin from the front
+                aside = skin_at & ~face_texels(points, zone) & (nose_turn(points, zone) > SKIN_SIDE * np.pi)
+                weight = np.where(aside[..., None], 0.0, weight)
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan
@@ -1663,7 +1888,8 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
     # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
     rows, cols = band.shape
-    top = np.clip(rows - 1 - band.sum(axis=0), 0, rows - 1)          # the texel just over the neck, column by column
+    base = stitch_rows(points[..., 1] >= zone["bottom"] - 0.5 * zone.get("pixel", 0.0))
+    top = np.clip(base - band.sum(axis=0), 0, rows - 1)              # the texel just over the neck, column by column
     height = points[..., 1]
     over = height[top, np.arange(cols)][None, :]
     ease = np.clip((height - zone["bottom"]) / np.maximum(over - zone["bottom"], 1e-12), 0, 1)[..., None]
@@ -1709,11 +1935,12 @@ def paint_offset(part: dict, zone: dict, picture: np.ndarray) -> np.ndarray | No
     radius = zone["radius"]
     angle, r = polar(frame, p[inside])
     rows, cols = picture.shape[:2]
+    low = tube_low(zone)
     turn = -np.pi + (np.arange(cols) + 0.5) * (2 * np.pi / cols)
     mid = sample_map(frame, radius, turn, np.full(cols, zone["bottom"] + 0.5 * (frame["y_hi"] - zone["bottom"])))
     top = tube_top(zone, turn, mid)
     col = np.floor((angle + np.pi) / (2 * np.pi) * cols).astype(np.int64) % cols
-    s = (p[inside, 1] - zone["bottom"]) / np.maximum(top[col] - zone["bottom"], 1e-12)
+    s = (p[inside, 1] - low) / np.maximum(top[col] - low, 1e-12)
     row = np.clip(np.floor((1 - s) * rows).astype(np.int64), 0, rows - 1)
     new = picture[row, col].astype(np.float64)
     near = ((np.abs(sample_map(frame, radius, angle, p[inside, 1]) - r) < OFFSET_NEAR_SHARE * zone["width"])

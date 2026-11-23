@@ -34,8 +34,12 @@ again instead of the face alone: the face's seam ran down the cheek, a thick sid
 ear and face, and under the brim the old hair tips were open shells with gaps to the hat's inside (the Zauberer,
 2026-11-22). The crop takes the head between the brim and the collar; the new head is laid out round an axis through
 head and neck, from just above where the neck meets the collar up into the hat; the old head goes, the hat and the
-collar stay whole; the new head is stitched to the figure's own neck inside the collar and capped inside the hat, and
-every outline the cut leaves is closed, so the seam is watertight. head.png shows the region unrolled round the head.
+collar stay whole; the new head is capped inside the hat, and every outline the cut leaves is closed, so the seam is
+watertight. Where a collar stands round the neck, the new neck reaches on down into it over the old neck and ends
+closed inside the body, so nothing of the old neck shows through the collar's open front; a bare neck is stitched to
+the figure's own. Strands of the build standing off the face are laid onto it, and the skin the picture does not see
+(the ears, the jaw's sides) takes the build's own paint in the face's tone. head.png shows the region unrolled round
+the head.
 
 Writes <out>/<model>_face.glb (and <out>/<also>_face.glb; _head.glb with --region head), with face.json (every
 number), window.png and a licence record. Every step skips when its output exists, so a rerun picks up after a fix.
@@ -208,7 +212,8 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
     upscaled = {"license": {"name": "BSD-3-Clause"}, "classification": "commercial-clear", "components": LICENCES}
     face_record = read_model_record(raw)
     summary = {"model": str(args.model), "picture": str(args.picture), "region": "head", "crop": list(box),
-               "head": {"axis": zone["axis"], "stitch": zone["bottom"], "chin": zone["chin"], "brim_plane": {
+               "head": {"axis": zone["axis"], "stitch": zone["bottom"], "neck_low": hd.tube_low(zone),
+                        "chin": zone["chin"], "brim_plane": {
                    k: zone["plane"][k] for k in ("a", "b", "c", "below", "spread")}, "cut": zone["cut"],
                    "collar_share": float(zone["collar"].any(axis=0).mean()),
                    "opening_over_plane": None if zone.get("opening") is None else [
@@ -222,7 +227,7 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
     build = None if paint is None else {"positions": placed["positions"][on_skin], "uvs": placed["uvs"][on_skin],
                                         "paint": paint}
     circumference = 2 * np.pi * float(np.median(radius))
-    span = float(zone["frame"]["y_hi"] - zone["bottom"])
+    span = float(zone["frame"]["y_hi"] - hd.tube_low(zone))
     size = (max(64, int(round(hd.PICTURE_WIDTH * span / circumference))), hd.PICTURE_WIDTH)
     points, normals = hd.tube_points(zone, radius, size)
     picture = first = None
@@ -249,7 +254,7 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
         target_path.write_bytes(hh.regraft_glb(data, written))
         run.say(f"graft: {target_path.name}: {report}")
         summary["models"][model.name] = {"result": str(target_path), **report}
-        if not report["stitched"]:
+        if report.get("neck") == "open":
             run.flag(f"{model.name}: the new neck found no outline of the old one to be stitched to: it ends open "
                      "inside the collar")
         if report["open_edges_near"]:
@@ -332,6 +337,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"(head.png)")
         if not zone["collar"].any():
             run.flag("no collar found round the neck: the stitch under the chin may show; check head.png")
+        if hd.tube_low(zone) < zone["bottom"]:
+            run.say(f"measure: the collar hides the neck's lower part: the new neck reaches down into it to "
+                    f"{hd.tube_low(zone):.4f} ({zone['bottom'] - hd.tube_low(zone):.4f} under the stitch), over the old "
+                    "neck, and ends closed inside the body")
         if zone.get("opening") is not None:
             over = zone["opening"] - zone["plane"]["a"]
             run.say(f"measure: the hat's opening (where the hair meets the brim) lies {over.min():+.4f} to "
