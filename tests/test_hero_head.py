@@ -586,3 +586,21 @@ def test_head_zone_covers_only_the_old_head_that_stays_over_the_cut():
     v2, f2 = joined((v, f), skirt)
     zone = hd.head_zone(v2, f2, hf.face_window(v2, f2, v2[:, 1] > -0.06))
     assert (zone["cover"] - plain["cover"]).max() < 0.001    # the new head is not pushed out to cover what goes
+
+
+def test_figure_paint_takes_no_picture_over_the_old_heads_cut():
+    frame = frame_round()
+    radius = np.full((frame["rows"], frame["cols"]), 0.04)
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.004, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06), "reach": 0.06, "chin": -0.03,
+            "nose": np.array([0.0, -0.005, 0.04])}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    v, f = tube(0.039, -0.045, 0.026)          # the old head ends at the cut, under the brim
+    part = {"positions": v, "faces": f, "uvs": np.tile([0.75, 0.5], (len(v), 1)),
+            "material": painted([200, 100, 100], right=[215, 215, 225])}
+    colour = np.full((40, 64, 3), [40.0, 200.0, 200.0])      # over the cut the picture shows the hat: its rune band
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight))
+    top = (weight > 0.9) & (points[..., 1] > 0.028)
+    assert top.any() and np.allclose(out[top], [215, 215, 225], atol=3)   # the figure's hair, not the hat
