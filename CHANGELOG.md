@@ -144,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 
 ### Fixed
+- `game_ready.py --colour-from` never takes paint from the back of a surface. Its rays start
+  `--transfer-cage` outside the figure and look inward, and round a neck standing in a high collar
+  they started behind the collar's inside: the first surface they met faced the other way, so a
+  wizard's neck wore the collar's dark as a zigzag under the chin and tufts at the collar's edges
+  (4 % of his atlas met a surface facing away, most under a hat's brim and round the neck). Each
+  texel now takes the longest of three cages (the whole, 35 % and 10 % of it) whose ray met a
+  surface facing it, both normals baked in the figure's own space; a texel no cage reaches that way
+  keeps its own paint (0.2 % on that figure), and the normal map stays flat where the full cage met
+  a surface facing away. The report counts it (`colour_transfer_guard`).
 - `game_ready.py --drop-hidden` never opens an edge a camera sees. Where two surfaces cross (hair going up
   into a hat's brim), each lost its part inside the other, and the thinned mesh's wide triangles left two
   jagged rims with slits between them that showed the hat's inside from below: ten such edges on a wizard's

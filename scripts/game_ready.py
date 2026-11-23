@@ -94,6 +94,13 @@ FIXED = {
     "rigid_share": 0.145,     # a separate piece smaller than this share of the height moves as one
     "transfer_cage_m": 0.012,  # --colour-from: rays start this far outside the surface (metres, after the rescale) ...
     "transfer_reach_m": 0.03,  # ... and look this far for the finer model; a miss keeps the model's own paint
+    "transfer_facing": 0.0,    # a ray's paint counts only from a surface facing the texel's way (the cosine between
+                               # them at least this): the back of one facing the other way (a high collar's inside,
+                               # seen from the neck it stands round) is never taken ...
+    "transfer_cage_steps": (1.0, 0.35, 0.1),  # ... and such a texel is baked again from a cage this share of
+                               # --transfer-cage, the longest that meets a surface facing it; with none it keeps its
+                               # own paint (a wizard's neck took his collar's dark inside at 3 cm, AssetFurnace
+                               # Support D261)
     "hidden_rays": 16,        # --drop-hidden: a triangle no ray of these reaches the outside from is hidden ...
     "hidden_cells": 400,      # ... and goes if the air beside it is a sealed hollow, on a grid this many cells across
     "hidden_close": 2,        # ... closed this many cells, so a slit in the wall does not open the hollow
@@ -1191,6 +1198,38 @@ def blend_transfer(own, transfer, hit):
         return np.asarray(own, float)
     h = np.clip(np.asarray(hit, float), 0.0, 1.0)[..., None]
     return np.asarray(own, float) * (1.0 - h) + np.asarray(transfer, float) * h
+
+
+def met_facing(met_normals, own_normals):
+    """How the surface each texel's transfer ray met faces the texel's own surface: the cosine between the two
+    normals, both baked in object space as 0..1 colours (the met one through the finer model's rays, the own one
+    from the surface itself). Below 0 the ray met the back of a surface facing the other way: a high collar's inside
+    seen from the neck it stands round, the top of a brim seen from the hair under it."""
+    met = np.asarray(met_normals, float)[..., :3] * 2.0 - 1.0
+    own = np.asarray(own_normals, float)[..., :3] * 2.0 - 1.0
+    norms = np.linalg.norm(met, axis=-1) * np.linalg.norm(own, axis=-1)
+    return (met * own).sum(-1) / np.maximum(norms, 1e-8)
+
+
+def pick_transfer(tries, least: float = FIXED["transfer_facing"]):
+    """(colour, hit, step) per texel from colour transfers baked with ever shorter cages (TRIES: (colour, hit 0..1,
+    `met_facing`) per cage, the longest first): each texel takes the first cage whose ray met the finer model on a
+    surface facing it at least LEAST, and says which (`step`, -1 for none). A texel no cage reaches that way gets hit 0,
+    so `blend_transfer` keeps the model's own paint there. A cage long enough for a part the thinning sank (spiky hair)
+    starts the rays of a neck outside the collar round it, and the first surface they met was the collar's inside: a
+    wizard's game figure wore its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261)."""
+    first = tries[0]
+    shape = np.asarray(first[1], float).shape
+    colour = np.zeros(shape + (np.asarray(first[0]).shape[-1],))
+    hit = np.zeros(shape)
+    step = np.full(shape, -1, dtype=np.int64)
+    for k, (c, h, facing) in enumerate(tries):
+        h = np.clip(np.asarray(h, float), 0.0, 1.0)
+        take = (step < 0) & (h > 0.0) & (np.asarray(facing, float) >= least)
+        colour[take] = np.asarray(c, float)[take]
+        hit[take] = h[take]
+        step[take] = k
+    return colour, hit, step
 
 
 def normal_texels(baked, hit):

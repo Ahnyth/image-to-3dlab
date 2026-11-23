@@ -4,6 +4,7 @@ Colour, weight and bone-plan maths, the PNG writer and the Blender command line 
 functions, imported here exactly as `scripts/blender_game_ready.py` imports them.
 """
 
+import itertools
 import json
 import struct
 import sys
@@ -1247,3 +1248,44 @@ def test_without_a_measured_body_the_gate_counts_texels_as_before():
     alb, lit, cov = _glow_lines(1)
     _, _, stats = gr.compose(alb, lit, cov, s)
     assert stats["glow_split"]["#29e6ff"]["used"]
+
+
+# --- the colour transfer takes nothing from the back of a surface ---------------------------------
+
+def _baked_normals(vectors):
+    """Unit normals as a normal bake writes them in object space: 0..1 colours."""
+    n = np.asarray(vectors, float)
+    return n / np.linalg.norm(n, axis=-1, keepdims=True) * 0.5 + 0.5
+
+
+def test_a_ray_that_met_a_surface_facing_away_is_told_apart():
+    """A neck's ray, started outside a high collar, meets the collar's inside first: its normal points back at the
+    neck (a wizard's neck took the collar's dark that way, AssetFurnace Support D261)."""
+    own = _baked_normals([[0, 0, 1], [0, 0, 1], [1, 0, 0]])
+    met = _baked_normals([[0, 0.3, 1], [0, 0, -1], [-1, 0.1, 0]])
+    facing = gr.met_facing(met, own)
+    assert facing[0] > 0.9 and facing[1] < -0.9 and facing[2] < -0.9
+
+
+def test_each_texel_takes_the_longest_cage_whose_ray_met_a_surface_facing_it():
+    long_colour, short_colour = np.full((4, 3), 0.1), np.full((4, 3), 0.8)
+    tries = [(long_colour, np.array([1.0, 1.0, 1.0, 0.0]), np.array([1.0, -1.0, -1.0, 0.0])),
+             (short_colour, np.array([1.0, 1.0, 0.0, 0.0]), np.array([1.0, 0.9, -1.0, 0.0])),
+             (np.full((4, 3), 0.5), np.array([1.0, 1.0, 1.0, 0.0]), np.array([1.0, 1.0, -0.5, 0.0]))]
+    colour, hit, step = gr.pick_transfer(tries)
+    assert colour[0] == pytest.approx(0.1) and hit[0] == 1.0 and step[0] == 0       # the long cage was fine
+    assert colour[1] == pytest.approx(0.8) and hit[1] == 1.0 and step[1] == 1       # the collar's inside, then the neck
+    assert hit[2] == 0.0 and step[2] == -1                                           # nothing facing it: own paint
+    assert hit[3] == 0.0 and step[3] == -1                                           # no ray met anything
+
+
+def test_a_texel_whose_rays_all_met_surfaces_facing_away_keeps_the_models_own_paint():
+    own = np.full((2, 3), 0.6)
+    colour, hit, _ = gr.pick_transfer([(np.full((2, 3), 0.05), np.ones(2), np.array([-0.8, 0.7]))])
+    out = gr.blend_transfer(own, colour, hit)
+    assert out[0] == pytest.approx([0.6, 0.6, 0.6]) and out[1] == pytest.approx([0.05, 0.05, 0.05])
+
+
+def test_the_cage_steps_start_at_the_cage_and_shrink():
+    steps = gr.FIXED["transfer_cage_steps"]
+    assert steps[0] == 1.0 and all(a > b > 0 for a, b in itertools.pairwise(steps))

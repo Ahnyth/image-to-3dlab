@@ -1427,32 +1427,67 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         ob.select_set(True)
         bpy.context.view_layer.objects.active = ob
 
+    own_normals = None
+
+    def facing_of(objs, kw):
+        """How the surface each texel's ray met on the finer model faces this surface (`gr.met_facing`): both normals
+        baked in this object's space, the met one through the rays."""
+        nonlocal own_normals
+        if own_normals is None:
+            bpy.ops.object.select_all(action="DESELECT")
+            ob.select_set(True)
+            bpy.context.view_layer.objects.active = ob
+            scene.render.bake.normal_space = "OBJECT"
+            own_normals = bake("own normals", 1, "NORMAL", use_selected_to_active=False)
+        select_finer(objs)
+        scene.render.bake.normal_space = "OBJECT"
+        return gr.met_facing(bake("met normals", 1, "NORMAL", **kw), own_normals)
+
     def bake_normals(objs, hit=None):
-        """The finer model's shape in this surface's tangent space, and where its rays hit."""
+        """The finer model's shape in this surface's tangent space, and where its rays hit a surface facing it."""
         select_finer(objs)
         scene.render.bake.normal_space = "TANGENT"
         nrm = bake("normal map", 4, "NORMAL", **reach)
         if hit is None:
             emit_base_colour(objs, white=True)
             hit = bake("normal hits", 1, "EMIT", **reach)[..., 0]
+            hit = np.where(facing_of(objs, reach) >= s["transfer_facing"], hit, 0.0)
         return nrm, hit
 
     transfer_share = None
     normal_bake = None
-    if colour_objs:  # the finer model's paint wherever a short ray from this surface meets it
-        select_finer(colour_objs)
-        emit_base_colour(colour_objs)
-        transfer = bake("colour transfer", 4, "EMIT", **reach)
-        emit_base_colour(colour_objs, white=True)
-        hit = bake("transfer hits", 1, "EMIT", **reach)[..., 0]
+    guard = None
+    if colour_objs:  # the finer model's paint wherever a short ray from this surface meets it, facing it
         inside_now = mask[..., 0] > 0.5
+        tries = []
+        for share in s["transfer_cage_steps"]:
+            kw = dict(reach, cage_extrusion=s["transfer_cage_m"] * share)
+            select_finer(colour_objs)
+            emit_base_colour(colour_objs)
+            colour_k = bake("colour transfer", 4, "EMIT", **kw)[..., :3]
+            emit_base_colour(colour_objs, white=True)
+            hit_k = bake("transfer hits", 1, "EMIT", **kw)[..., 0]
+            tries.append((colour_k, hit_k, facing_of(colour_objs, kw)))
+            _, _, step = gr.pick_transfer(tries)
+            if not (inside_now & (step < 0) & (tries[0][1] > 0)).any():
+                break               # every texel a ray reached has its paint from a surface facing it
+        transfer, hit, step = gr.pick_transfer(tries)
+        long_hit, long_facing = tries[0][1], tries[0][2]
+        turned = inside_now & (long_hit > 0) & (long_facing < s["transfer_facing"])
+        guard = {"turned_away": round(float(turned.mean() / max(inside_now.mean(), 1e-9)), 5),
+                 "baked_again": round(float((turned & (step > 0)).sum() / max(inside_now.sum(), 1)), 5),
+                 "own_paint": round(float((turned & (step < 0)).sum() / max(inside_now.sum(), 1)), 5),
+                 "cages": len(tries)}
         transfer_share = float(np.clip(hit[inside_now], 0, 1).mean()) if inside_now.any() else 0.0
         albedo = albedo.copy()
-        albedo[..., :3] = gr.blend_transfer(albedo[..., :3], transfer[..., :3], hit)
-        if normal_objs is colour_objs:
-            normal_bake = bake_normals(colour_objs, hit)
+        albedo[..., :3] = gr.blend_transfer(albedo[..., :3], transfer, hit)
+        if normal_objs is colour_objs:   # the normal map from the full cage, flat where its ray met a turned surface
+            normal_bake = bake_normals(colour_objs, np.where(long_facing >= s["transfer_facing"], long_hit, 0.0))
         drop_finer(colour_objs)
-        log(f"colour transfer: {transfer_share * 100:.1f} % of the atlas from the finer model")
+        log(f"colour transfer: {transfer_share * 100:.1f} % of the atlas from the finer model; "
+            f"{guard['turned_away'] * 100:.2f} % met a surface facing away at the full cage, "
+            f"{guard['baked_again'] * 100:.2f} % taken from a shorter one, {guard['own_paint'] * 100:.2f} % kept "
+            "their own paint")
     if normal_objs and normal_bake is None:
         normal_bake = bake_normals(normal_objs)
         drop_finer(normal_objs)
@@ -1585,6 +1620,8 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     stats["bake_device"] = device
     if transfer_share is not None:
         stats["colour_transfer_share"] = round(transfer_share, 4)
+    if guard is not None:   # shares of the atlas's texels (`gr.pick_transfer`)
+        stats["colour_transfer_guard"] = guard
     stats["sky_roofs"] = int(roofs.sum())
     return stats, p_emi is not None
 
