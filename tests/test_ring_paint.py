@@ -45,7 +45,7 @@ def _ring(segments: int = 180, radius: float = 0.5, height: float = 0.3, tilt_de
     return np.concatenate(positions) @ turn.T, np.array(faces), np.concatenate(uvs)
 
 
-def _striped(width: int = 360, height: int = 32, seen_deg: float = 50.0, period_deg: float = 12.0):
+def _striped(width: int = 360, height: int = 32, seen_deg: float = 50.0, period_deg: float = 10.0):
     """Front arc (|angle| < seen_deg) in black and white stripes, the rest plain grey; column = angle + 180."""
     texture = np.full((height, width, 3), 128, dtype=np.uint8)
     angle = (np.arange(width) + 0.5) / width * 360 - 180
@@ -179,3 +179,54 @@ def test_a_tilted_band_is_repainted_over_its_own_height_not_the_boxs_rows():
     column = int((170 + 180) / 360 * texture.shape[1])     # 170 degrees: behind
     top_rows = out[1:6, column - 8:column + 8].astype(float)
     assert report["repainted"] > 0 and top_rows.std() > 80
+
+
+def _back_camera(size: int = 256, z: float = 3.0, fov: float = 0.5) -> pp.View:
+    c2w = np.diag([-1.0, 1.0, -1.0, 1.0])     # turned round: at -z, looking down +z
+    c2w[2, 3] = -z
+    image = np.zeros((size, size, 4), dtype=np.uint8)
+    image[..., 3] = 255
+    return pp.View(image, c2w, fov, "back")
+
+
+def test_what_another_picture_sees_keeps_its_paint():
+    # a drawn back view already painted the band's back: its marks stay, only the sides take the repeat
+    positions, faces, uvs, texture, view, box = _painted_ring()
+    angle = (np.arange(texture.shape[1]) + 0.5) / texture.shape[1] * 360 - 180
+    back = np.abs(angle) > 140
+    texture[:, back] = np.where(np.floor(angle[back] / 30) % 2 == 0, 200, 40).astype(np.uint8)[None, :, None]
+    out, _ = rp.paint_ring(texture, positions, uvs, faces, view, box, frame=IDENTITY, others=[_back_camera()])
+    behind = slice(int(350 / 360 * texture.shape[1]), texture.shape[1])
+    assert np.array_equal(out[4:-4, behind], texture[4:-4, behind])     # the band's edges fade in the back picture
+    assert _column_std(out, 90) > 80
+
+
+def test_the_repeat_joins_without_a_step_in_brightness():
+    # a picture's painted light makes one end of the seen arc darker than the other; repeated as it is, every join
+    # showed that step as a hard seam round the band
+    positions, faces, uvs, _, view, box = _painted_ring()
+    width = 360
+    angle = (np.arange(width) + 0.5) / width * 360 - 180
+    texture = np.full((32, width, 3), 110, dtype=np.uint8)
+    front = np.abs(angle) < 50
+    texture[:, front] = np.interp(angle[front], [-50, 50], [80, 140]).astype(np.uint8)[None, :, None]
+    marks = front & (np.floor(angle / 12) % 2 == 0) & (np.abs(angle % 12 - 6) < 1)
+    texture[12:20, marks] = 255
+    out, _ = rp.paint_ring(texture, positions, uvs, faces, view, box, frame=IDENTITY)
+    base = np.median(out[2:10, :, 0].astype(float), axis=0)        # above the marks
+    unseen = np.abs(angle) > 70
+    steps = np.abs(np.diff(base))[unseen[1:] & unseen[:-1]]
+    assert steps.max() < 12
+
+
+def test_a_few_kept_texels_do_not_set_the_bands_plain_colour():
+    # a few texels another picture half trusts (at the band's edge) kept their dark paint; as an anchor of the plain
+    # colour they darkened the whole side of the band the repeat painted
+    theta = np.linspace(-np.pi, np.pi, 14400, endpoint=False)       # 40 points in each 2-degree slice
+    colours = np.full((len(theta), 3), 100.0)
+    known = np.abs(theta) < 0.5
+    stray = np.flatnonzero(np.abs(theta - 2.0) < 0.017)[:6]
+    colours[stray] = 0.0
+    known[stray] = True
+    base = rp.band_base(theta, colours, known, among=np.ones(len(theta), dtype=bool))
+    assert base[np.abs(theta - 2.0) < 0.02].min() > 90

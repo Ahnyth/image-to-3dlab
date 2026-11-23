@@ -9,7 +9,10 @@ angles, where the picture's pixels are not used at all.
 A ring's pattern goes on round it, so the seen arc is repeated round the rest: the ring found from its own surface
 (its middle, its radius and its tilt), the arc the picture trusts cut where it holds the least detail (between two
 runes, not through one), and every texel of the ring the picture does not trust takes the colour of the seen arc at
-the same height, one arc-length further back. Only the ring's outer wall inside the given box changes.
+the same height, one arc-length further back. Only the marks travel: each keeps its difference from the band's plain
+colour where it came from and takes the plain colour where it lands, a slow trend round the ring, so the picture's
+painted light (one end of the arc darker than the other) leaves no seam at the joins. What another picture sees (a
+drawn back view) keeps its paint. Only the ring's outer wall inside the given box changes.
 
 Pure numpy + scipy; the GLB helpers change only the one base colour image, every other byte stays.
 """
@@ -36,6 +39,10 @@ GUTTER_PX = 4          # repainted texels grow this far into the UV gutter (as p
 # A face whose UV box spans more than this share of the picture has no island of its own: a cut's closing cap given
 # corner UVs (the Zauberer's colour model after the Hero head had 601, each over up to 25 million texels). Skipped.
 MAX_FACE_SHARE = 1.0 / 256
+OTHER_KEEP = 0.6       # a band texel another picture trusts this much keeps that picture's paint (less: a blur)
+BASE_BINS = 180        # slices of angle the band's plain colour is measured in (2 degrees) ...
+BASE_HALF = np.radians(20.0)   # ... each from the points this far on either side ...
+BASE_SHARE = 0.3       # ... in slices where at least this share of the band's points keep their paint
 TILT_ROUNDS = 4        # rounds of fitting the band's tilt to the band found round it
 BAND_MARGIN = 0.05     # the band's height, as the picture shows it in front, widened by this share at each edge
 TILT_REACH = 1.0       # faces this many box heights above and below the box are looked at for the band's tilted rest
@@ -126,9 +133,11 @@ def cut_arc(theta: np.ndarray, luminance: np.ndarray, seen: np.ndarray, bins: in
 
 
 def repeat_arc(theta: np.ndarray, height: np.ndarray, colours: np.ndarray, source: np.ndarray, target: np.ndarray,
-               arc: tuple[float, float], radius: float) -> np.ndarray:
+               arc: tuple[float, float], radius: float, base: np.ndarray | None = None) -> np.ndarray:
     """Colours for the TARGET points: the SOURCE point nearest to where each lands when the ring is cut into lengths
-    of the arc and laid back onto it (angle as arc length, so heights and lengths weigh alike)."""
+    of the arc and laid back onto it (angle as arc length, so heights and lengths weigh alike). With BASE (the band's
+    plain colour per point, `band_base`) only the marks travel: each keeps its difference from the plain colour where
+    it came from and takes the plain colour where it lands."""
     start, end = arc
     width = end - start
     if width <= 0:
@@ -136,7 +145,43 @@ def repeat_arc(theta: np.ndarray, height: np.ndarray, colours: np.ndarray, sourc
     tree = cKDTree(np.stack([theta[source] * radius, height[source]], axis=1))
     folded = start + (theta[target] - start) % width
     _, nearest = tree.query(np.stack([folded * radius, height[target]], axis=1), workers=-1)
-    return colours[source][nearest]
+    if base is None:
+        return colours[source][nearest]
+    return colours[source][nearest] - base[source][nearest] + base[target]
+
+
+def band_base(theta: np.ndarray, colours: np.ndarray, known: np.ndarray, bins: int = BASE_BINS,
+              half: float = BASE_HALF, least: int = 5, among: np.ndarray | None = None,
+              share: float = BASE_SHARE) -> np.ndarray:
+    """The band's plain colour at each point, as a slow trend round the ring: at each slice of angle a straight line
+    fitted to the colours of the KNOWN points (those keeping their paint) within HALF radians on either side, read at
+    the slice; across slices no point knows, a straight blend between the known ones on either side, round the ring.
+    A picture's painted light leaves one end of the seen arc darker than the other; repeated as it is, every join of
+    the repeat showed that step as a seam. Marks (runes, studs) are narrower than the window and stay out of it. A
+    slice counts only where at least SHARE of its points AMONG the band are known: a few texels at the band's edge
+    that another picture half trusts darkened a whole side as an anchor."""
+    which = np.clip(((theta + np.pi) / (2 * np.pi) * bins).astype(int), 0, bins - 1)
+    middle = (np.arange(bins) + 0.5) / bins * 2 * np.pi - np.pi
+    # each slice's median first (a mark covers less than half a slice's texels, so it drops out), then the trend
+    medians, have = np.zeros((bins, colours.shape[1])), np.zeros(bins, dtype=bool)
+    for k in range(bins):
+        here = known & (which == k)
+        total = (among & (which == k)).sum() if among is not None else here.sum()
+        if here.sum() >= least and here.sum() >= share * total:
+            medians[k], have[k] = np.median(colours[here], axis=0), True
+    anchors, trend = [], []
+    for k in np.flatnonzero(have):
+        d = (middle[have] - middle[k] + np.pi) % (2 * np.pi) - np.pi
+        near = np.abs(d) <= half
+        design = np.stack([np.ones(near.sum()), d[near]], axis=1)
+        anchors.append(middle[k])
+        trend.append(np.linalg.lstsq(design, medians[have][near], rcond=None)[0][0])
+    if not anchors:
+        return np.repeat(np.median(colours, axis=0)[None], len(colours), axis=0)
+    anchors, trend = np.asarray(anchors), np.asarray(trend)
+    per_bin = np.stack([np.interp(middle, anchors, trend[:, c], period=2 * np.pi) for c in range(colours.shape[1])],
+                       axis=1)
+    return per_bin[which]
 
 
 # --- texels ---------------------------------------------------------------------------------------------------------
@@ -226,7 +271,7 @@ def from_view_space(points: np.ndarray, frame=pp.PIXAL3D_FRAME, mesh_scale: floa
 
 def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, faces: np.ndarray, view: pp.View,
                box, mesh_scale: float = 1.0, frame=pp.PIXAL3D_FRAME, settings: pp.Settings | None = None,
-               trusted: float = TRUSTED, gutter: int = GUTTER_PX) -> tuple[np.ndarray, dict]:
+               trusted: float = TRUSTED, gutter: int = GUTTER_PX, others: list[pp.View] = ()) -> tuple[np.ndarray, dict]:
     """TEXTURE with the ring inside BOX (x0, y0, x1, y1 in VIEW's pixels: the band as the picture shows it) repainted
     round from its seen arc. Returns the new texture and a report (the ring found, the arc, texels repainted).
 
@@ -283,8 +328,13 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
     in_arc = (theta >= arc[0]) & (theta <= arc[1])
     source = seen & in_arc
     target = band & ~(in_arc & (trust >= trusted))
+    view_points, view_normals = pp.to_view_space(points, frame, mesh_scale), pp.to_view_space(normals, frame)
+    for other in others:              # what another picture paints (a drawn back) keeps its paint
+        weight, _ = pp.view_weights(view_points, view_normals, other, view_pos, faces, settings, outward_sign)
+        target &= weight < OTHER_KEEP
+    base = band_base(theta, colours, band & ~target, among=band)
     flat = flat.copy()
-    flat[index[target], :3] = repeat_arc(theta, height, colours, source, target, arc, ring.radius)
+    flat[index[target], :3] = repeat_arc(theta, height, colours, source, target, arc, ring.radius, base)
     grown = grow_into_gutter(flat, index[target], covered(uvs, faces, shape), shape, gutter)
     report.update(arc_degrees=float(np.degrees(arc[1] - arc[0])), arc=[float(np.degrees(a)) for a in arc],
                   repainted=int(target.sum()), gutter=grown)
@@ -368,8 +418,10 @@ def pick_primitive(data: bytes, view: pp.View, box, mesh_scale: float = 1.0, fra
 
 
 def paint_glb(data: bytes, view: pp.View, boxes, mesh_scale: float = 1.0, frame=pp.PIXAL3D_FRAME,
-              settings: pp.Settings | None = None, trusted: float = TRUSTED) -> tuple[bytes, list[dict]]:
-    """The GLB with each box's ring repainted round (`paint_ring`) on the primitive it belongs to."""
+              settings: pp.Settings | None = None, trusted: float = TRUSTED,
+              others: list[pp.View] = ()) -> tuple[bytes, list[dict]]:
+    """The GLB with each box's ring repainted round (`paint_ring`) on the primitive it belongs to; what one of the
+    OTHERS (more pictures of the model, a drawn back) sees keeps its paint."""
     reports = []
     for box in boxes:
         number = pick_primitive(data, view, box, mesh_scale, frame)
@@ -378,7 +430,8 @@ def paint_glb(data: bytes, view: pp.View, boxes, mesh_scale: float = 1.0, frame=
                             "repainted": 0})
             continue
         positions, uvs, faces, texture, image = read_primitive(data, number)
-        painted, report = paint_ring(texture, positions, uvs, faces, view, box, mesh_scale, frame, settings, trusted)
+        painted, report = paint_ring(texture, positions, uvs, faces, view, box, mesh_scale, frame, settings, trusted,
+                                     others=others)
         report["primitive"] = number
         reports.append(report)
         if report["repainted"]:

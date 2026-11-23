@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   onto surfaces that face it, so a hat band, a belt or a bracelet kept sharp marks in front and the generator's blur on
   its sides and back (the Zauberer's hat band: runes in front, blue smears at the sides). Given the band's box in the
   front picture, the arc the picture sees is repeated round the rest of the ring, cut between two marks and laid at the
-  same height on the band, tilt included; only the ring's outer wall changes, and only where no picture is trusted.
+  same height on the band, tilt included; only the marks travel (the band's plain colour is a slow trend round it, so
+  the picture's painted light leaves no seam at the joins), what another picture sees keeps its paint, and only the
+  ring's outer wall changes.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone

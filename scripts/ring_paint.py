@@ -10,9 +10,11 @@ the picture sees round the rest of the ring, cut between two of its marks, at th
 
 `painted.glb` is Pixel Match's result, or any later model in the same frame (one mesh; the primitive with the most
 surface inside the box is painted, so parts set in later keep theirs). `views_dir` is the folder Pixel Match painted
-from (`transforms.json` and the pictures); its first picture is the front. `--box` is the band in that picture's
-pixels, as an image viewer shows them, from its left end to its right and from its top edge to its bottom edge; give
-it again for another ring. Only the base colour image changes; every other byte stays.
+from (`transforms.json` and the pictures); its first picture is the front, and what the others see (a drawn back)
+keeps its paint. `--box` is the band in that picture's pixels, as an image viewer shows them, from its left end to its
+right and from its top edge to its bottom edge; give it again for another ring. Only the marks travel: the band's
+plain colour follows a slow trend round it, so the picture's painted light leaves no seam where the repeat joins.
+Only the base colour image changes; every other byte stays.
 
 The logic lives in `image_to_3dlab/ring_paint.py`.
 """
@@ -53,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"not found: {path}")
     started = time.time()
     views, mesh_scale = pp.load_views(args.views)
-    data, reports = rp.paint_glb(args.model.read_bytes(), views[0], args.box, mesh_scale, trusted=args.trusted)
+    data, reports = rp.paint_glb(args.model.read_bytes(), views[0], args.box, mesh_scale, trusted=args.trusted,
+                                 others=views[1:])
     for report in reports:
         if report.get("skipped"):
             print(f"[ring-paint] box {report['box']}: left alone, {report['skipped']}", flush=True)
