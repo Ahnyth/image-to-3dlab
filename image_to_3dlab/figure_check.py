@@ -650,13 +650,15 @@ def pose_holes(report) -> Result:
                   f"({pose.get('hole_px', 0)} found, the rest repaired)")
 
 
-def colour_against(before: Figure, figure: Figure, picture=None) -> Result:
-    """Where the figure's colour changed against the version before (colour_compare)."""
+def colour_against(before: Figure, figure: Figure, picture=None, same_look: bool = False) -> Result:
+    """Where the figure's colour changed against the version before (colour_compare): a spot to look
+    at, since a new part changes colour on purpose; a failure when SAME_LOOK says the new version
+    should only have lost faults (a rebuild of an approved figure)."""
     if picture is not None:
         patches = cc.marked_picture(before.model, figure.model, Path(picture), ignore=figure.glow)
     else:
         patches = cc.compare(before.model, figure.model, ignore=figure.glow)
-    status = "fail" if patches else "pass"
+    status = ("fail" if same_look else "look") if patches else "pass"
     text = "; ".join(p.describe() for p in patches[:4]) or "no patch changed colour"
     if len(patches) > 4:
         text += f" (and {len(patches) - 4} more)"
@@ -669,7 +671,8 @@ def colour_against(before: Figure, figure: Figure, picture=None) -> Result:
 # --- all of it ---------------------------------------------------------------------------------
 
 LOOKS = ("dark strokes under the jaw", "jagged outline", "loose flakes")
-WORSE = 1.25               # a hint this much bigger than in the version before fails
+WORSE = 1.5                # a hint this much bigger than in the version before fails ...
+MARGIN = {"dark strokes under the jaw": 0.5, "jagged outline": 0.2, "loose flakes": 1}   # ... and by this much
 
 
 @dataclass
@@ -683,9 +686,10 @@ class Checked:
         return any(r.status == "fail" for r in self.results)
 
 
-def check(path, before=None, report=None, size: int = 320, colour_picture=None) -> Checked:
+def check(path, before=None, report=None, size: int = 320, colour_picture=None, same_look: bool = False) -> Checked:
     """Every check on the game figure at PATH. BEFORE is the version it replaces (optional);
-    REPORT is game_ready's report (looked for beside the model when not given)."""
+    REPORT is game_ready's report (looked for beside the model when not given); SAME_LOOK says the
+    new version should look like BEFORE except for faults it lost, so a colour change fails."""
     path = Path(path)
     if report is None:
         guess = path.with_name(path.stem + ".report.json")
@@ -705,12 +709,12 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None) 
             if r.name not in LOOKS or was is None or not isinstance(r.value, (int, float)) \
                     or not isinstance(was.value, (int, float)):
                 continue
-            if r.value > was.value * WORSE + (1 if r.name == "loose flakes" else 0.05):
+            if r.value > was.value * WORSE and r.value > was.value + MARGIN[r.name]:
                 r.status = "fail"
                 r.message += f"; worse than the version before ({was.value})"
             else:
                 r.message += f"; the version before had {was.value}"
-        results.append(colour_against(old, figure, colour_picture))
+        results.append(colour_against(old, figure, colour_picture, same_look))
     return Checked(path, results, {"head": views, "whole": whole_views(figure, size),
                                    "hands": hand_views(figure)})
 

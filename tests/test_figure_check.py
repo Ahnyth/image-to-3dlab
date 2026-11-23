@@ -227,3 +227,12 @@ def test_the_script_writes_a_report_and_compares_with_the_version_before(tmp_pat
     checks = [r["check"] for r in report["new"]["results"]]
     assert "colour against the version before" in checks and "fingers" in checks
     assert (out / "index.html").read_text(encoding="utf-8").count("<img") >= 2
+
+
+def test_a_colour_change_is_a_spot_to_look_at_unless_the_look_should_stay(tmp_path):
+    p, f = box((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+    old = fc.Figure(model_of(p, f, (200, 160, 140)), {}, [], None)
+    new = fc.Figure(model_of(p, f, (60, 40, 30)), {}, [], None)
+    assert fc.colour_against(old, new).status == "look"
+    assert fc.colour_against(old, new, same_look=True).status == "fail"
+    assert fc.colour_against(old, old, same_look=True).status == "pass"

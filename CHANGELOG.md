@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   draws the head, neck and hands up close (found from the skeleton) and counts the fingers per
   hand, finds a neck that reads as a pale ring, holes in motion (from game_ready's report) and,
   against the version it replaces, where the colour changed; dark strokes under the jaw, saw
-  teeth along the head's outline and loose flakes come back as "look here" with the spot circled,
-  and fail only when they got worse than before. An HTML page shows every view and verdict side
+  teeth along the head's outline, loose flakes and colour changes come back as "look here" with
+  the spot circled, and fail only when they got clearly worse than before (or, with `--same-look`,
+  when a rebuild that should only lose faults changed colour). An HTML page shows every view and verdict side
   by side, so a run of versions reads at a glance (`--series`).
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
