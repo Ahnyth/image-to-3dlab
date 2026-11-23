@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy import ndimage
 
 from image_to_3dlab import hero_face as hf
 from image_to_3dlab import hero_hands as hh
@@ -894,9 +895,13 @@ def test_tube_radius_lays_a_strand_standing_off_the_face_onto_it():
     out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
     assert out[blade].max() < 0.035 + hd.STRAND_GAP_SHARE * w                # it goes
     assert out[strand].max() < 0.035 + 2 * hd.STRAND_RELIEF_SHARE * w     # laid onto the face
-    core = middle & (np.abs(turn + 1.6) < 20 * frame["turn"])
-    assert out[core].min() > 0.042                                        # the lock keeps its volume
-    assert out[middle & (np.abs(turn - 1.6) < 0.5 * frame["turn"])].max() > 0.042   # the ear stands as it was
+    inside = ndimage.binary_erosion(middle[:, 0], iterations=20)[:, None]
+    core = inside & (np.abs(turn + 1.6) < 10 * frame["turn"])
+    assert out[core].min() > 0.042                                        # the lock keeps its volume (an ear's
+    # stand-out at most, `round_flaps`: its rim rounded)
+    pressed = hd.press_strands(zone, radius, inner, np.ones(radius.shape, bool))
+    assert pressed[middle & (np.abs(turn - 1.6) < 0.5 * frame["turn"])].max() > 0.042   # no air behind it: not laid
+    # down as a strand (`round_flaps` rounds what stands out of the head's side on its own)
 
 
 def test_neck_fill_eases_a_neck_into_a_narrower_nape_over_it():
@@ -965,3 +970,26 @@ def test_figure_paint_paints_unseen_skin_from_the_builds_paint_in_the_faces_tone
     # the picture's dark violet there
     cheek = (np.abs(np.abs(angle) - 0.45 * np.pi) < 0.1) & middle & (weight < 0.01) & ~ear
     assert cheek.any() and np.allclose(out[cheek], face_c, atol=6)     # the unseen skin in the face's tone, not pink
+
+
+def test_tube_radius_rounds_an_ears_rim_and_keeps_it_from_standing_out_as_a_plate():
+    _, _, _, zone = deep_zone()
+    frame, w = zone["frame"], zone["width"]
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    middle = (heights > zone["bottom"] + 0.024) & (heights < zone["band"].min() - 0.004)
+    radius = np.full((frame["rows"], frame["cols"]), 0.035)
+    rows = np.flatnonzero(middle[:, 0])
+    ear_rows = (np.arange(frame["rows"]) >= rows[len(rows) // 2] - 12) & (np.arange(frame["rows"]) < rows[len(rows) // 2] + 12)
+    ear = ear_rows[:, None] & (np.abs(turn - np.pi / 2) < 16 * frame["turn"])   # an ear at the side: a plate 12 mm out,
+    radius[ear] = 0.047                                                       # its rim a wall all round
+    nose = ear_rows[:, None] & (np.abs(turn) < 16 * frame["turn"])           # the same at the front: a nose
+    radius[nose] = 0.047
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    side = ear_rows & True
+    col = int(np.argmin(np.abs(turn[0] - np.pi / 2 - 16 * frame["turn"])))   # across the ear's back rim
+    rim = np.abs(np.diff(out[side][:, col - 4:col + 5], axis=1)).max()
+    assert rim < 0.006                                     # its rim a rounded slope, not a 12 mm wall
+    assert out[ear].max() <= 0.035 + hd.FLAP_STAND_SHARE * w + 1e-9   # no further out than an ear stands
+    assert out[ear].max() > 0.035 + 0.5 * hd.FLAP_STAND_SHARE * w    # still an ear
+    assert out[nose].max() > 0.046                         # the face's own features stay as they are

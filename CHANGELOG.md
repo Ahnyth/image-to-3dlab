@@ -102,8 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the build's own paint (the build painted the head it built: an ear's bowl darker, its rim lighter; its own colours,
   orange at the head's sides, are not taken), and on the head's sides, off the face, the picture paints no skin, since
   it sees them edge-on: his ears had worn the old head's pink, misplaced, and the right one a strand and the brim's dark
-  violet from the picture. Under the hair the neck eases into a narrower nape instead of ending in a shelf
-  3 mm deep. head.png shows the region unrolled, head_paint.png the new head's paint.
+  violet from the picture. On the head's sides a piece standing out of it no wider than 15 % of the head's width
+  either side (an ear) stands at most 12 % of it out, its rim rounded over 4 %: unrolled round the head an ear is a
+  fin whose rim the rounding kept as a wall, a flat oval plate with a hard rim. Under the hair the neck eases into a
+  narrower nape instead of ending in a shelf 3 mm deep. head.png shows the region unrolled, head_paint.png the new
+  head's paint.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
