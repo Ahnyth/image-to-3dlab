@@ -134,7 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a chin's tip that dipped under the stitch) go with it. Where a collar stands round at least half of the head, the
   new neck reaches on down into it (0.3 of the head's width under the stitch), at least 1 % of the head's width round
   the old neck wherever that lies close to it, its lowest rows under the old surface, and ends closed there; the old
-  neck's outline at the stitch is closed inside it. Stitched under the chin, the Zauberer's old neck had shown through
+  neck's outline at the stitch is closed inside it; over the stitch the region stays as measured down to the stitch
+  (measured deeper, the air between his collar and head opened to the outside lower down, his collar's inside was
+  read 10 to 15 mm further out round his back, the cut took it away and the caps closing it showed as pink-white
+  stripes beside his jaw). Stitched under the chin, the Zauberer's old neck had shown through
   his collar's open front down to 0.24 of his head's width, painted with his old chin's shadow: a dark zigzag and a pale
   chevron under the new chin. A narrow strand of the build standing off its own skin with air between (a strand over
   the forehead) is laid onto it, at most 2 % of the head's width off it: unrolled round the head it stood as a fin

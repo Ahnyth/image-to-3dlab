@@ -845,6 +845,32 @@ def test_head_zone_reaches_the_new_neck_down_into_a_collar_round_it():
     assert zone2["low"] == zone2["bottom"]                      # a bare neck: stitched on as before
 
 
+def test_head_zone_keeps_the_region_over_the_stitch_when_the_neck_reaches_down_into_a_collar(monkeypatch):
+    # a frame reaching down into the collar can find the air between collar and head open to the outside lower down,
+    # and the collar's inside measured further out over the stitch: the Zauberer's grew 10 to 15 mm round his back,
+    # the cut took the collar's inside away there, and the fans closing it showed as pink-white stripes beside his jaw
+    (v, f), _ = figure()
+    window = hf.face_window(v, f, v[:, 1] > -0.06)
+    real = hd.collar_limit
+
+    def deep_sees_further(vertices, faces, hits, frame, bottom, width, reach):
+        limit, collar, outer = real(vertices, faces, hits, frame, bottom, width, reach)
+        if frame["y_lo"] < bottom - (hd.BLEND_ROWS + 1) * frame["pixel"]:   # the frame down into the collar
+            limit = np.where(collar, np.minimum(limit + 0.1 * width, reach), limit)
+        return limit, collar, outer
+
+    monkeypatch.setattr(hd, "collar_limit", deep_sees_further)
+    zone = hd.head_zone(v, f, window)
+    assert zone["low"] < zone["bottom"] and zone["frame"]["y_lo"] < zone["low"]
+    monkeypatch.setattr(hd, "NECK_COLLAR_LEAST", 2.0)           # the same figure measured down to the stitch only
+    shallow = hd.head_zone(v, f, window)
+    assert shallow["low"] == shallow["bottom"]
+    rows = shallow["frame"]["rows"]
+    over = hd.row_heights(shallow["frame"]) > shallow["bottom"]
+    assert np.allclose(zone["limit"][:rows][over], shallow["limit"][over])
+    assert ((hd.zone_values(zone, v) > 0) == (hd.zone_values(shallow, v) > 0)).all()   # the same cut
+
+
 def test_graft_head_reaches_the_new_neck_down_into_the_collar_closed_round_the_old_one():
     v, f, _, zone = deep_zone()
     built = hd.build_radius(zone, *joined(sphere(0.033, centre=(0.0, 0.005, 0.006)),
