@@ -901,6 +901,32 @@ def test_neck_band_stays_over_the_stitch_when_the_neck_reaches_down_into_the_col
     assert band.any() and not band[points[..., 1] < zone["bottom"] - 0.001].any()   # the neck under the chin only
 
 
+def test_figure_paint_starts_a_deep_necks_band_from_the_new_neck_under_the_stitch():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.024, 0.02, 0.04) * np.ones((1, frame["cols"]))     # a neck under a chin
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.03, "low": -0.045, "cut": 0.0, "width": 0.08,
+            "pixel": 0.002, "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
+    points, _ = hd.tube_points(zone, radius, (40, 64))
+    picture = np.full((40, 64, 3), [200.0, 170.0, 160.0])                       # the face
+    picture[points[..., 1] < zone["bottom"]] = [235.0, 215.0, 205.0]   # down in the collar: the picture's pale throat
+    turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
+    rings = [(0.021, y) for y in np.arange(-0.0445, -0.024, 0.001)] + [(0.041, y) for y in np.arange(-0.023, 0.02, 0.002)]
+    old = np.concatenate([hd.unpolar(frame, turn, np.full(90, r), np.full(90, y)) for r, y in rings])
+    uvs = np.where((np.hypot(old[:, 0], old[:, 2]) < 0.03)[:, None], [0.75, 0.5], [0.25, 0.5])
+    part = {"positions": old, "faces": np.zeros((0, 3), np.int64), "uvs": uvs,    # the figure's own neck lies in
+            "material": painted([190, 160, 160], right=[110, 80, 80])}          # its collar's shadow
+    out, _ = hd.figure_paint(picture, points, part, zone)
+    base = hd.stitch_rows(points[..., 1] >= zone["bottom"] - 0.5 * zone["pixel"])
+    cols = np.arange(points.shape[1])
+    assert (base < points.shape[0] - 1).all()                   # the new neck goes on under the stitch
+    step = np.abs(out[base, cols] - out[base + 1, cols]).max()
+    assert step < 12, step                                      # no hard edge where the band meets the new neck
+    band = hd.neck_band(points, zone)
+    assert out[band][:, 0].min() > 150                          # and no old, shaded neck in the band
+
+
 def test_tube_radius_lays_a_strand_standing_off_the_face_onto_it():
     _, _, _, zone = deep_zone()
     frame, w = zone["frame"], zone["width"]

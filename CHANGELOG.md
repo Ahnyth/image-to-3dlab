@@ -117,6 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrower nape instead of ending in a shelf 3 mm deep. head.png shows the region unrolled, head_paint.png the new
   head's paint.
 
+- **Hero head, a deep neck without a ring**: where the new neck reaches down into a collar, the band over the
+  stitch now eases from the new neck's own paint just under it up to the chin, not from the figure's old neck in the
+  collar's shadow; eased from the old one, the new neck stood under a wizard's chin as a pale ring with a hard top edge.
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with

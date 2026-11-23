@@ -1979,7 +1979,15 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     height = points[..., 1]
     over = height[top, np.arange(cols)][None, :]
     ease = np.clip((height - zone["bottom"]) / np.maximum(over - zone["bottom"], 1e-12), 0, 1)[..., None]
-    out = np.where(band[..., None], (1 - ease) * out + ease * out[top, np.arange(cols)][None, :, :], out)
+    start = out
+    under = np.minimum(base + 1, rows - 1)
+    deep = (under > base) & (height[under, np.arange(cols)] < zone["bottom"] - 0.5 * zone.get("pixel", 0.0))
+    if deep.any():
+        # a neck reaching down into a collar is painted under the stitch by the picture and the build: the band eases
+        # from that paint up, not from the figure's old neck, which lies in the collar's shadow. Eased from the old
+        # neck, the new one stood under the Zauberer's chin as a pale ring with a hard top edge (2026-11-23)
+        start = np.where(deep[None, :, None], out[under, np.arange(cols)][None, :, :], out)
+    out = np.where(band[..., None], (1 - ease) * start + ease * out[top, np.arange(cols)][None, :, :], out)
     return np.clip(out, 0, 255), offset
 
 
