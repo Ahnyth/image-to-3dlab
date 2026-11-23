@@ -68,10 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   head's outermost surface in that direction), kept where it is the kind, hair or skin, the build has there, else
   the figure's own hair or skin colour (the build's own paint painted the Zauberer's hair in blue, white and tan
   patches, a helmet in close views). Where the build has no paint to tell hair from skin (over its own brim, and where
-  the new head stands out of it) the nearest kind it tells holds, its skin counts only round the face and the ears (a
+  the new head stands out of it) the head is hair, its skin counts only round the face and the ears (a
   build from a front picture makes up the back of the head; the Zauberer's came out bald), and up in the hat, over the
   old head's cut, the figure's own hair is carried up: right under the Zauberer's brim a quarter of the hair had been
-  painted in his skin colour, and the band over the cut in tan streaks. The picture paints none of it over the cut,
+  painted in his skin colour, and the band over the cut in tan streaks; taken as the nearest kind the build tells, his
+  forehead's skin stood under the brim as a tan band. The hat's own colour, which Pixel Match bled onto the figure's
+  hairline, is not taken onto the hair under the brim: the hair under it is carried up (cut up to the hat's opening,
+  the Zauberer's head wore it as a plum strip with white specks all round, a fifth of the band under the brim; now
+  none, and 97 % of that band is hair). The picture paints none of it over the cut,
   where it shows the hat: a dark band with teal flecks stood over his forehead. Its neck, from the stitch up to the
   chin's
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the

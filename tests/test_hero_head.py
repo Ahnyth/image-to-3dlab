@@ -541,6 +541,31 @@ def test_same_kind_keeps_the_figures_hair_at_the_back_where_the_build_made_up_sk
     assert np.allclose(hd.same_kind(own2, build, weight, points, zone)[cheek], SKIN, atol=40)   # still turned skin
 
 
+def test_same_kind_keeps_hair_under_the_brim_where_the_build_has_no_paint_over_its_forehead():
+    zone, points, weight, turn = kinds_zone()
+    forehead = (weight > 0.5) & (points[..., 1] < 0.015)               # the build shows its face up to its own brim
+    build = np.where(forehead[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])
+    build[points[..., 1] > 0.015] = np.nan                              # and nothing over it
+    own = np.where(((weight > 0.5) & (points[..., 1] < 0.0))[..., None], SKIN, HAIR)
+    top_front = (turn < 0.2 * np.pi) & (points[..., 1] > 0.022)
+    out = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[top_front], HAIR)   # the figure's hair under the brim, not the build's forehead carried up
+
+
+def test_same_kind_takes_no_hat_colour_onto_the_hair_under_the_brim():
+    zone, points, weight, _ = kinds_zone()
+    face = (weight > 0.5) & (points[..., 1] < 0.0)
+    hat = np.array([42.0, 39.0, 75.0])                                  # the brim's underside, navy
+    own = np.where(face[..., None], SKIN, HAIR)
+    strip = points[..., 1] > 0.02                                       # right under the brim the figure's paint is
+    own[strip] = [70.0, 45.0, 90.0]                                     # the hat's, plum (Pixel Match bled it there)
+    build = np.where(face[..., None], [230.0, 170.0, 150.0], [90.0, 120.0, 220.0])
+    out = hd.carry_up(hd.same_kind(own, build, weight, points, zone, hat=hat))
+    assert np.allclose(out[strip], HAIR, atol=1)                        # the figure's hair carried up, no dark strip
+    plain = hd.same_kind(own, build, weight, points, zone)
+    assert np.allclose(out[~strip], plain[~strip])                      # the rest as without the hat's colour
+
+
 def test_figure_paint_carries_the_figures_hair_up_into_the_hat_over_the_old_head():
     frame = frame_round()
     radius = np.full((frame["rows"], frame["cols"]), 0.04)

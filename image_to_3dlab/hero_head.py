@@ -82,7 +82,8 @@ CROWN_READ = 0.3        # ... read over the band from this share of it up to the
 CROWN_PERCENTILE = 75   # ... as this percentile of its softened surface (a notch or a stray plate near the build's own
 CROWN_SPREAD = 0.15     # brim sets nothing), a running median over this share of the way round, softened after
 HAT_RING_SHARE = 0.15   # the hat's colour is read on its brim's underside within this share of the head's width of the
-                        # opening
+                        # opening ...
+HAT_PAINT_SHARE = 0.15  # ... and the figure's paint in it on the head is not taken within this share of it under the cut
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
 MIN_COLUMNS = 16
 AXIS_CELLS = 6          # this many cells round the axis count as solid in a column's section ...
@@ -1329,13 +1330,27 @@ def own_paint(part: dict, zone: dict, points: np.ndarray) -> np.ndarray:
     return seen[row * frame["cols"] + col].reshape(points.shape)
 
 
-def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> np.ndarray:
+def lab(rgb) -> np.ndarray:
+    """RGB (0..255, sRGB) as CIE L*a*b* (D65): distances there are about as the eye sees them."""
+    c = np.clip(np.asarray(rgb, dtype=np.float64) / 255.0, 0, 1)
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = (c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
+           / np.array([0.9505, 1.0, 1.089]))
+    g = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * g[..., 1] - 16, 500 * (g[..., 0] - g[..., 1]), 200 * (g[..., 1] - g[..., 2])], axis=-1)
+
+
+def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict,
+              hat: np.ndarray | None = None) -> np.ndarray:
     """OWN (`own_paint`) kept where it is the kind the new head has there, hair or skin, else the figure's own colour of
     that kind (its median, shaded by the build's paint). The kind is told by the colour's hue (its share of red, green
     and blue): the figure's skin is read where the picture sees the face under the nose (WEIGHT), its hair at the back
     over the nose; the new head's kind by the build's own paint (BUILD), each texel as most of its neighbours. On the
     Zauberer the new hair lay over the old head's ears and cheeks, and their skin stood in it as patches
-    (2026-11-22)."""
+    (2026-11-22). With the HAT's colour (`hat_colour`), OWN nearer it than to the hair and the skin (in L*a*b*) under
+    the brim, within HAT_PAINT_SHARE of the head's width under the old cut, takes the kind's colour too: Pixel Match
+    painted the brim's dark onto the Zauberer's hairline, and cut up to the hat's opening his new head wore it as a
+    plum strip with white specks all round (2026-11-23)."""
     flat = points.reshape(-1, 3)
     angle, _ = polar(zone["frame"], flat)
     nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
@@ -1364,22 +1379,39 @@ def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np
                                    mode=("nearest", "wrap"))
     cast = ndimage.uniform_filter(seen.astype(np.float64), size=(7, 15), mode=("nearest", "wrap"))
     told = cast > 1e-9
-    # where the build has no paint near (over its own brim, and where the new head stands out of it) the kind is the
-    # nearest one it tells: taken as skin there, the figure's own hair right under the Zauberer's brim was painted in
-    # his skin colour, a quarter of that band (2026-11-23)
-    new_hair = fill_nearest(np.where(told, votes > 0.5 * cast, False).astype(np.float64), told) > 0.5
+    # where the build has no paint near (over its own brim, and where the new head stands out of it) the head is hair:
+    # taken as skin there, the figure's own hair right under the Zauberer's brim was painted in his skin colour, a
+    # quarter of that band, and taken as the nearest kind the build tells, his forehead's skin was carried up under
+    # the brim as a tan band round the front, his ears' up his temples (2026-11-23)
+    new_hair = np.where(told, votes > 0.5 * cast, True)
     light = np.nan_to_num(build).sum(axis=-1)
     out = np.array(own)
     # the build's skin is taken only round the face and the ears: built from a front picture it makes up the back of
     # the head, and the Zauberer's came out bald behind his ears, which painted the figure's own hair there in his skin
     # colour, a tan patch at the back under the brim (2026-11-23)
     front = turn < SKIN_TURN * np.pi
-    for kind, colour in ((new_hair, hair), (~new_hair & front, skin)):
+    hatted = np.zeros(have.shape, bool)
+    if hat is not None:
+        seen_as = lab(np.nan_to_num(own))
+        near_hat = np.linalg.norm(seen_as - lab(hat), axis=-1)
+        level = plane_height(zone["plane"], points[..., 0], points[..., 2]) - zone.get("cut", 0.0)
+        hatted = (have & (height > level - HAT_PAINT_SHARE * zone["width"])
+                  & (near_hat < np.linalg.norm(seen_as - lab(hair), axis=-1))
+                  & (near_hat < np.linalg.norm(seen_as - lab(skin), axis=-1)))
+    for kind, colour in ((new_hair, hair), (~new_hair & front, skin), (~new_hair & ~front, hair)):
         wrong = have & kind & (is_hair(np.nan_to_num(own)) != (colour is hair))
+        if colour is hair and kind is not new_hair:
+            wrong = np.zeros(have.shape, bool)       # behind the face the build's skin is not believed (`front`)
+        wrong |= hatted & kind
         if wrong.any():
             usual = np.median(light[kind & seen]) if (kind & seen).any() else 1.0
             shade = np.clip(light[wrong] / max(usual, 1e-6), 0.85, 1.15)
             out[wrong] = np.clip(colour[None, :] * shade[:, None], 0, 255)
+    # the hat's colour over all the head's own paint in its column is left unknown, so the figure's paint under it is
+    # carried up there (`carry_up`): one flat colour stood there as a band
+    fine = have & ~hatted
+    first = np.where(fine.any(axis=0), fine.argmax(axis=0), own.shape[0])[None, :]
+    out[hatted & (np.arange(own.shape[0])[:, None] < first)] = np.nan
     return out
 
 
@@ -1484,7 +1516,8 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         offset = paint_offset(part, zone, np.where(weight > 0.5, colour, np.nan))
         shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
         raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
-        own = carry_up(same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone))
+        hat = hat_colour(part, zone) if zone.get("opening") is not None else None
+        own = carry_up(same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone, hat=hat))
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan
