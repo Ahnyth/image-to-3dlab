@@ -131,6 +131,7 @@ FLAP_WIDE_SHARE = 0.15      # it, no wider than this share of the head's width e
 FLAP_LEAST_SHARE = 0.04     # ... and more than this share of it out, stands at most FLAP_STAND_SHARE of it out ...
 FLAP_STAND_SHARE = 0.12     # ... its rim rounded over FLAP_ROUND_SHARE of it (`round_flaps`)
 FLAP_ROUND_SHARE = 0.04
+FLAP_BRIM_SHARE = 0.1       # ... no nearer the brim's cut than this share of the head's width (eased in over half of it)
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -863,7 +864,7 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     first = np.where(known.any(axis=0), known.argmax(axis=0), frame["rows"] - 1)[None, :]
     highest = np.take_along_axis(radius, np.clip(first, 0, frame["rows"] - 1), axis=0)
     radius = np.where(rows < first, highest, radius)
-    radius = round_flaps(zone, wrap_round(radius, ROUND_SHARE * width / pixel, ROUND_JUMP_SHARE * width))
+    radius = wrap_round(radius, ROUND_SHARE * width / pixel, ROUND_JUMP_SHARE * width)
     heights = row_heights(frame)[:, None]
     turn = column_angles(frame)
     edge = unpolar(frame, turn, zone["cover"], np.full(len(turn), zone["plane"]["a"]))
@@ -895,7 +896,9 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
         take = np.clip(s / FLARE_FADE, 0, 1)
         radius = soft + take * take * (3 - 2 * take) * np.maximum(flare - soft, 0)
     radius = np.minimum(radius, radius + ease * np.minimum(most - radius, 0))
-    return neck_cover(zone, neck_fill(zone, radius))
+    # the ears rounded last: before, they narrowed the head's own width under the brim read from the band (`crown_width`),
+    # and round the narrower head the hat's opening film showed its up-facing parts from below (see-through slits)
+    return neck_cover(zone, round_flaps(zone, neck_fill(zone, radius)))
 
 
 def press_strands(zone: dict, radius: np.ndarray, inner: np.ndarray, known: np.ndarray) -> np.ndarray:
@@ -905,9 +908,21 @@ def press_strands(zone: dict, radius: np.ndarray, inner: np.ndarray, known: np.n
     side fits in it (a lock of hair is wider and keeps its volume), it stands at most STRAND_RELIEF_SHARE of it off the
     skin, never under what lies round it. Unrolled round the head such a strand became a fin: on the Zauberer one stood
     8 mm off his forehead over his right eye, 4 mm wide, and its sides read as a dark notch (2026-11-23). An ear seen
-    edge-on stands off the head with no air behind it along the rays, and stays."""
+    edge-on stands off the head with no air behind it along the rays, and stays. Under the brim (in the band where the
+    head's own width there is read, zone "band", or FLAP_BRIM_SHARE of the head's width under its cut) only the face's
+    strands are laid down (FLAP_TURN's first share either side of the nose): beside and behind it the hair runs up into
+    the hat's opening, and taken in there it narrowed the head under the brim, round which the opening's film showed
+    its up-facing parts from below, see-through slits in the gallery."""
     width, pixel = zone["width"], zone["pixel"]
     cols = radius.shape[1]
+    allowed = np.ones(radius.shape, bool)
+    if zone.get("nose") is not None and zone.get("plane") is not None:
+        nose, _ = polar(zone["frame"], np.asarray(zone["nose"], dtype=np.float64)[None])
+        turn = np.abs(np.angle(np.exp(1j * (column_angles(zone["frame"]) - nose[0]))))
+        top = zone["plane"]["a"] - zone.get("cut", 0.0) - FLAP_BRIM_SHARE * width
+        foot = np.minimum(np.asarray(zone["band"], dtype=np.float64), top) if zone.get("band") is not None else top
+        high = row_heights(zone["frame"])[:, None] > np.broadcast_to(foot, (zone["frame"]["cols"],))[None, :]
+        allowed = ~(high & (turn > FLAP_TURN[0] * np.pi)[None, :])
     size = 2 * max(1, int(round(STRAND_WIDE_SHARE * width / pixel))) + 1
     pad = min(cols, size)
     padded = np.concatenate([radius[:, cols - pad:], radius, radius[:, :pad]], axis=1)
@@ -918,17 +933,17 @@ def press_strands(zone: dict, radius: np.ndarray, inner: np.ndarray, known: np.n
                   & (radius - opened > STRAND_GAP_SHARE * width))
     out = np.array(radius, dtype=np.float64)
     if strand.any():
-        strand = wrap_grow(strand, 2) & np.isfinite(inner)      # its edges too, where the gap closes
+        strand = wrap_grow(strand, 2) & np.isfinite(inner) & allowed     # its edges too, where the gap closes
         pressed = np.maximum(inner + np.clip(gap, 0, STRAND_RELIEF_SHARE * width), opened)
         out = np.where(strand, np.minimum(out, pressed), out)
     # what is left of a strand's tip, a blade fewer than SPIKE_ROWS pixels thin standing out of the head, goes down to
     # what lies round it: two such stood behind the Zauberer's right ear, 3 to 8 mm out (2026-11-23)
     across = ndimage.grey_opening(out, size=(SPIKE_ROWS, 1), mode="nearest")
-    out = np.where(out - across > STRAND_GAP_SHARE * width, across, out)
+    out = np.where(allowed & (out - across > STRAND_GAP_SHARE * width), across, out)
     pad = min(cols, SPIKE_ROWS)
     padded = np.concatenate([out[:, cols - pad:], out, out[:, :pad]], axis=1)
     along = ndimage.grey_opening(padded, size=(1, SPIKE_ROWS), mode="nearest")[:, pad:pad + cols]
-    return np.where(out - along > STRAND_GAP_SHARE * width, along, out)
+    return np.where(allowed & (out - along > STRAND_GAP_SHARE * width), along, out)
 
 
 def round_flaps(zone: dict, radius: np.ndarray) -> np.ndarray:
@@ -945,7 +960,11 @@ def round_flaps(zone: dict, radius: np.ndarray) -> np.ndarray:
     turn = np.abs(np.angle(np.exp(1j * (column_angles(frame) - nose[0]))))
     heights = row_heights(frame)
     side = (turn > FLAP_TURN[0] * np.pi) & (turn < FLAP_TURN[1] * np.pi)
-    rows = (heights > zone.get("chin", zone["bottom"])) & (heights < zone["plane"]["a"] - zone["cut"])
+    # never right under the brim: the hair there runs up into the hat's opening, and taken in it opened slits round
+    # the opening's film that the gallery showed as see-through from below (533 pixels against 113, 2026-11-23)
+    under = zone["plane"]["a"] - zone["cut"] - FLAP_BRIM_SHARE * width
+    fade = np.clip((under - heights) / (0.5 * FLAP_BRIM_SHARE * width), 0, 1)
+    rows = (heights > zone.get("chin", zone["bottom"])) & (fade > 0)
     cols = radius.shape[1]
     size = 2 * max(1, int(round(FLAP_WIDE_SHARE * width / pixel))) + 1
     pad = min(cols, size)
@@ -963,6 +982,7 @@ def round_flaps(zone: dict, radius: np.ndarray) -> np.ndarray:
     near = wrap_grow(flap, int(np.ceil(2 * sigma))).astype(np.float64)
     padded = np.concatenate([near[:, cols - pad:], near, near[:, :pad]], axis=1)
     weight = np.clip(2 * ndimage.gaussian_filter(padded, sigma, mode="nearest")[:, pad:pad + cols], 0, 1)
+    weight = weight * fade[:, None]
     # rounded from the ear's side only: its corners cut, the head round it as it was
     return weight * np.minimum(soft, limited) + (1 - weight) * radius
 

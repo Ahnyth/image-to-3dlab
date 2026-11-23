@@ -899,7 +899,11 @@ def test_tube_radius_lays_a_strand_standing_off_the_face_onto_it():
     core = inside & (np.abs(turn + 1.6) < 10 * frame["turn"])
     assert out[core].min() > 0.042                                        # the lock keeps its volume (an ear's
     # stand-out at most, `round_flaps`: its rim rounded)
-    pressed = hd.press_strands(zone, radius, inner, np.ones(radius.shape, bool))
+    cut = zone["plane"]["a"] - zone["cut"]
+    brim = (heights > cut - 0.5 * hd.FLAP_BRIM_SHARE * w) & (heights < cut) & (np.abs(turn + 1.6) < 3 * frame["turn"])
+    radius[brim] = 0.043                                  # a strand right under the brim at the side, where the hair
+    pressed = hd.press_strands(zone, radius, inner, np.ones(radius.shape, bool))   # runs up into the hat's opening:
+    assert np.allclose(pressed[brim], 0.043)                                    # left as it is
     assert pressed[middle & (np.abs(turn - 1.6) < 0.5 * frame["turn"])].max() > 0.042   # no air behind it: not laid
     # down as a strand (`round_flaps` rounds what stands out of the head's side on its own)
 
@@ -993,3 +997,35 @@ def test_tube_radius_rounds_an_ears_rim_and_keeps_it_from_standing_out_as_a_plat
     assert out[ear].max() <= 0.035 + hd.FLAP_STAND_SHARE * w + 1e-9   # no further out than an ear stands
     assert out[ear].max() > 0.035 + 0.5 * hd.FLAP_STAND_SHARE * w    # still an ear
     assert out[nose].max() > 0.046                         # the face's own features stay as they are
+    cut = zone["plane"]["a"] - zone["cut"]
+    high = (heights > cut - 0.5 * hd.FLAP_BRIM_SHARE * w) & (heights < cut) & (np.abs(turn - np.pi / 2) < 16 * frame["turn"])
+    flat = np.full(radius.shape, 0.035)
+    flat[high] = 0.047                                     # hair right under the brim at the side, where it runs up
+    assert np.allclose(hd.round_flaps(zone, flat)[high], 0.047)   # into the hat's opening: left as it is
+
+
+def test_rounding_an_ear_or_laying_a_strand_down_never_narrows_the_head_under_the_brim(monkeypatch):
+    zone = hat_zone()
+    frame, w = zone["frame"], zone["width"]
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    radius = np.full((frame["rows"], frame["cols"]), 0.03)
+    inner = radius.copy()
+    side = np.abs(turn - np.pi / 2) < 14 * frame["turn"]
+    band = (heights > zone["band"][None, :]) & (heights < zone["plane"]["a"] - zone["cut"])
+    radius[side & band] = 0.034                       # hair standing off the temple under the brim, a gap behind it
+    plain = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    full = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
+    cut = zone["plane"]["a"] - zone["cut"]
+    near = (heights[:, 0] > cut - 0.05 * w) & (heights[:, 0] < cut)
+    assert np.allclose(full[near], plain[near])       # the head's width right under the brim as without them: taken
+    # in there, the hat's opening film showed its up-facing parts round it from below (see-through slits)
+    monkeypatch.setattr(hd, "round_flaps", lambda zone, r: r)
+    unrounded = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
+    assert np.allclose(full[near], unrounded[near])   # nor does rounding the ears ...
+    calls, crown, flaps = [], hd.crown_width, hd.round_flaps
+    monkeypatch.setattr(hd, "crown_width", lambda *a: calls.append("crown") or crown(*a))
+    monkeypatch.setattr(hd, "round_flaps", lambda *a: calls.append("flaps") or flaps(*a))
+    hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
+    assert calls.index("crown") < calls.index("flaps")   # ... which comes after the head's own width under the brim is
+    # read (`crown_width`): rounded before, the Zauberer's ears narrowed it (533 see-through pixels against 20)
