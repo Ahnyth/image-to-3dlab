@@ -760,6 +760,21 @@ def test_opening_cap_spans_a_saddle_shaped_notched_outline_smoothly_without_fold
     assert hd.open_edges([cap]) == 120                          # closed but for its rim, where the cut meets it
 
 
+def test_opening_cap_keeps_the_inner_walls_cap_over_the_outer_one():
+    turn = np.linspace(0, 2 * np.pi, 96, endpoint=False)
+    outer = np.stack([0.06 * np.sin(turn), -0.002 - 0.012 * np.cos(2 * turn), 0.06 * np.cos(turn)], axis=1)
+    inner = np.stack([0.05 * np.sin(turn), -0.0012 - 0.012 * np.cos(2 * turn), 0.05 * np.cos(turn)], axis=1)[::-1]
+    part = {"positions": np.concatenate([outer, inner]), "faces": np.zeros((0, 3), np.int64),
+            "uvs": np.zeros((192, 2))}       # the cut's outline on the brim (a saddle) and on the hollow's inner wall,
+    # 0.8 mm over it all round (the Zauberer's at his back)
+    cap = hd.opening_cap(part, [np.arange(96), 96 + np.arange(96)], material="hat")
+    normals = hf.face_normals(cap["positions"], cap["faces"])
+    seen = np.stack([cap["positions"][:, 0], -cap["positions"][:, 2], -cap["positions"][:, 1]], axis=1)
+    _, owner = hf.depth_map(seen, cap["faces"], (-0.055, 0.055, -0.055, 0.055), 0.001)
+    assert (normals[owner[owner >= 0], 1] < 0).all()    # seen from below only the outer cap, facing down: the inner
+    # one (facing up, into the hollow) never shows through it, a see-through hole in the gallery
+
+
 def test_graft_head_closes_the_hats_opening_in_the_hats_colour():
     v, f, head_vertices = hat_figure()
     zone = hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))

@@ -1101,7 +1101,41 @@ def membrane(outline: np.ndarray, rings: int = MEMBRANE_RINGS) -> tuple[np.ndarr
     points = np.zeros((m, 3))
     points[:n] = outline
     points[free] = np.stack([spsolve(lap, links[free][:, :n] @ outline[:, k]) for k in range(3)], axis=1)
+    # never over the outline nearest it: across a saddle the film rose a few pixels inside its low end, over the cut's
+    # outline on the hollow's inner wall there, whose cap then showed through it from below (`lift_inner_caps`)
+    from scipy.spatial import cKDTree
+
+    _, near = cKDTree(outline[:, [0, 2]]).query(points[free][:, [0, 2]])
+    points[free, 1] = np.minimum(points[free, 1], outline[near, 1])
     return points, triangles
+
+
+def lift_inner_caps(points: list[np.ndarray], faces: list[np.ndarray], rims: list[int]) -> None:
+    """Every cap but the widest (POINTS and FACES, one entry a cap, each's outline the first RIMS points of it) raised,
+    in place, where it lies under the widest one as seen from below, to a little over it: a cut through a hollow build
+    leaves an outline on its skin and one on its inner wall, and on a saddle-shaped opening the two films crossed, so
+    the inner wall's cap (facing up, into the hollow) showed through the outer one from below, a see-through hole in
+    the gallery round the Zauberer's head (2026-11-23). Outlines stay where they are."""
+    if len(points) < 2:
+        return
+    start = np.cumsum([0] + [len(p) for p in points])
+    spans = [np.ptp(p[:, [0, 2]], axis=0).prod() for p in points]
+    widest = int(np.argmax(spans))
+    outer, outer_faces = points[widest], faces[widest] - start[widest]
+    size = float(np.ptp(outer[:, [0, 2]], axis=0).max())
+    pixel, gap = size / 200, size * 0.002
+    seen = np.stack([outer[:, 0], -outer[:, 2], -outer[:, 1]], axis=1)
+    box = (float(outer[:, 0].min()) - pixel, float(outer[:, 0].max()) + pixel, float(-outer[:, 2].max()) - pixel,
+           float(-outer[:, 2].min()) + pixel)
+    depth, _ = hf.depth_map(seen, outer_faces, box, pixel)
+    for k, cap in enumerate(points):
+        if k == widest:
+            continue
+        inner = cap[rims[k]:]
+        floor = -hf.sample(depth, box, pixel, np.stack([inner[:, 0], -inner[:, 2]], axis=1), outside=-np.inf,
+                           nearest=True)
+        under = np.isfinite(floor) & (inner[:, 1] < floor + gap)
+        inner[under, 1] = floor[under] + gap
 
 
 def opening_cap(part: dict, loops: list[np.ndarray], material=None) -> dict:
@@ -1132,6 +1166,7 @@ def opening_cap(part: dict, loops: list[np.ndarray], material=None) -> dict:
         points.append(np.concatenate([vertices[ids], vertices[ids].mean(axis=0)[None]]))
         source.append(np.r_[ids, ids[0]])
         faces.append(fan)
+    lift_inner_caps(points, faces, [len(ids) for ids in loops])
     out = {"positions": np.concatenate(points), "faces": np.concatenate(faces)}
     source = np.concatenate(source)
     for key in ("dense", "marks"):
