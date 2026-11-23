@@ -48,12 +48,17 @@ COLLAR_JUMP_SHARE = 0.05     # a collar's outside runs on up without jumps of th
 REACH_SHARE = 0.95      # nothing further than this share of the head's width from the axis is head (hair included)
 TOP_SHARE = 0.04        # the new head reaches this share of the head's width above the brim's underside, into the hat
 CUT_GAP_PIXELS = 2      # the old head is cut this many pixels under the brim's plane (below its lowest residual)
-COVER_BAND_SHARE = 0.2  # under the brim, in a band this share of the head's width deep under the cut, the old head is
+COVER_BAND_SHARE = 0.3  # under the brim, in a band this share of the head's width deep under the cut, the old head is
                         # measured all round ...
 COVER_MARGIN_SHARE = 0.015   # ... and the new head is at least this much wider there, so the cut lies inside it ...
 COVER_CAP_SHARE = 0.02  # ... and at most this much more again (a piece of the build's brim hanging lower stood out)
 COVER_SPREAD = 3        # ... and a column takes the widest of its neighbours this many columns either side ...
-COVER_SMOOTH = 40       # ... and the new head is as wide as the widest of it this many columns either side, softened
+COVER_SMOOTH = 20       # ... and the new head is as wide as the widest of it this many columns either side, softened
+COVER_SOFTEN = 15       # ... over this many columns (a closer fit and less softening left ridges round the flare)
+FLARE_SMOOTH = 0.01     # the flare under the brim starts from the head's width at the band's foot, softened over this
+                        # share of the way round ...
+FLARE_FADE = 0.4        # ... and the new head takes it wherever the build is narrower, in full from this share of the band up
+FLARE_BLUR_SHARE = 0.05 # up the band the build is softened more and more, at the top over this share of the head's width
 SIDE_LIMIT = 0.7        # a surface whose normal points this much up or down is a plate (a brim), not a head's side
 STAND_SHARE = 0.06      # a collar's top edge stands out at least this share of the head's width from the head above it
 BRIM_RING = (0.75, 1.1)  # the brim's underside is read in this ring round the axis (shares of the head's width) ...
@@ -526,7 +531,9 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     edge = unpolar(frame, column_angles(frame), np.full(frame["cols"], 0.6 * reach), np.full(frame["cols"], floor))
     band = plane_height(plane, edge[:, 0], edge[:, 2]) - cut - COVER_BAND_SHARE * width
     level = plane_height(plane, points[:, 0], points[:, 2]) - cut
-    near = ((points[:, 1] > band[col]) & (points[:, 1] < level + cut + TOP_SHARE * width)
+    # only what stays of the old head counts, over the cut: its hair hanging lower goes with the cut, and taken in it
+    # pushed the new head out a fifth of the head's width further than needed (a puffy roll under the brim)
+    near = ((points[:, 1] > level - pixel) & (points[:, 1] < level + cut + TOP_SHARE * width)
             & (radius < limit[row, col]) & (np.abs(hits["up"]) < SIDE_LIMIT))
     cover = np.zeros(frame["cols"])
     np.maximum.at(cover, col[near], radius[near])
@@ -536,7 +543,7 @@ def head_zone(vertices: np.ndarray, faces: np.ndarray, window: dict) -> dict:
     # the new head is as wide as the widest of it round each column, softened (`tube_radius`): the old hair's spikes
     # stood out of a closer fit as fins, and so did the caps closing their cut
     cover = ndimage.gaussian_filter1d(ndimage.maximum_filter1d(cover, 2 * COVER_SMOOTH + 1, mode="wrap"),
-                                      COVER_SMOOTH / 4, mode="wrap")
+                                      COVER_SOFTEN, mode="wrap")
     return {"frame": frame, "axis": axis, "limit": limit, "collar": collar, "outer": np.where(collar, -np.inf, outer),
             "plane": plane, "band": band, "cut": float(cut), "bottom": float(bottom), "cover": cover,
             "width": float(width), "pixel": float(pixel), "nose": nose, "chin": float(chin), "neck": neck,
@@ -629,12 +636,40 @@ def tube_radius(zone: dict, built: dict) -> np.ndarray:
     edge = unpolar(frame, turn, zone["cover"], np.full(len(turn), zone["plane"]["a"]))
     level = (plane_height(zone["plane"], edge[:, 0], edge[:, 2]) - zone["cut"])[None, :]
     band = zone["band"][None, :]
-    ramp = np.clip((heights - band) / np.maximum(level - band, pixel), 0, 1)
-    ramp = ramp * ramp * (3 - 2 * ramp)
+    s = np.clip((heights - band) / np.maximum(level - band, pixel), 0, 1)
     least = zone["cover"][None, :] + 1.5 * COVER_MARGIN_SHARE * width
-    radius = np.maximum(radius, radius + ramp * np.maximum(least - radius, 0))
-    radius = np.minimum(radius, radius + ramp * np.minimum(least + COVER_CAP_SHARE * width - radius, 0))
+    # up the band the build's own surface is softened more and more, so the step where it ran into its own brim (a notch
+    # over the forehead) and its lumps do not reach the brim; under it a smooth flare from the head's width at the
+    # band's foot to the old head's at the cut: where the build is narrower the new head is that flare, so it widens
+    # evenly up to the hat instead of in a puffy roll just under it (the Zauberer, 2026-11-23)
+    soft = blur_up(radius, s, FLARE_BLUR_SHARE * width / pixel)
+    foot_row = np.clip(np.floor((frame["y_hi"] - zone["band"]) / pixel).astype(np.int64), 0, frame["rows"] - 1)
+    foot = ndimage.gaussian_filter1d(radius[foot_row, np.arange(frame["cols"])], FLARE_SMOOTH * frame["cols"],
+                                     mode="wrap")[None, :]
+    ease = s * s * (3 - 2 * s)
+    flare = foot + ease * np.maximum(least - foot, 0)
+    take = np.clip(s / FLARE_FADE, 0, 1)
+    radius = soft + take * take * (3 - 2 * take) * np.maximum(flare - soft, 0)
+    # at most a little wider than the old head there, or than the new one at the band's foot where that is wider
+    most = np.maximum(least, foot) + COVER_CAP_SHARE * width
+    radius = np.minimum(radius, radius + ease * np.minimum(most - radius, 0))
     return neck_fill(zone, radius)
+
+
+def blur_up(radius: np.ndarray, share: np.ndarray, most: float) -> np.ndarray:
+    """RADIUS (a picture unrolled round an axis, its first and last columns neighbours) softened by a Gaussian whose
+    width grows with SHARE (0..1 per pixel) up to MOST pixels."""
+    widths = most * np.array([0.0, 0.125, 0.25, 0.5, 1.0])
+    cols = radius.shape[1]
+    pad = min(cols, int(np.ceil(3 * most)) + 1)
+    padded = np.concatenate([radius[:, cols - pad:], radius, radius[:, :pad]], axis=1)
+    levels = np.stack([padded if w <= 0 else ndimage.gaussian_filter(padded, w, mode=("nearest", "wrap"))
+                       for w in widths])[:, :, pad:pad + cols]
+    at = np.clip(np.asarray(share, dtype=np.float64), 0, 1) ** 2 * (len(widths) - 1)
+    low = np.minimum(np.floor(at).astype(np.int64), len(widths) - 2)
+    t = at - low
+    rows, columns = np.indices(radius.shape)
+    return (1 - t) * levels[low, rows, columns] + t * levels[low + 1, rows, columns]
 
 
 def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:

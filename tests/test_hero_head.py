@@ -355,7 +355,8 @@ def test_tube_radius_keeps_the_new_head_under_the_brim_about_as_wide_as_the_old(
     out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
     least = zone["cover"] + 1.5 * hd.COVER_MARGIN_SHARE * zone["width"]
     top = np.argmin(np.abs(heights[:, 0] - (zone["plane"]["a"] - zone["cut"])))   # at the cut, under the brim
-    assert (out[top] <= least + hd.COVER_CAP_SHARE * zone["width"] + 1e-9).all()  # no wider than the old head there
+    most = np.maximum(least, 0.03) + hd.COVER_CAP_SHARE * zone["width"]   # than the old head, or its own lower down
+    assert (out[top] <= most + 1e-9).all()      # no wider than that there
     low = heights[:, 0] < zone["band"].min() - 4 * zone["pixel"]
     assert np.allclose(out[low & (heights[:, 0] > zone["bottom"] + 0.02)], 0.03)   # lower down the build's own
 
@@ -557,3 +558,31 @@ def test_figure_paint_carries_the_figures_hair_up_into_the_hat_over_the_old_head
     high = (points[..., 1] > 0.02) & (normals[..., 2] < -0.5)
     assert high.any() and np.allclose(out[high], [215, 215, 225], atol=3)   # the figure's hair, not the build's blue
 
+
+def test_tube_radius_softens_the_builds_step_into_its_own_brim():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    zone = hd.head_zone(v, f, window)
+    frame = zone["frame"]
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.full((frame["rows"], frame["cols"]), 0.03)
+    cut = zone["plane"]["a"] - zone["cut"]
+    step = (heights > cut - 0.35 * (cut - zone["band"].min())) & (np.arange(frame["cols"]) < frame["cols"] // 2)
+    radius[step] = 0.042                         # on one side the build runs out into its own brim, a step over the brow
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    near = np.abs(heights[:, 0] - (cut - 0.1 * (cut - zone["band"].min()))) < 2 * zone["pixel"]
+    steps = np.abs(np.diff(np.c_[out[near], out[near][:, :1]], axis=1))
+    assert steps.max() < 0.0015                  # no notch: neighbouring columns run smoothly into each other
+
+
+def test_head_zone_covers_only_the_old_head_that_stays_over_the_cut():
+    (v, f), _ = figure()
+    is_head = v[:, 1] > -0.06
+    window = hf.face_window(v, f, is_head)
+    plain = hd.head_zone(v, f, window)
+    cut = plain["plane"]["a"] - plain["cut"]
+    skirt = tube(0.048, cut - 0.014, cut - 0.006, closed=False)        # old hair hanging under the cut: it goes
+    v2, f2 = joined((v, f), skirt)
+    zone = hd.head_zone(v2, f2, hf.face_window(v2, f2, v2[:, 1] > -0.06))
+    assert (zone["cover"] - plain["cover"]).max() < 0.001    # the new head is not pushed out to cover what goes

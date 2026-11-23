@@ -53,7 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old head goes, hat and collar stay whole; the new head is the build's outermost surface (its own brim and collar
   left out, and any plate of it the rays only graze or lying further out than the old head reached: a piece of its
   brim stood out as a comb of thin plates under the hat), as
-  wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
+  wide as the old head that stays over the cut so no gap shows, reaching up into the hat and capped there. It widens
+  to that evenly from about the ears up, and its own surface is softened more and more toward the brim, so no puffy
+  roll sits just under the brim and no notch shows where the build ran into its own brim (on the Zauberer it widened
+  in a band a fifth of the head's width tall, by up to a third of that width). It is
   stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
   round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels),
   moved to the figure's tone read there, and elsewhere by the figure's own paint seen from the head's axis (its old
