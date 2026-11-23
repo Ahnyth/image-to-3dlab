@@ -19,7 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through below its cuff, and the new hand is put on at the old hand's place, length and turn and stitched to the arm as
   one surface: no overlapping skins at the seam (the Hero face's fault in #229). The figure keeps its skeleton and every
   body weight; the new hand moves as the old one did. The finer models a game-ready step bakes paint and bumps from get
-  the same hands (`--also`).
+  the same hands (`--also`). Armoured hands too: a section is measured as the solid its outer wall encloses, so a
+  gauntlet built with an inner skin, a cuff's lip hanging round its wrist or a knuckle plate open toward the palm is
+  cut below its cuff, not across its knuckles, where the Waechter's first gauntlet lost its thumb and needed a 0.70x
+  squeeze to meet the arm. A build whose palm came out as a plate round an empty inside, or whose wrist is open plates
+  where the figure's cut falls, is turned away for the next seed; where a build's inner wall is fused to its outer
+  one, the stitch keeps to the outer wall. Each model's hands are as fine as the model round its wrists (`--hand-detail`; Pixal3D's own clean-up at that
+  size), so a game-ready step thins them with the rest of the figure: with a raw hand in its shape model, the
+  Waechter's game figure stopped at 37,887 triangles instead of 14,000 and came out 10 cm short.
 - **Hero face** (`scripts/hero_face.py`): a figure's face built again on its own and set in between its hat brim and
   its collar. A face is a few dozen pixels of a full-body picture, so a thin hair strand can come out fat and in front
   of an eye, and Pixel Match then paints the eye's glow onto it. The face is cropped from the picture, upscaled and
@@ -46,13 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old head goes, hat and collar stay whole; the new head is the build's outermost surface (its own brim and collar
   left out, and any plate of it the rays only graze or lying further out than the old head reached: a piece of its
   brim stood out as a comb of thin plates under the hat), as
-  wide as the old head under the brim so no gap shows, reaching up into the hat and capped there,
+  wide as the old head that stays over the cut so no gap shows, reaching up into the hat and capped there. It widens
+  to that evenly from about the ears up, and its own surface is softened more and more toward the brim, so no puffy
+  roll sits just under the brim and no notch shows where the build ran into its own brim (on the Zauberer it widened
+  in a band a fifth of the head's width tall, by up to a third of that width). It is
   stitched to the figure's own neck inside the collar, with every outline the cut leaves closed: no edge stays open
   round the head. It is painted by the picture where it faces the camera (the eyes are the picture's own pixels),
   moved to the figure's tone read there, and elsewhere by the figure's own paint seen from the head's axis (its old
   head's outermost surface in that direction), kept where it is the kind, hair or skin, the build has there, else
   the figure's own hair or skin colour (the build's own paint painted the Zauberer's hair in blue, white and tan
-  patches, a helmet in close views); its neck, from the stitch up to the chin's
+  patches, a helmet in close views). Where the build has no paint to tell hair from skin (over its own brim, and where
+  the new head stands out of it) the nearest kind it tells holds, its skin counts only round the face and the ears (a
+  build from a front picture makes up the back of the head; the Zauberer's came out bald), and up in the hat, over the
+  old head's cut, the figure's own hair is carried up: right under the Zauberer's brim a quarter of the hair had been
+  painted in his skin colour, and the band over the cut in tan streaks. Its neck, from the stitch up to the chin's
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the
   chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw, rounded from side to side (a
   narrow neck under a wide jaw left a pocket that the game figure's few triangles spanned in the air, baked from the
