@@ -412,7 +412,7 @@ def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch(
     frame = frame_round()
     heights = hd.row_heights(frame)[:, None]
     turn = hd.column_angles(frame)[None, :]
-    jaw = np.where(np.cos(turn) > 0.5, -0.034, -0.025)          # the chin's underside low, the jaw's at the back high
+    jaw = np.where(np.cos(turn) > 0.5, -0.034, -0.015)          # the chin's underside low, the jaw's at the back high
     radius = np.where(heights < jaw, 0.02, 0.04) * np.ones_like(turn)
     side = (np.sin(turn[0]) > 0.7) & (np.cos(turn[0]) > 0.5)    # a collar's edge under one side of the chin
     limit = np.where(side[None, :], 0.026, 0.06) * np.ones_like(heights)
@@ -422,10 +422,13 @@ def test_neck_fill_fills_the_pocket_under_a_jaw_with_a_slope_down_to_the_stitch(
     row = np.argmin(np.abs(heights[:, 0] - (-0.035)))           # halfway between the stitch and the chin's edge
     assert 0.028 < filled[row, front] < 0.032                   # on the slope from the stitch's 0.02 to the chin's 0.04
     assert filled[row + 1, front] < filled[row, front]          # lower down, nearer the stitch's
-    assert (filled[row, side] <= 0.026 + 1e-12).all() and (filled[row, side] > 0.024).all()   # filled, not into
+    assert (filled[row, side] <= 0.026 + 1e-12).all() and (filled[row, side] > 0.022).all()   # filled, not into
+    # the collar (its edge columns a little less, rounded into the neck beside them)
     back = np.argmax(np.abs(turn[0]))
     assert np.allclose(filled[:, back], radius[:, back])        # a jaw higher than the neck's reach: left as it is
-    assert np.allclose(filled[heights[:, 0] > -0.03], radius[heights[:, 0] > -0.03])    # the head above stays
+    chin = np.cos(turn[0]) > 0.6
+    assert np.allclose(filled[heights[:, 0] > -0.03][:, chin], radius[heights[:, 0] > -0.03][:, chin], atol=1e-4)   # the head
+    # above the chin stays (beside it the slope runs round into the higher jaw)
     assert np.allclose(filled[heights[:, 0] < -0.04], radius[heights[:, 0] < -0.04])    # nothing under the stitch
 
 
@@ -440,6 +443,34 @@ def test_neck_fill_rounds_a_narrow_chin_into_the_jaw_beside_it():
     row = np.argmin(np.abs(heights[:, 0] - (-0.036)))
     steps = np.abs(np.diff(np.r_[filled[row], filled[row, :1]]))
     assert steps.max() < 0.002                                  # its underside runs round into the jaw, no wall
+
+
+def test_neck_fill_fills_the_groove_under_a_high_jaw_beside_the_chin():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    side = (np.abs(np.cos(turn)) < 0.8) & (np.cos(turn) > 0)           # the jaw beside the chin, its edge 0.15 of the
+    jaw = np.where(side, -0.04 + 0.15 * 0.08, -0.034)                  # head's width over the stitch (the Zauberer's)
+    radius = np.where(heights < jaw, 0.02, 0.04) * np.ones_like(turn)
+    groove = side & (heights > jaw - 0.004) & (heights < jaw)           # under its edge the build's skin dips in
+    radius = np.where(groove, 0.016, radius)
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "pixel": 0.002, "limit": np.full(radius.shape, 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    under = side & (heights > -0.04) & (heights < jaw - 0.002)
+    assert filled[under].min() >= 0.02 - 1e-9                   # no groove under the jaw (a dark mark in the game)
+
+
+def test_neck_fill_rounds_the_chins_lower_edge():
+    frame = frame_round(pixel=0.0005)
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.0375, 0.02, 0.04) * np.ones((1, frame["cols"]))   # a chin 2.5 mm over the stitch
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "pixel": 0.0005, "limit": np.full(radius.shape, 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    front = np.argmin(np.abs(hd.column_angles(frame)))
+    corner = (heights[:, 0] > -0.0375) & (heights[:, 0] < -0.0365)
+    assert filled[corner, front].max() < 0.0395                  # its front turns in toward the underside, no edge
+    above = heights[:, 0] > -0.03
+    assert np.allclose(filled[above, front], 0.04)               # the chin above it as it was
 
 
 def test_tube_paint_takes_the_picture_where_the_head_faces_the_camera_and_the_builds_paint_behind():
@@ -484,7 +515,8 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
             "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
     points, _ = hd.tube_points(zone, radius, (40, 64))
     picture = np.full((40, 64, 3), [200.0, 170.0, 160.0])                       # the face
-    lips = (points[..., 1] > -0.032) & (points[..., 1] < -0.028)
+    lips = (points[..., 1] > -0.031) & (points[..., 1] < -0.027)     # over the chin's lower edge, which goes with
+    # the neck (its underside)
     picture[lips] = [220.0, 120.0, 120.0]
     picture[points[..., 1] < -0.034] = [100.0, 75.0, 70.0]      # under the chin the throat in its shadow, a shirt
     turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
@@ -499,6 +531,27 @@ def test_figure_paint_paints_the_new_neck_under_the_chin_from_the_figures_own_pa
     under_chin = (points[..., 1] < -0.034) & (points[..., 1] > -0.0365)
     assert out[under_chin][:, 0].min() > 160                    # ... eased to the chin's own skin under its edge
     assert np.allclose(out[lips], [210, 110, 120], atol=2)      # the chin above it keeps the picture
+
+
+def test_figure_paint_takes_no_collar_dark_onto_the_neck_beside_the_jaw():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.034, 0.02, 0.04) * np.ones((1, frame["cols"]))
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius, "chin": -0.034,
+            "nose": np.array([0.0, -0.005, 0.04]), "limit": np.full((frame["rows"], frame["cols"]), 0.06),
+            "reach": 0.06}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    skin = [200.0, 160.0, 150.0]
+    old, faces = joined(tube(0.021, -0.0399, -0.0335, segments=96, rings=8), tube(0.039, -0.0335, 0.02, segments=96))
+    aside = (np.abs(np.sin(np.arctan2(old[:, 0], old[:, 2]))) > 0.6) & (old[:, 1] < -0.034)
+    part = {"positions": old, "faces": faces, "uvs": np.where(aside[:, None], [0.75, 0.5], [0.25, 0.5]),
+            "material": painted(skin, right=[25, 25, 45])}      # beside the jaw the figure's neck in the collar's dark
+    colour = np.full((40, 64, 3), skin)
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, colour))
+    neck = (points[..., 1] < -0.035) & (np.abs(points[..., 0]) > 0.6 * np.hypot(points[..., 0], points[..., 2]))
+    assert neck.any() and out[neck].sum(axis=-1).min() > 0.7 * sum(skin)   # its skin, a little shaded, not black
 
 
 # --- the hairline under the brim (2026-11-23) -------------------------------------------------------------------------

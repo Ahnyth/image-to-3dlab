@@ -83,7 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   underside, takes the figure's own paint at the stitch, eased into the chin's skin over it (the picture's throat lies in the
   chin's shadow), so no dark beard shows under the chin and the stitch no change of paint, and it slopes down to the stitch under the chin and the jaw, rounded from side to side (a
   narrow neck under a wide jaw left a pocket that the game figure's few triangles spanned in the air, baked from the
-  collar's dark inside). Bits of the old head the cut leaves just past the region's edge
+  collar's dark inside). The neck reaches up to the jaw's edge beside the chin too (on the Zauberer 0.15 to 0.23 of
+  the head's width over the stitch, where a groove under the jaw had stayed), the chin's and the jaw's lower edge are
+  rounded (the build's chin has a flat underside, and seen from below it stood as a squared block), and the figure's
+  own paint there is never taken darker than its skin by more than 30 (L*): beside the jaw its neck lies in the
+  collar's dark, a black mark under his ears. Bits of the old head the cut leaves just past the region's edge
   (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
   head's paint.
 

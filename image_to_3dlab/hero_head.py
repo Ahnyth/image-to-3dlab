@@ -84,6 +84,8 @@ CROWN_SPREAD = 0.15     # brim sets nothing), a running median over this share o
 HAT_RING_SHARE = 0.15   # the hat's colour is read on its brim's underside within this share of the head's width of the
                         # opening ...
 HAT_PAINT_SHARE = 0.15  # ... and the figure's paint in it on the head is not taken within this share of it under the cut
+BAND_DARK = 30          # on the new neck the figure's own paint this much darker (L*) than its skin is the collar's dark:
+BAND_SHADE = 0.85       # it takes the skin's colour this much shaded
 MEMBRANE_RINGS = 4      # an outline the cut leaves at the hat's opening is spanned by a film with this many rings inside
 MEMBRANE_LEAST = 8      # ... when it has at least this many points (a smaller one by a fan)
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
@@ -102,8 +104,10 @@ BLEND_ROWS = 6          # the head's picture reaches this many rows below the st
 NECK_EASE_ROWS = 1      # the new head eases onto the figure's neck at the stitch over this many rows
 NECK_STEP_SHARE = 0.08  # the new head's neck runs up from the stitch until it stands out this share of the head's
                         # width (a chin, a jaw) ...
-NECK_BAND_SHARE = 0.1   # ... at most this share of it over the stitch; the figure's own paint covers it
-NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round
+NECK_BAND_SHARE = 0.25  # ... at most this share of it over the stitch (the Zauberer's jaw beside his chin is 0.15 to
+                        # 0.23 of it over the stitch); the figure's own paint covers it
+NECK_ROUND_SHARE = 0.03 # the slope under the chin and the jaw is rounded over this share of the way round ...
+EDGE_ROUND_SHARE = 0.02 # ... and the chin's and the jaw's lower edge over this share of the head's width
 SLIVER_PIXELS = 2       # a piece the cut leaves wholly within this many pixels of the region is a bit of the old head
 SPIKE_ROWS = 3          # fewer rows than this of the build standing out more than ...
 SPIKE_SHARE = 0.1       # ... this share of the head's width from the rows round them are a plate the rays only grazed
@@ -904,8 +908,18 @@ def neck_fill(zone: dict, radius: np.ndarray) -> np.ndarray:
     rise = np.maximum(ndimage.gaussian_filter1d(rise, sigma, mode="wrap"), 0)
     share = np.clip((h[:, None] - h[-1]) / np.maximum(over - h[-1], frame["pixel"])[None, :], 0, 1)
     line = np.minimum(sub[-1][None, :] + share * rise[None, :], zone["limit"][above])
+    filled = np.where(band, np.maximum(sub, line), sub)
+    # the chin's and the jaw's lower edge rounded: where the neck's slope meets them they stood as a squared block seen
+    # from below (the build's chin has a flat underside, 0.18 to 0.28 of the head's width deep), and a game figure's
+    # few triangles made it blockier still (the Zauberer, 2026-11-23). Only taken in, never out (a corner pointing out)
+    tall = EDGE_ROUND_SHARE * zone["width"] / frame["pixel"]
+    wide = tall * frame["pixel"] / max(float(np.median(sub[np.isfinite(sub)])) * frame["turn"], 1e-12)
+    pad = min(sub.shape[1], int(np.ceil(4 * wide)) + 1)
+    padded = np.concatenate([filled[:, -pad:], filled, filled[:, :pad]], axis=1)
+    soft = ndimage.gaussian_filter(padded, (tall, wide), mode=("nearest", "wrap"))[:, pad:pad + sub.shape[1]]
+    near = (np.arange(len(h))[:, None] >= (top - 2 * tall)[None, :]) & band.any(axis=0)[None, :]
     out = np.array(radius, dtype=np.float64)
-    out[above] = np.where(band, np.maximum(sub, line), sub)
+    out[above] = np.where(near, np.minimum(filled, soft), filled)
     return out
 
 
@@ -1399,6 +1413,14 @@ def lab(rgb) -> np.ndarray:
     return np.stack([116 * g[..., 1] - 16, 500 * (g[..., 0] - g[..., 1]), 200 * (g[..., 1] - g[..., 2])], axis=-1)
 
 
+def figure_skin(own: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict) -> np.ndarray | None:
+    """The figure's own skin colour (OWN, `own_paint`): its median where the picture sees the face (WEIGHT) between the
+    chin and the nose; None where it sees too little of it."""
+    height = points[..., 1]
+    face = np.isfinite(own[..., 0]) & (weight > 0.8) & (height > zone["chin"]) & (height < zone["nose"][1])
+    return np.median(own[face], axis=0) if face.sum() >= 3 else None
+
+
 def same_kind(own: np.ndarray, build: np.ndarray, weight: np.ndarray, points: np.ndarray, zone: dict,
               hat: np.ndarray | None = None) -> np.ndarray:
     """OWN (`own_paint`) kept where it is the kind the new head has there, hair or skin, else the figure's own colour of
@@ -1576,7 +1598,9 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
         raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
         hat = hat_colour(part, zone) if zone.get("opening") is not None else None
-        own = carry_up(same_kind(own_paint(part, zone, points), raw, weight[..., 0], points, zone, hat=hat))
+        seen_own = own_paint(part, zone, points)
+        skin = figure_skin(seen_own, weight[..., 0], points, zone) if "chin" in zone and "nose" in zone else None
+        own = carry_up(same_kind(seen_own, raw, weight[..., 0], points, zone, hat=hat))
         out = np.where(np.isfinite(own[..., :1]), weight * (colour + shift) + (1 - weight) * own,
                        np.asarray(picture, dtype=np.float64) + shift)
         out[band] = np.nan
@@ -1596,6 +1620,11 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     known = np.isfinite(out[..., 0])
     if not known.all() and known.any():
         out = np.stack([fill_nearest(np.nan_to_num(out[..., k]), known) for k in range(3)], axis=-1)
+    if crop is not None and skin is not None:
+        # beside the jaw and behind it the figure's own neck lies in its collar's dark, and taken onto the new neck, now
+        # reaching up to the jaw's edge, it stood under the Zauberer's ears as a black mark (2026-11-23)
+        dark = band & (lab(out)[..., 0] < lab(skin)[0] - BAND_DARK)
+        out[dark] = np.asarray(skin, dtype=np.float64) * BAND_SHADE
     # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
     # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
     rows, cols = band.shape
