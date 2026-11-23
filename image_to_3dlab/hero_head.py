@@ -1189,6 +1189,10 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
             out = out + np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
     else:                   # the picture where it sees the head, the figure's own paint round it (`own_paint`)
         colour, weight = np.asarray(crop[0], dtype=np.float64), np.asarray(crop[1], dtype=np.float64)[..., None]
+        # over the old head's cut the picture shows the hat, not the head: its brim's shadow and the band's runes
+        # stood there as a dark band with teal flecks over the Zauberer's forehead (2026-11-23)
+        level = plane_height(zone["plane"], points[..., 0], points[..., 2]) - zone["cut"]
+        weight = weight * np.clip((level - points[..., 1]) / zone["pixel"], 0, 1)[..., None]
         offset = paint_offset(part, zone, np.where(weight > 0.5, colour, np.nan))
         shift = 0.0 if offset is None else np.clip(offset, -hf.PAINT_LIMIT, hf.PAINT_LIMIT)
         raw = np.asarray(crop[2] if len(crop) > 2 else picture, dtype=np.float64)     # the build's own paint
