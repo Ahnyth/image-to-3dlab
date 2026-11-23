@@ -101,6 +101,11 @@ FIXED = {
                                # --transfer-cage, the longest that meets a surface facing it; with none it keeps its
                                # own paint (a wizard's neck took his collar's dark inside at 3 cm, AssetFurnace
                                # Support D261)
+    "transfer_layer_delta": 30.0,  # a texel whose full-cage paint lies this far (CIE76 delta E) from the model's own
+                               # paint there ...
+    "transfer_layer_agree": 15.0,  # ... while a shorter cage's lies within this of it met another layer first (a
+                               # collar flap standing off the jaw, facing the same way): it takes the shorter cage's
+                               # paint (dark strokes along a wizard's jaw, AssetFurnace Support D266)
     "hidden_rays": 16,        # --drop-hidden: a triangle no ray of these reaches the outside from is hidden ...
     "hidden_cells": 400,      # ... and goes if the air beside it is a sealed hollow, on a grid this many cells across
     "hidden_close": 2,        # ... closed this many cells, so a slit in the wall does not open the hollow
@@ -1211,13 +1216,31 @@ def met_facing(met_normals, own_normals):
     return (met * own).sum(-1) / np.maximum(norms, 1e-8)
 
 
-def pick_transfer(tries, least: float = FIXED["transfer_facing"]):
+def linear_lab(rgb):
+    """Linear RGB 0..1 (a bake) to CIE L*a*b* (D65), through sRGB."""
+    lin = np.clip(np.asarray(rgb, float)[..., :3], 0.0, 1.0)
+    srgb = np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * lin ** (1 / 2.4) - 0.055)
+    lin2 = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+    xyz = lin2 @ np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]]).T
+    xyz /= np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def pick_transfer(tries, least: float = FIXED["transfer_facing"], own=None,
+                  delta: float = FIXED["transfer_layer_delta"], agree: float = FIXED["transfer_layer_agree"]):
     """(colour, hit, step) per texel from colour transfers baked with ever shorter cages (TRIES: (colour, hit 0..1,
     `met_facing`) per cage, the longest first): each texel takes the first cage whose ray met the finer model on a
     surface facing it at least LEAST, and says which (`step`, -1 for none). A texel no cage reaches that way gets hit 0,
     so `blend_transfer` keeps the model's own paint there. A cage long enough for a part the thinning sank (spiky hair)
     starts the rays of a neck outside the collar round it, and the first surface they met was the collar's inside: a
-    wizard's game figure wore its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261)."""
+    wizard's game figure wore its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261).
+
+    With OWN (the model's own paint per texel, linear RGB like the bakes) a texel the full cage painted more than
+    DELTA (delta E) away from its own paint, where a shorter cage's ray met a facing surface within AGREE of it, takes
+    that shorter cage: the long ray met another layer first, standing off the surface with air between and facing the
+    same way (a collar flap 8-11 mm off a wizard's jaw drew dark strokes along it, AssetFurnace Support D266). A part
+    the thinning sank (a hair spike) keeps the long ray's paint, since its own paint is that part's too."""
     first = tries[0]
     shape = np.asarray(first[1], float).shape
     colour = np.zeros(shape + (np.asarray(first[0]).shape[-1],))
@@ -1229,6 +1252,17 @@ def pick_transfer(tries, least: float = FIXED["transfer_facing"]):
         colour[take] = np.asarray(c, float)[take]
         hit[take] = h[take]
         step[take] = k
+    if own is not None and len(tries) > 1:
+        own_lab = linear_lab(own)
+        far = (step == 0) & (np.linalg.norm(linear_lab(colour) - own_lab, axis=-1) > delta)
+        for k, (c, h, facing) in enumerate(tries[1:], start=1):
+            h = np.clip(np.asarray(h, float), 0.0, 1.0)
+            near = np.linalg.norm(linear_lab(c) - own_lab, axis=-1) < agree
+            take = far & (h > 0.0) & (np.asarray(facing, float) >= least) & near
+            colour[take] = np.asarray(c, float)[take]
+            hit[take] = h[take]
+            step[take] = k
+            far &= ~take
     return colour, hit, step
 
 

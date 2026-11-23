@@ -153,6 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface facing it, both normals baked in the figure's own space; a texel no cage reaches that way
   keeps its own paint (0.2 % on that figure), and the normal map stays flat where the full cage met
   a surface facing away. The report counts it (`colour_transfer_guard`).
+- `game_ready.py --colour-from` takes no paint from another layer standing off the surface. A collar
+  flap 8-11 mm off a wizard's jaw, facing the same way, lay inside the full cage, so the long rays met
+  it first and drew dark strokes along the jaw. A texel whose full-cage paint lies far from the
+  model's own paint there, where a shorter cage's lies close to it, now takes the shorter cage; a
+  hair spike the thinning sank keeps the long ray's paint, since its own paint is hair too. The
+  report counts it (`colour_transfer_guard.other_layer`).
 - `game_ready.py --drop-hidden` never opens an edge a camera sees. Where two surfaces cross (hair going up
   into a hat's brim), each lost its part inside the other, and the thinned mesh's wide triangles left two
   jagged rims with slits between them that showed the hat's inside from below: ten such edges on a wizard's

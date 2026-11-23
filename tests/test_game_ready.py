@@ -1286,6 +1286,21 @@ def test_a_texel_whose_rays_all_met_surfaces_facing_away_keeps_the_models_own_pa
     assert out[0] == pytest.approx([0.6, 0.6, 0.6]) and out[1] == pytest.approx([0.05, 0.05, 0.05])
 
 
+def test_a_texel_whose_long_ray_met_another_layer_first_takes_the_shorter_cage():
+    """A collar flap stands 8-11 mm off the jaw, facing the same way, inside the full cage: the long ray paints the
+    flap's dark onto the jaw, a shorter one meets the jaw. The model's own paint (skin there) tells which is right;
+    a hair spike the thinning sank keeps the long ray's paint, since its own paint is hair too."""
+    skin, flap, hair = [0.55, 0.42, 0.38], [0.03, 0.02, 0.06], [0.30, 0.32, 0.40]
+    own = np.array([skin, hair, skin])
+    long_colour = np.array([flap, hair, skin])
+    short_colour = np.array([skin, skin, skin])
+    tries = [(long_colour, np.ones(3), np.ones(3)), (short_colour, np.ones(3), np.ones(3))]
+    colour, _, step = gr.pick_transfer(tries, own=own)
+    assert step.tolist() == [1, 0, 0]
+    assert colour[0] == pytest.approx(skin) and colour[1] == pytest.approx(hair)
+    assert gr.pick_transfer(tries)[2].tolist() == [0, 0, 0]          # without the model's own paint, as before
+
+
 def test_the_cage_steps_start_at_the_cage_and_shrink():
     steps = gr.FIXED["transfer_cage_steps"]
     assert steps[0] == 1.0 and all(a > b > 0 for a, b in itertools.pairwise(steps))

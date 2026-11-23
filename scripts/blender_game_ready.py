@@ -1469,14 +1469,18 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
             hit_k = bake("transfer hits", 1, "EMIT", **kw)[..., 0]
             tries.append((colour_k, hit_k, facing_of(colour_objs, kw)))
             _, _, step = gr.pick_transfer(tries)
-            if not (inside_now & (step < 0) & (tries[0][1] > 0)).any():
-                break               # every texel a ray reached has its paint from a surface facing it
-        transfer, hit, step = gr.pick_transfer(tries)
+            if len(tries) >= 2 and not (inside_now & (step < 0) & (tries[0][1] > 0)).any():
+                break               # every texel a ray reached has its paint from a surface facing it, and the
+                # second cage is there for a texel whose long ray met another layer first
+        own_colour = albedo[..., :3]
+        transfer, hit, step = gr.pick_transfer(tries, own=own_colour)
         long_hit, long_facing = tries[0][1], tries[0][2]
         turned = inside_now & (long_hit > 0) & (long_facing < s["transfer_facing"])
+        layered = inside_now & ~turned & (step > 0)
         guard = {"turned_away": round(float(turned.mean() / max(inside_now.mean(), 1e-9)), 5),
                  "baked_again": round(float((turned & (step > 0)).sum() / max(inside_now.sum(), 1)), 5),
                  "own_paint": round(float((turned & (step < 0)).sum() / max(inside_now.sum(), 1)), 5),
+                 "other_layer": round(float(layered.sum() / max(inside_now.sum(), 1)), 5),
                  "cages": len(tries)}
         transfer_share = float(np.clip(hit[inside_now], 0, 1).mean()) if inside_now.any() else 0.0
         albedo = albedo.copy()
@@ -1487,7 +1491,8 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         log(f"colour transfer: {transfer_share * 100:.1f} % of the atlas from the finer model; "
             f"{guard['turned_away'] * 100:.2f} % met a surface facing away at the full cage, "
             f"{guard['baked_again'] * 100:.2f} % taken from a shorter one, {guard['own_paint'] * 100:.2f} % kept "
-            "their own paint")
+            f"their own paint; {guard['other_layer'] * 100:.2f} % whose long ray met another layer first took a "
+            "shorter one")
     if normal_objs and normal_bake is None:
         normal_bake = bake_normals(normal_objs)
         drop_finer(normal_objs)
