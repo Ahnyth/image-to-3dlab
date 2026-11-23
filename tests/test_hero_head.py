@@ -307,13 +307,22 @@ def test_graft_head_sets_a_new_head_in_closed_all_round():
     body = {"positions": v, "faces": f, "uvs": np.zeros((len(v), 2)),
             "dense": np.tile([1.0, 0.0], (len(v), 1))}
     parts, head, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
-    assert report["stitched"] and report["open_edges_near"] == 0
+    assert report["neck"] == "into the collar" and report["open_edges_near"] == 0   # a collar round the neck: the new
+    # neck reaches down into it (the stitched neck: below, without the collar)
     assert hd.open_edges(parts + [head]) == hd.open_edges([body])      # nothing opened anywhere
     top = head["positions"][:, 1].max()
     assert top > zone["plane"]["a"]                              # the new hair reaches up into the hat
     kept = parts[0]["positions"]
     assert ((kept[:, 1] > 0.03) & (kept[:, 1] < 0.04) & (np.hypot(kept[:, 0], kept[:, 2]) > 0.09)).any()   # brim
     assert np.allclose(head["dense"], [1.0, 0.0])               # the old head's skin weights
+    (v, f), ids = figure()
+    keep = ~np.isin(f, ids["collar"]).any(axis=1)               # without the collar the new head is stitched on
+    bare = hd.head_zone(v, f[keep], hf.face_window(v, f[keep], v[:, 1] > -0.06))
+    radius = hd.tube_radius(bare, hd.build_radius(bare, *joined((new_v, new_f), (neck_v, neck_f))))
+    body = {"positions": v, "faces": f[keep], "uvs": np.zeros((len(v), 2)), "dense": np.tile([1.0, 0.0], (len(v), 1))}
+    parts, head, report = hd.graft_head([body], bare, radius, 2 * bare["pixel"])
+    assert report["stitched"] and report["neck"] == "stitched" and report["open_edges_near"] == 0
+    assert hd.open_edges(parts + [head]) == hd.open_edges([body])
 
 
 def test_build_radius_drops_a_thin_plate_the_rays_only_graze():
@@ -789,7 +798,7 @@ def test_graft_head_closes_the_hats_opening_in_the_hats_colour():
                                           tube(0.019, -0.09, -0.01, centre=(0.0, -0.005))))
     radius = hd.tube_radius(zone, built)
     parts, _, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
-    assert report["open_edges_near"] == 0 and report["stitched"]
+    assert report["open_edges_near"] == 0 and report["neck"] == "into the collar"
     cap = parts[report["opening_cap"]]
     normals = hf.face_normals(cap["positions"], cap["faces"])
     middle = cap["positions"][cap["faces"]].mean(axis=1)
@@ -815,3 +824,144 @@ def test_figure_paint_takes_no_picture_over_the_old_heads_cut():
     out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight))
     top = (weight > 0.9) & (points[..., 1] > 0.028)
     assert top.any() and np.allclose(out[top], [215, 215, 225], atol=3)   # the figure's hair, not the hat
+
+
+# --- the neck down into the collar, the ears, a strand, the nape (2026-11-23, round 24) ------------------------------
+
+def deep_zone():
+    (v, f), ids = figure()
+    window = hf.face_window(v, f, v[:, 1] > -0.06)
+    return v, f, ids, hd.head_zone(v, f, window)
+
+
+def test_head_zone_reaches_the_new_neck_down_into_a_collar_round_it():
+    v, f, ids, zone = deep_zone()
+    assert -0.045 < zone["bottom"] < -0.03                      # the cut stays where the old neck is free
+    assert zone["low"] == pytest.approx(zone["bottom"] - hd.NECK_LOW_SHARE * zone["width"])
+    assert zone["frame"]["y_lo"] < zone["low"]                  # the head's picture reaches down there
+    keep = ~np.isin(f, ids["collar"]).any(axis=1)               # the same figure without its collar
+    zone2 = hd.head_zone(v, f[keep], hf.face_window(v, f[keep], v[:, 1] > -0.06))
+    assert zone2["low"] == zone2["bottom"]                      # a bare neck: stitched on as before
+
+
+def test_graft_head_reaches_the_new_neck_down_into_the_collar_closed_round_the_old_one():
+    v, f, _, zone = deep_zone()
+    built = hd.build_radius(zone, *joined(sphere(0.033, centre=(0.0, 0.005, 0.006)),
+                                          tube(0.017, -0.09, -0.01, centre=(0.0, -0.005))))   # its neck a bit narrower
+    radius = hd.tube_radius(zone, built)
+    body = {"positions": v, "faces": f, "uvs": np.zeros((len(v), 2)), "dense": np.tile([1.0, 0.0], (len(v), 1))}
+    parts, head, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
+    assert report["neck"] == "into the collar" and not report["stitched"]
+    assert hd.open_edges([head]) == 0                           # the new head closed, its neck's end too
+    assert hd.open_edges(parts) == hd.open_edges([body])        # the old neck's cut closed
+    y = head["positions"][:, 1]
+    assert y.min() < zone["bottom"] - 0.5 * hd.NECK_LOW_SHARE * zone["width"]   # down into the collar
+    _, r = hd.polar(zone["frame"], head["positions"])
+    free = (y < zone["bottom"] - 0.5 * zone["pixel"]) & (y > zone["bottom"] - 2.5 * zone["pixel"])
+    assert free.any() and r[free].min() >= 0.018 + 0.5 * hd.NECK_COVER_SHARE * zone["width"]   # round the old neck
+    # (0.018 round) where it stands free under the stitch, so it never shows through the new one
+    assert np.allclose(head["dense"], [1.0, 0.0])
+
+
+def test_neck_band_stays_over_the_stitch_when_the_neck_reaches_down_into_the_collar():
+    frame = frame_round()
+    radius = np.full((frame["rows"], frame["cols"]), 0.02)
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.03, "low": -0.045, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "cut": 0.0}
+    points, _ = hd.tube_points(zone, radius, (40, 64))
+    assert points[..., 1].min() < -0.04                         # the head's picture reaches down into the collar
+    band = hd.neck_band(points, zone)
+    assert band.any() and not band[points[..., 1] < zone["bottom"] - 0.001].any()   # the neck under the chin only
+
+
+def test_tube_radius_lays_a_strand_standing_off_the_face_onto_it():
+    _, _, _, zone = deep_zone()
+    frame, w = zone["frame"], zone["width"]
+    heights = hd.row_heights(frame)[:, None]
+    turn = hd.column_angles(frame)[None, :]
+    middle = (heights > zone["bottom"] + 0.024) & (heights < zone["band"].min() - 0.004)
+    radius = np.full((frame["rows"], frame["cols"]), 0.035)
+    inner = radius.copy()
+    strand = middle & (np.abs(turn - 0.3) < 2.2 * frame["turn"])      # 4 columns wide, 8 mm off the forehead
+    lock = middle & (np.abs(turn + 1.6) < 30 * frame["turn"])         # a lock of hair 60 columns wide, off it too
+    fin = middle & (np.abs(turn - 1.6) < 2.2 * frame["turn"])         # an ear seen edge-on: no gap behind it
+    radius[strand | lock | fin] = 0.043
+    inner[fin] = 0.043
+    row = int(np.argmax(middle[:, 0])) + 10
+    blade = np.zeros(radius.shape, bool)                              # a strand's tip seen edge-on: a blade one row
+    blade[row, (np.abs(turn[0] + 0.6) < 15 * frame["turn"])] = True   # thin standing 8 mm out of the head
+    radius[blade], inner[blade] = 0.043, 0.043
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
+    assert out[blade].max() < 0.035 + hd.STRAND_GAP_SHARE * w                # it goes
+    assert out[strand].max() < 0.035 + 2 * hd.STRAND_RELIEF_SHARE * w     # laid onto the face
+    core = middle & (np.abs(turn + 1.6) < 20 * frame["turn"])
+    assert out[core].min() > 0.042                                        # the lock keeps its volume
+    assert out[middle & (np.abs(turn - 1.6) < 0.5 * frame["turn"])].max() > 0.042   # the ear stands as it was
+
+
+def test_neck_fill_eases_a_neck_into_a_narrower_nape_over_it():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.032, 0.02, 0.016) * np.ones((1, frame["cols"]))   # the nape narrower than its base
+    zone = {"frame": frame, "bottom": -0.04, "width": 0.08, "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
+    filled = hd.neck_fill(zone, radius)
+    back = int(np.argmax(np.abs(hd.column_angles(frame))))
+    rows = (heights[:, 0] > -0.04) & (heights[:, 0] < -0.04 + hd.NECK_BAND_SHARE * 0.08 + 0.006)
+    assert np.abs(np.diff(filled[rows, back])).max() < 0.002   # no shelf where the neck's fill ends under the hair
+
+
+def striped(*colours):
+    """A material of vertical stripes, one per colour; stripe k sits at u = (k + 0.5) / len(colours)."""
+    import io
+
+    from PIL import Image
+
+    image = Image.new("RGB", (4 * len(colours), 4))
+    for k, colour in enumerate(colours):
+        image.paste(tuple(int(c) for c in colour), (4 * k, 0, 4 * k + 4, 4))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return hf.picture_material(buffer.getvalue())
+
+
+def face_window_box(half_x=0.02, half_y=0.03, pixel=0.001):
+    """A face window (as hero_face.face_window gives one) round the front: |x| < HALF_X, |y| < HALF_Y."""
+    box = (-0.06, 0.06, -0.06, 0.06)
+    xs = box[0] + (np.arange(120) + 0.5) * pixel
+    ys = box[3] - (np.arange(120) + 0.5) * pixel
+    x, y = np.meshgrid(xs, ys)
+    return {"field": np.minimum(half_x - np.abs(x), half_y - np.abs(y)), "box": box, "pixel": pixel}
+
+
+def test_figure_paint_paints_unseen_skin_from_the_builds_paint_in_the_faces_tone_never_the_pictures_edge():
+    frame = frame_round()
+    radius = np.full((frame["rows"], frame["cols"]), 0.04)
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06), "reach": 0.06, "chin": -0.03,
+            "nose": np.array([0.0, -0.005, 0.04]), "window": face_window_box()}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    face_c, side_c, hair_c = [200.0, 185.0, 185.0], [215.0, 150.0, 150.0], [210.0, 215.0, 230.0]
+    v, f = tube(0.039, -0.045, 0.035)                             # the figure's old head: its face pale, its sides
+    turn = np.abs(np.arctan2(v[:, 0], v[:, 2]))                   # pink (a generator's guess), its hair silver
+    u = np.where(turn < np.pi / 6, 1 / 6, np.where(turn > 2 * np.pi / 3, 5 / 6, 0.5))
+    part = {"positions": v, "faces": f, "uvs": np.stack([u, np.full(len(v), 0.5)], 1),
+            "material": striped(face_c, side_c, hair_c)}
+    angle = np.arctan2(points[..., 0], points[..., 2])
+    build = np.full(points.shape, [220.0, 170.0, 130.0])          # the build: tan skin ...
+    build[(np.abs(angle) > 0.8 * np.pi) & (points[..., 1] > -0.005)] = [90.0, 120.0, 220.0]   # ... blue hair behind
+    ear = (np.abs(angle - np.pi / 2) < 0.15) & (np.abs(points[..., 1]) < 0.006)
+    build[ear] = [140.0, 70.0, 60.0]                              # ... and an ear with a red bowl at its side
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    weight[ear] = 1.0                                             # the ear's front faces the camera ...
+    colour = np.full(points.shape, face_c)
+    colour[ear] = [60.0, 50.0, 110.0]                             # ... but the picture shows the brim's shadow there
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, build))
+    middle = np.abs(points[..., 1]) < 0.02
+    assert np.allclose(out[(weight > 0.99) & middle & ~ear], face_c, atol=2)     # the picture's face
+    ear_c = out[ear].mean(axis=0)
+    assert 0.5 < ear_c.sum() / sum(face_c) < 0.85              # the build's ear: its bowl darker than the cheek ...
+    assert np.allclose(ear_c / ear_c.sum(), np.array(face_c) / sum(face_c), atol=0.02)   # ... in the face's hue, not
+    # the picture's dark violet there
+    cheek = (np.abs(np.abs(angle) - 0.45 * np.pi) < 0.1) & middle & (weight < 0.01) & ~ear
+    assert cheek.any() and np.allclose(out[cheek], face_c, atol=6)     # the unseen skin in the face's tone, not pink

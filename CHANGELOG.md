@@ -90,8 +90,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rounded (the build's chin has a flat underside, and seen from below it stood as a squared block), and the figure's
   own paint there is never taken darker than its skin by more than 30 (L*): beside the jaw its neck lies in the
   collar's dark, a black mark under his ears. Bits of the old head the cut leaves just past the region's edge
-  (a chin's tip that dipped under the stitch) go with it. head.png shows the region unrolled, head_paint.png the new
-  head's paint.
+  (a chin's tip that dipped under the stitch) go with it. Where a collar stands round at least half of the head, the
+  new neck reaches on down into it (0.3 of the head's width under the stitch), at least 1 % of the head's width round
+  the old neck wherever that lies close to it, its lowest rows under the old surface, and ends closed there; the old
+  neck's outline at the stitch is closed inside it. Stitched under the chin, the Zauberer's old neck had shown through
+  his collar's open front down to 0.24 of his head's width, painted with his old chin's shadow: a dark zigzag and a pale
+  chevron under the new chin. A narrow strand of the build standing off its own skin with air between (a strand over
+  the forehead) is laid onto it, at most 2 % of the head's width off it: unrolled round the head it stood as a fin
+  8 mm off his forehead, whose sides read as a dark notch; a wider lock keeps its volume and an ear (no air behind it
+  along the rays) stays. The skin the picture does not see takes the face's colour as the picture paints it, shaded by
+  the build's own paint (the build painted the head it built: an ear's bowl darker, its rim lighter; its own colours,
+  orange at the head's sides, are not taken), and on the head's sides, off the face, the picture paints no skin, since
+  it sees them edge-on: his ears had worn the old head's pink, misplaced, and the right one a strand and the brim's dark
+  violet from the picture. Under the hair the neck eases into a narrower nape instead of ending in a shelf
+  3 mm deep. head.png shows the region unrolled, head_paint.png the new head's paint.
 
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
