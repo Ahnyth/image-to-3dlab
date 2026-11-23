@@ -103,9 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   8 mm off his forehead, whose sides read as a dark notch; a wider lock keeps its volume and an ear (no air behind it
   along the rays) stays. The skin the picture does not see takes the face's colour as the picture paints it, shaded by
   the build's own paint (the build painted the head it built: an ear's bowl darker, its rim lighter; its own colours,
-  orange at the head's sides, are not taken), and on the head's sides, off the face, the picture paints no skin, since
-  it sees them edge-on: his ears had worn the old head's pink, misplaced, and the right one a strand and the brim's dark
-  violet from the picture. On the head's sides a piece standing out of it no wider than 15 % of the head's width
+  orange at the head's sides, are not taken), and on an ear (found as the rounding below finds one, eased out round
+  it) the picture paints no skin, since it sees the ear edge-on: his ears had worn the old head's pink, misplaced, and
+  the right one a strand and the brim's dark violet from the picture. Elsewhere on the head's sides the picture stays:
+  gated on all the skin off the face, its edge stood as a hard line down both his temples, cut his eye's outer corner
+  into dark specks and turned a strand there to skin. On the head's sides a piece standing out of it no wider than 15 % of the head's width
   either side (an ear) stands at most 12 % of it out, its rim rounded over 4 %: unrolled round the head an ear is a
   fin whose rim the rounding kept as a wall, a flat oval plate with a hard rim. Neither the ears' rounding (done last,
   and never within 10 % of the head's width under the brim's cut) nor the strands' laying down (beside and behind the

@@ -968,9 +968,15 @@ def face_window_box(half_x=0.02, half_y=0.03, pixel=0.001):
     return {"field": np.minimum(half_x - np.abs(x), half_y - np.abs(y)), "box": box, "pixel": pixel}
 
 
-def test_figure_paint_paints_unseen_skin_from_the_builds_paint_in_the_faces_tone_never_the_pictures_edge():
+def side_scene():
+    """A round head (0.04) with an ear standing 6 mm out of its left side, over a figure whose old head is pale in
+    front, pink at its sides and silver behind; a build painting tan skin, blue hair behind and the ear's red bowl; a
+    picture that sees the face, and the brim's dark shadow on the ear's front. Returns (zone, points, normals, part,
+    build, weight, colour, angle, ear, face colour)."""
     frame = frame_round()
     radius = np.full((frame["rows"], frame["cols"]), 0.04)
+    side = np.abs(hd.column_angles(frame)[None, :] - np.pi / 2) < 0.15
+    radius[side & (np.abs(hd.row_heights(frame))[:, None] < 0.006)] += 0.006
     zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.04, "cut": 0.0, "width": 0.08, "pixel": 0.002,
             "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
             "limit": np.full((frame["rows"], frame["cols"]), 0.06), "reach": 0.06, "chin": -0.03,
@@ -991,6 +997,27 @@ def test_figure_paint_paints_unseen_skin_from_the_builds_paint_in_the_faces_tone
     weight[ear] = 1.0                                             # the ear's front faces the camera ...
     colour = np.full(points.shape, face_c)
     colour[ear] = [60.0, 50.0, 110.0]                             # ... but the picture shows the brim's shadow there
+    return zone, points, normals, part, build, weight, colour, angle, ear, face_c
+
+
+def test_figure_paint_keeps_the_picture_on_the_heads_sides_off_the_ears():
+    # a lock of hair laid onto the temple (`press_strands`) lies where the build painted skin: the picture's hair stays
+    # on it, and nothing changes at the face window's edge; gated on all the skin off the face, the Zauberer's lock
+    # turned skin and the gate's edge stood as a hard line down both temples (2026-11-23)
+    zone, points, _, part, build, weight, colour, angle, ear, face_c = side_scene()
+    lock = (np.abs(angle + 0.35 * np.pi) < 0.12) & (np.abs(points[..., 1]) < 0.01)   # on the right temple, off the face
+    assert lock.any() and not (hf.window_values(zone["window"], points[lock]) > 0).any()
+    lock_c = [205.0, 210.0, 228.0]
+    colour[lock], weight[lock] = lock_c, 0.9
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, build))
+    assert np.allclose(out[lock], lock_c, atol=6)
+    ear_c = out[ear].mean(axis=0)
+    assert ear_c.sum() < 0.85 * sum(face_c) and np.allclose(ear_c / ear_c.sum(), np.array(face_c) / sum(face_c),
+                                                            atol=0.02)     # the ear still the build's, in skin's hue
+
+
+def test_figure_paint_paints_unseen_skin_from_the_builds_paint_in_the_faces_tone_never_the_pictures_edge():
+    zone, points, _, part, build, weight, colour, angle, ear, face_c = side_scene()
     out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, build))
     middle = np.abs(points[..., 1]) < 0.02
     assert np.allclose(out[(weight > 0.99) & middle & ~ear], face_c, atol=2)     # the picture's face
