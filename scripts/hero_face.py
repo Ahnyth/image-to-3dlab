@@ -121,8 +121,9 @@ def _png(path: Path) -> bytes:
 
 
 def head_bounds(zone: dict) -> tuple[float, float, float, float]:
-    """(x0, x1, y0, y1) of the head under the brim seen from the front: its old outermost surface inside the region,
-    from the stitch up to the brim's underside."""
+    """(x0, x1, y0, y1) of the head under the brim seen from the front: its old outermost surface inside the region's
+    reach and its collar (not the brim's underside, which the region keeps clear of), from the stitch up to the brim's
+    underside."""
     import numpy as np
 
     from image_to_3dlab import hero_head as hd
@@ -130,7 +131,7 @@ def head_bounds(zone: dict) -> tuple[float, float, float, float]:
     frame = zone["frame"]
     outer = zone["outer"]
     heights = hd.row_heights(frame)
-    keep = np.isfinite(outer) & (outer < zone["limit"]) & (heights[:, None] >= zone["bottom"])
+    keep = np.isfinite(outer) & (outer < zone.get("side_limit", zone["limit"])) & (heights[:, None] >= zone["bottom"])
     rows, cols = np.nonzero(keep)
     points = hd.unpolar(frame, hd.column_angles(frame)[cols], outer[keep], heights[rows])
     top = hd.plane_height(zone["plane"], points[:, 0], points[:, 2])
@@ -210,6 +211,9 @@ def graft_head(run: Run, args, out: Path, zone: dict, placed: dict, box, up: Pat
                "head": {"axis": zone["axis"], "stitch": zone["bottom"], "chin": zone["chin"], "brim_plane": {
                    k: zone["plane"][k] for k in ("a", "b", "c", "below", "spread")}, "cut": zone["cut"],
                    "collar_share": float(zone["collar"].any(axis=0).mean()),
+                   "opening_over_plane": None if zone.get("opening") is None else [
+                       float(np.min(zone["opening"] - zone["plane"]["a"])),
+                       float(np.max(zone["opening"] - zone["plane"]["a"]))],
                    "build_shows": float(new["known"].mean())}, "placement": placement, "models": {}}
     crop_rgb = np.asarray(Image.open(up).convert("RGB"), dtype=np.float64)
     alpha = np.asarray(Image.open(face_cutout).convert("RGBA"))[..., 3] / 255.0
@@ -328,6 +332,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"(head.png)")
         if not zone["collar"].any():
             run.flag("no collar found round the neck: the stitch under the chin may show; check head.png")
+        if zone.get("opening") is not None:
+            over = zone["opening"] - zone["plane"]["a"]
+            run.say(f"measure: the hat's opening (where the hair meets the brim) lies {over.min():+.4f} to "
+                    f"{over.max():+.4f} over the brim's plane: the old head goes up to it, the new head keeps its "
+                    "own width into the hat, and the opening is closed in the hat's colour")
+        else:
+            run.flag("the hat's opening was not found all round the head: the old head stays over the cut and the "
+                     "new head widens to cover it; look under the brim")
 
     # 2. crop
     stage(run, "crop", "Cropping and upscaling the face")

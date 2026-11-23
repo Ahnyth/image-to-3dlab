@@ -62,3 +62,17 @@ def test_head_step_lays_a_coarse_models_new_head_out_coarser_but_never_past_four
     assert hero_face.head_step([grid(0.004)], zone) == pytest.approx(0.002, abs=3e-4)   # half the old head's edges
     assert hero_face.head_step([grid(0.02)], zone) == 0.004                       # at most four pixels
     assert hero_face.head_step([grid(0.0005)], zone) == 0.001                     # at least one
+
+
+def test_head_bounds_take_the_old_head_as_wide_as_it_reaches_not_cut_short_by_the_brim():
+    from image_to_3dlab import hero_head as hd
+
+    frame = hd.cylinder(hd.line_axis((0.0, 0.0, 0.0), (0.0, 1.0, 0.0)), -0.05, 0.05, 0.001, 0.04)
+    high = hd.row_heights(frame)[:, None] > 0.0
+    outer = np.where(high, 0.05, 0.03) * np.ones((1, frame["cols"]))   # the old head, widest under the brim
+    limit = np.full(outer.shape, 0.069)
+    zone = {"frame": frame, "outer": outer, "bottom": -0.04, "side_limit": limit,
+            "limit": np.where(high, 0.045, limit),                   # a brim's underside near the head bounds the region
+            "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}}
+    x0, x1, _, _ = hero_face.head_bounds(zone)
+    assert x0 == pytest.approx(-0.05, abs=1e-3) and x1 == pytest.approx(0.05, abs=1e-3)   # the crop the build was made from

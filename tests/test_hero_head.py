@@ -290,7 +290,9 @@ def test_head_zone_cuts_under_the_brim_inside_the_collar_and_above_where_the_nec
     assert values[skull_top] < 0                                # the skull's top is under the hat: it stays
     side = ids["skull"][np.abs(v[ids["skull"], 1] - 0.005) < 0.002]
     assert (values[side] > 0).all()                             # the face's sides go
-    assert (values[ids["collar"]] < 0).all() and (values[ids["brim"]] < 0).all()   # collar and brim stay whole
+    brim = ids["brim"][np.hypot(v[ids["brim"], 0], v[ids["brim"], 2]) > 0.036 + 0.03 * zone["width"]]
+    assert (values[ids["collar"]] < 0).all() and (values[brim] < 0).all()   # collar and brim stay whole (but the
+    # brim's innermost ring at the hat's opening, which goes with the head so the cut runs smooth)
 
 
 def test_graft_head_sets_a_new_head_in_closed_all_round():
@@ -586,6 +588,102 @@ def test_head_zone_covers_only_the_old_head_that_stays_over_the_cut():
     v2, f2 = joined((v, f), skirt)
     zone = hd.head_zone(v2, f2, hf.face_window(v2, f2, v2[:, 1] > -0.06))
     assert (zone["cover"] - plain["cover"]).max() < 0.001    # the new head is not pushed out to cover what goes
+
+
+# --- the slim head under the hat (2026-11-23) --------------------------------------------------------------------------
+
+def lathe(profile, centre=(0.0, 0.0), segments=64):
+    """A closed surface turned round a vertical axis through CENTRE (x, z) from PROFILE, (radius, height) pairs from the
+    bottom pole up the outside to the top pole, faces out."""
+    cx, cz = centre
+    turn = np.linspace(0, 2 * np.pi, segments, endpoint=False)
+    rings = profile[1:-1]
+    v = [[cx, profile[0][1], cz]]
+    for r, y in rings:
+        v += [[cx + r * np.sin(a), y, cz + r * np.cos(a)] for a in turn]
+    v.append([cx, profile[-1][1], cz])
+    ids = 1 + np.arange(len(rings) * segments).reshape(len(rings), segments)
+    a, b = ids[:-1], np.roll(ids[:-1], -1, axis=1)
+    c, d = np.roll(ids[1:], -1, axis=1), ids[1:]
+    f = [np.stack([a, c, b], -1).reshape(-1, 3), np.stack([a, d, c], -1).reshape(-1, 3),
+         np.stack([np.zeros(segments, int), np.roll(ids[0], -1), ids[0]], 1),
+         np.stack([np.full(segments, len(v) - 1), ids[-1], np.roll(ids[-1], -1)], 1)]
+    v, f = np.asarray(v, dtype=float), np.concatenate(f)
+    if np.einsum("ij,ij->i", v[f[:, 0]], np.cross(v[f[:, 1]], v[f[:, 2]])).sum() < 0:
+        f = f[:, ::-1]
+    return v, f
+
+
+HAIR_LINE = [(0.032 * np.sin(p), 0.005 - 0.032 * np.cos(p)) for p in np.linspace(0, np.pi / 2, 9)[1:]] + [
+    (0.032, 0.016), (0.034, 0.021), (0.037, 0.025), (0.040, 0.0275)]           # the head, its hair flaring under the brim
+BRIM_LINE = [(0.041, 0.028), (0.05, 0.0275), (0.06, 0.026), (0.075, 0.023), (0.09, 0.019), (0.1, 0.017)]   # droops
+HAT_LINE = [(0.1, 0.021), (0.09, 0.023), (0.075, 0.027), (0.06, 0.030), (0.045, 0.032), (0.042, 0.034), (0.03, 0.06),
+       (0.01, 0.085)]
+
+
+def hat_figure():
+    """A head and its hat as one closed surface, as Pixal3D builds them: the hair flares out under the brim into its
+    underside, the brim droops toward its rim, so near the head its underside lies lower than where the hair meets it
+    (the Zauberer's back, 2026-11-23); a neck and a high collar as `figure`'s."""
+    head = lathe([(0.0, -0.027)] + HAIR_LINE + BRIM_LINE + HAT_LINE + [(0.0, 0.09)], centre=(0.0, 0.006))
+    middle = (0.0, -0.005)
+    neck = joined(tube(0.018, -0.0455, -0.01, centre=middle), tube(0.034, -0.09, -0.045, centre=middle))
+    collar = collar_ring(0.034, 0.04, -0.09, -0.015, -0.04, middle)
+    v, f = joined(head, neck, collar)
+    return v, f, len(head[0])
+
+
+def hat_zone():
+    v, f, _ = hat_figure()
+    return hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))
+
+
+def ring_points(radius, height, centre=(0.0, 0.006), count=32):
+    turn = np.linspace(0, 2 * np.pi, count, endpoint=False)
+    return np.stack([centre[0] + radius * np.sin(turn), np.full(count, height), centre[1] + radius * np.cos(turn)], 1)
+
+
+def test_head_zone_reaches_up_to_where_the_hair_meets_the_brim_and_leaves_the_brim():
+    zone = hat_zone()
+    assert zone["plane"]["a"] - zone["cut"] < 0.0255          # the old cut lay under the brim's drooping underside
+    flare = ring_points(0.039, 0.0268)                         # the hair flaring out just under where it meets the brim
+    assert (hd.zone_values(zone, flare) > 0).all()             # it goes with the old head: no shelf of it stays
+    for radius, height in BRIM_LINE[1:3]:                     # the brim's underside, lower than that further out
+        assert (hd.zone_values(zone, ring_points(radius, height)) < 0).all()   # stays whole
+
+
+def test_tube_radius_keeps_the_new_head_at_its_own_width_up_into_the_hat():
+    zone = hat_zone()
+    frame = zone["frame"]
+    heights = hd.row_heights(frame)
+    radius = np.full((frame["rows"], frame["cols"]), 0.03)     # the build: a head 0.03 round, narrower than the flare
+    out = hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool)})
+    high = heights > zone["plane"]["a"] - zone["cut"]          # over the old cut, up into the hat
+    assert np.abs(out[high] - 0.03).max() < 0.002              # its own width, not widened to the old hair's 0.04
+
+
+def test_graft_head_closes_the_hats_opening_in_the_hats_colour():
+    v, f, head_vertices = hat_figure()
+    zone = hd.head_zone(v, f, hf.face_window(v, f, v[:, 1] > -0.06))
+    rings = 1 + np.arange(head_vertices - 2) // 64             # each lathe vertex's profile point
+    profile = [(0.0, -0.027)] + HAIR_LINE + BRIM_LINE + HAT_LINE
+    brim = np.zeros(len(v), bool)
+    brim[1:head_vertices - 1] = (rings >= len(HAIR_LINE) + 1) & (rings <= len(HAIR_LINE) + len(BRIM_LINE) + 1)
+    assert profile[len(HAIR_LINE) + 1] == BRIM_LINE[0]
+    body = {"positions": v, "faces": f, "uvs": np.where(brim[:, None], [0.25, 0.5], [0.75, 0.5]),
+            "material": painted([30, 30, 70], right=[210, 215, 230]), "dense": np.tile([1.0, 0.0], (len(v), 1))}
+    built = hd.build_radius(zone, *joined(sphere(0.03, centre=(0.0, 0.005, 0.006)),
+                                          tube(0.019, -0.09, -0.01, centre=(0.0, -0.005))))
+    radius = hd.tube_radius(zone, built)
+    parts, _, report = hd.graft_head([body], zone, radius, 2 * zone["pixel"])
+    assert report["open_edges_near"] == 0 and report["stitched"]
+    cap = parts[report["opening_cap"]]
+    normals = hf.face_normals(cap["positions"], cap["faces"])
+    middle = cap["positions"][cap["faces"]].mean(axis=1)
+    _, distance = hd.polar(zone["frame"], middle)
+    outside = distance > 0.032                                 # the cap's ring round the slim new head, seen from below
+    assert outside.any() and (normals[outside, 1] < -0.5).all()
+    assert np.allclose(hd.hat_colour(body, zone), [30, 30, 70], atol=2)   # the brim's underside, not the hair's silver
 
 
 def test_figure_paint_takes_no_picture_over_the_old_heads_cut():
