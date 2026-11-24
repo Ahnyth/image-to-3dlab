@@ -194,8 +194,10 @@ class Chain:
         return go()
 
     def game_run(self, models: hc.Models, tag: str, game: list[str]) -> tuple[Path | None, dict | None]:
-        """game_ready.py on MODELS with GAME's options into game/<tag>.glb, once per set of models and options."""
-        key = json.dumps([str(p) for p in models.all()] + game)
+        """game_ready.py on MODELS with GAME's options into game/<tag>.glb, once per set of models and options. The models
+        count with their size and time: a rerun of a stage writes new models under the same names, and keyed on the
+        paths alone the game step kept skin_sorcerer_c's figure with its old boots (2026-11-24)."""
+        key = json.dumps([_files(list(models.all())), *game])
         if key in self.games:
             return self.games[key]
         folder = self.out / "game"

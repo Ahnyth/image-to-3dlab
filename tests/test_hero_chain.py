@@ -172,3 +172,33 @@ def test_a_rerun_keeps_a_stages_builds_when_only_the_stages_before_it_changed_th
     new_picture = {**hands_kept, "origin": {"rig.glb": [1, 1], "front.png": [6, 2]}}
     assert ch.rerun(before, new_picture) == "fresh"
     assert ch.rerun(before, {**before, "options": {"stage": "head", "given": {"top": 1}}}) == "fresh"
+
+
+def test_the_game_step_runs_again_when_a_stage_rewrote_its_models(tmp_path, monkeypatch):
+    # a rerun of the boots stage wrote new models under the same names, and the game step took its old figure with
+    # the old boots, because its key held the paths only (skin_sorcerer_c, 2026-11-24)
+    import hero_chain
+
+    rig, paint = tmp_path / "rig.glb", tmp_path / "paint.glb"
+    rig.write_bytes(b"rig")
+    paint.write_bytes(b"old paint")
+    models = ch.Models(rig, {"--colour-from": paint})
+    calls = []
+
+    def fake_call(command, log, what, gpu=False):
+        calls.append(what)
+        glb = Path(command[3])
+        glb.write_bytes(b"figure")
+        glb.with_suffix(".report.json").write_text("{}")
+        return 0
+
+    chain = hero_chain.Chain.__new__(hero_chain.Chain)
+    chain.out, chain.games, chain.call = tmp_path, {}, fake_call
+    chain.game_run(models, "boots", ["--height", "2.2"])
+    chain.games = {}                                         # a new run of the script
+    chain.game_run(models, "boots", ["--height", "2.2"])
+    assert len(calls) == 1                                    # nothing changed: the figure is kept
+    paint.write_bytes(b"new paint, longer")                   # the stage before wrote its model again
+    chain.games = {}
+    chain.game_run(models, "boots", ["--height", "2.2"])
+    assert len(calls) == 2
