@@ -385,6 +385,11 @@ ADVANCED: dict[str, dict[str, Any]] = {
         "step": "animated", "type": "bool", "default": "the move's own default",
         "what": "Play the move on the spot instead of letting it travel. Loops (walk, run, sneak, strafe, "
                 "idle) are in place by default; one-offs (jump, roll, kicks) keep their travel."},
+    "draw_sides": {
+        "step": "model", "type": "bool", "default": False,
+        "what": "For a prop (a vehicle, a machine, furniture): draw its side too, or its end when the picture shows "
+                "it side-on, and build from four views, so its depth is drawn instead of guessed. Needs front and "
+                "back (Pixal3D)."},
     "keep_everything": {
         "step": "model", "type": "bool", "default": False,
         "what": "The 3D step keeps its in-between textures, meshes and caches (several GB) for inspection."},
@@ -755,6 +760,8 @@ def create(studio: Studio, *, want: str, description: str = "", image_path: str 
         form["first_move"] = move
     if adv["keep_everything"] and "model" in steps:
         form["keep_everything"] = "1"
+    if adv["draw_sides"] and "model" in steps:
+        form["draw_sides"] = "1"
     choices, move_settings = plan_extras(adv, finish_detail, pixel_match)
     if adv["height_m"] is not None or want == "character":
         choices["height_m"] = adv["height_m"] if adv["height_m"] is not None else 1.8
@@ -842,6 +849,8 @@ def continue_asset(studio: Studio, *, asset_id: str, up_to: str | None = None, w
         form["model_seed"] = str(int.from_bytes(os.urandom(3), "big"))
         if adv["keep_everything"]:
             form["keep_everything"] = "1"
+        if adv["draw_sides"]:
+            form["draw_sides"] = "1"
     if "animated" in steps:
         moves = studio.get("api/animate/models")
         presets = moves.get("presets", []) if moves.get("installed") else []

@@ -1997,3 +1997,12 @@ def test_a_plan_s_rig_settings_travel_to_the_server():
 def test_the_rig_card_has_a_bone_names_choice():
     source = (REPO / "viewer" / "studio" / "steps.js").read_text(encoding="utf-8")
     assert 'data-k="bonenames"' in source and '<option value="unity">Unity Humanoid</option>' in source
+
+
+@needs_node
+def test_create_sends_draw_sides_only_when_ticked():
+    out = _run("create.js", """
+      const on = m.planForm({ steps: ['back', 'model'], want: 'prop', drawSides: true });
+      const off = m.planForm({ steps: ['back', 'model'], want: 'prop' });
+      console.log(JSON.stringify([on.get('draw_sides'), off.get('draw_sides')]));""")
+    assert out == ["1", None]

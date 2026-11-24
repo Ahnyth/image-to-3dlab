@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Create can draw a prop's sides ("Draw the sides too").** A vehicle, a machine or furniture drawn from one side
+  had its depth guessed by the 3D step (a scissor lift came out deeper than long). With the new box under Advanced: 3D
+  model (front + back on, a prop), the 3D step first draws the side with the picture engine, or the subject's end when
+  the front shows it side-on (`make_side_views.py`), and builds from four views, the sides shaping only. Also
+  `pixal3d_generate.py --draw-sides`, the studio's `sides` setting and the agents' `draw_sides` choice.
 - **`game_ready.py` caps the glow at 8 % of the figure (`--glow-max-area`) and can keep it on the head
   (`--glow-only-on-head`).** A glow colour taken from a small accent (a knight's red eye slit) also matched his dark
   red cape faintly: the soft part of the colour match was never judged by `--glow-max-width`, so 25.8 % of the figure

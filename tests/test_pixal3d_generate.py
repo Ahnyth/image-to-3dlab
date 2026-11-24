@@ -839,3 +839,19 @@ def test_a_shape_without_its_record_is_allowed(tmp_path):
     shape = tmp_path / "loose.shape.bin"
     shape.write_bytes(b"x")
     assert px.reuse_problem(shape, has_back=True) is None
+
+
+def test_drawn_sides_go_with_a_back_and_never_with_given_sides():
+    # --draw-sides: the picture engine draws the sides first (make_side_views.py), Create's prop step (#245 (a))
+    assert px.views_problem(back=Path("b.png"), right=None, left=None, draw_sides=True) is None
+    assert "back" in px.views_problem(back=None, right=None, left=None, draw_sides=True)
+    assert px.views_problem(back=Path("b.png"), right=Path("r.png"), left=Path("l.png"), draw_sides=True)
+
+
+def test_the_sides_are_drawn_beside_the_output_from_the_front(tmp_path):
+    right, left = px.drawn_sides(tmp_path / "run" / "model.glb")
+    assert right == tmp_path / "run" / "model__right.png" and left == tmp_path / "run" / "model__left.png"
+    command = px.side_command(tmp_path / "front.png", right, left, seed=7)
+    assert command[1].endswith("make_side_views.py")
+    assert command[2:5] == [str(tmp_path / "front.png"), str(right), str(left)]
+    assert command[command.index("--seed") + 1] == "7"

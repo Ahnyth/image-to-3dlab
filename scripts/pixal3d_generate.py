@@ -239,13 +239,31 @@ def write_views(cuts: dict, model_dir: Path, paint_dir: Path, paint_sides: bool 
         (folder / "transforms.json").write_text(json.dumps(_rig(sides=which), indent=2) + "\n")
 
 
-def views_problem(back: Path | None, right: Path | None, left: Path | None) -> str | None:
+def views_problem(back: Path | None, right: Path | None, left: Path | None,
+                  draw_sides: bool = False) -> str | None:
     """Why a set of extra pictures cannot be used together, or None."""
+    if draw_sides:
+        if right is not None or left is not None:
+            return "--draw-sides draws the side pictures: give it or --right and --left, not both"
+        if back is None:
+            return "drawn sides go with a back picture: give --back too"
+        return None
     if (right is None) != (left is None):
         return "give both sides, --right and --left, or neither"
     if right is not None and back is None:
         return "side pictures go with a back picture: give --back too"
     return None
+
+
+def drawn_sides(output: Path) -> tuple[Path, Path]:
+    """Where --draw-sides puts the right and left side pictures: beside the model."""
+    return (output.with_name(f"{output.stem}__right.png"), output.with_name(f"{output.stem}__left.png"))
+
+
+def side_command(front: Path, right: Path, left: Path, seed: int = 3) -> list[str]:
+    """make_side_views.py drawing RIGHT (or the subject's end, when FRONT shows it side-on) and LEFT from FRONT."""
+    return [sys.executable, str(REPO / "scripts" / "make_side_views.py"), str(front), str(right), str(left),
+            "--seed", str(seed)]
 
 
 def write_front_back_views(front, back, model_dir: Path, paint_dir: Path) -> None:
@@ -623,6 +641,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "the back: for sides drawn by make_side_views.py, whose eyes and noses never sit "
                              "exactly where the front has them, so painting from them doubles a face. Leave "
                              "it off for real side photos or a vehicle's sides (doors, windows, lettering)")
+    parser.add_argument("--draw-sides", action="store_true",
+                        help="draw the side pictures first with the studio's picture engine "
+                             "(scripts/make_side_views.py: the right side, or the subject's end when the front "
+                             "shows it side-on) and build from four views, the sides shaping only: a vehicle or "
+                             "a machine drawn from one side gets its depth drawn instead of guessed. Needs --back")
     parser.add_argument("--models", type=Path, default=None,
                         help="weights folder (default: single-view, or multi-view with --back)")
     parser.add_argument("--cli", type=Path, default=CLI)
@@ -638,7 +661,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    problem = views_problem(args.back, args.right, args.left)
+    problem = views_problem(args.back, args.right, args.left, args.draw_sides)
     if problem:
         raise SystemExit(problem)
     for picture in (args.image, args.back, args.right, args.left, args.reuse_shape):
@@ -667,6 +690,15 @@ def main() -> int:
             )
 
     steps, steps_note = resolve_steps(args.steps, cli=args.cli)
+    if args.draw_sides:
+        args.right, args.left = drawn_sides(args.output.resolve())
+        args.right.parent.mkdir(parents=True, exist_ok=True)
+        print("[pixal3d] drawing the sides with the picture engine (make_side_views.py)", flush=True)
+        drawn = subprocess.run(side_command(args.image.resolve(), args.right, args.left), check=False)
+        if drawn.returncode != 0 or not args.right.is_file() or not args.left.is_file():
+            raise SystemExit("drawing the sides failed (see the lines above); build without --draw-sides, or give "
+                             "--right and --left")
+        args.sides_shape_only = True
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # `trellis-cli` is launched from its own tree so it can find its Metal library, which

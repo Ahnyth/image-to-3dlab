@@ -116,7 +116,7 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
   const state = { have: 'idea', want: 'character', stop: null, tips: false, useRecipe: true, text: '', file: null, preview: null,
     backFile: null, backPreview: null,
     engine: engines[0]?.id, firstMove: presets.find((p) => !p.take)?.id,
-    pic: { size: 1024, steps: 8, newEachTime: true, seed: 42, touched: false }, keep: false, hero: false,
+    pic: { size: 1024, steps: 8, newEachTime: true, seed: 42, touched: false }, keep: false, sides: false, hero: false,
     details: {}, height: null, upright: true,
     picEngine: pictureEngines.find((e) => e.installed)?.id || null,   // listed in the order we suggest for this machine
     frontBack: Boolean(frontBack?.ready) };  // the best result by default, when it can run
@@ -206,7 +206,7 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
           <label class="check"><input type="checkbox" data-pic="newEachTime" ${state.pic.newEachTime ? 'checked' : ''}><span>New picture each time <span class="hint">untick to reuse a seed and get the same picture back</span></span></label>
           ${state.pic.newEachTime ? '' : `<label class="field">Seed<input type="number" data-pic="seed" step="1" value="${state.pic.seed}"></label>`}
         </div></details>` : ''}
-      ${active.includes('model') ? `<details class="adv" data-detail="model" ${state.details.model ? 'open' : ''}><summary>Advanced: 3D model</summary>${engines.length > 1 ? `<label class="field">Engine<select data-k="engine">${engines.map((e, i) => `<option value="${esc(e.id)}" ${e.id === state.engine ? 'selected' : ''}>${i ? '' : 'Best quality: '}${esc(e.label)}</option>`).join('')}</select></label>` : ''}${pixal && state.want !== 'set' && !state.backFile ? (frontBack?.ready ? `<label class="check"><input type="checkbox" data-k="frontback" ${state.frontBack ? 'checked' : ''}><span>Front + back <span class="hint">draws the back too, so the sides and back match your picture instead of being guessed. A few minutes more on a Mac, under a minute on a Linux GPU.</span></span></label>` : frontBack?.hint ? `<p class="hint">Front + back is off. ${esc(frontBack.hint)}</p>` : '') : ''}<label class="check"><input type="checkbox" data-k="keep" ${state.keep ? 'checked' : ''}><span>Keep everything <span class="hint">textures, in-between meshes and resume files, for digging into a bad result. Takes a lot more disk.</span></span></label></details>` : ''}
+      ${active.includes('model') ? `<details class="adv" data-detail="model" ${state.details.model ? 'open' : ''}><summary>Advanced: 3D model</summary>${engines.length > 1 ? `<label class="field">Engine<select data-k="engine">${engines.map((e, i) => `<option value="${esc(e.id)}" ${e.id === state.engine ? 'selected' : ''}>${i ? '' : 'Best quality: '}${esc(e.label)}</option>`).join('')}</select></label>` : ''}${pixal && state.want !== 'set' && !state.backFile ? (frontBack?.ready ? `<label class="check"><input type="checkbox" data-k="frontback" ${state.frontBack ? 'checked' : ''}><span>Front + back <span class="hint">draws the back too, so the sides and back match your picture instead of being guessed. A few minutes more on a Mac, under a minute on a Linux GPU.</span></span></label>` : frontBack?.hint ? `<p class="hint">Front + back is off. ${esc(frontBack.hint)}</p>` : '') : ''}${pixal && state.want === 'prop' && (state.frontBack || state.backFile) ? `<label class="check"><input type="checkbox" data-k="sides" ${state.sides ? 'checked' : ''}><span>Draw the sides too <span class="hint">for a vehicle, a machine or furniture drawn from one side: its end is drawn as well, so its depth is drawn instead of guessed. A few minutes more.</span></span></label>` : ''}<label class="check"><input type="checkbox" data-k="keep" ${state.keep ? 'checked' : ''}><span>Keep everything <span class="hint">textures, in-between meshes and resume files, for digging into a bad result. Takes a lot more disk.</span></span></label></details>` : ''}
       <p class="error" data-error hidden></p>
       <div class="row end"><span class="hint">${active.length} step${active.length === 1 ? '' : 's'}${active.includes('picture') ? ` · the picture uses ${esc(picEngine()?.label || 'the picture engine')}, run on this machine` : ''}</span><button type="submit" class="primary">Make it</button></div>
     </form>`;
@@ -279,6 +279,7 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
     q('[data-k="height"]')?.addEventListener('input', (e) => { state.height = e.target.value; });
     q('[data-k="engine"]')?.addEventListener('change', (e) => { state.engine = e.target.value; render(); const d = sheet.querySelector('[data-k="keep"]')?.closest('details'); if (d) d.open = true; });
     q('[data-k="keep"]')?.addEventListener('change', (e) => { state.keep = e.target.checked; });
+    q('[data-k="sides"]')?.addEventListener('change', (e) => { state.sides = e.target.checked; });
     q('[data-k="picengine"]')?.addEventListener('change', (e) => {
       state.picEngine = e.target.value; state.pic.touched = false; render();
       sheet.querySelector('.picset').closest('details').open = true;
@@ -328,6 +329,7 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
         backFile,
         modelSeed: active.includes('model') ? freshSeed() : null,   // a new 3D try each time, like the picture
         keepEverything: active.includes('model') && state.keep,
+        drawSides: active.includes('model') && state.want === 'prop' && state.sides && (active.includes('back') || Boolean(backFile)),
         finishSettings: { ...(state.want === 'prop' ? { upright: state.upright } : {}),
           ...(heroWanted(state, active, state.engine === 'pixal3d') ? { faces: 32000, hero: true } : {}),
           ...((state.height ?? (state.want === 'character' ? '1.8' : '')) !== '' && state.want !== 'set'
@@ -426,6 +428,7 @@ export function planForm(plan, made = {}) {
   if (plan.pictureEngine) form.append('picture_engine', plan.pictureEngine);
   if (plan.modelSeed != null) form.append('model_seed', String(plan.modelSeed));
   if (plan.keepEverything) form.append('keep_everything', '1');
+  if (plan.drawSides) form.append('draw_sides', '1');
   if (plan.finishSettings) form.append('finish_settings', JSON.stringify(plan.finishSettings));
   if (plan.moveSettings) form.append('move_settings', JSON.stringify(plan.moveSettings));
   if (plan.rigSettings) form.append('rig_settings', JSON.stringify(plan.rigSettings));
