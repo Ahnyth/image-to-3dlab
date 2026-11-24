@@ -1266,19 +1266,28 @@ def setup_cycles(scene) -> str:
     return device
 
 
-def head_mask_attribute(ob, bones: list[str]) -> str | None:
-    """A point colour attribute holding each vertex's skin weight on the bones that keep no glow (0..1): the head's
-    with --glow-not-on-head, the hands' with --glow-not-on-hands."""
-    if not bones:
+def head_mask_attribute(ob, bones: list[str], head: list[str] | None = None) -> str | None:
+    """A point colour attribute holding each vertex's skin weight (0..1) on the bones that keep no glow in red (the
+    head's with --glow-not-on-head, the hands' with --glow-not-on-hands) and on the head's bones in green (where the
+    glow stays with --glow-where head, or goes by itself with auto when the cap fires)."""
+    if not bones and not head:
         return None
     me = ob.data
-    index = {g.index for g in ob.vertex_groups if g.name in set(bones)}
-    w = np.zeros(len(me.vertices))
-    for v in me.vertices:
-        w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
+
+    def weights(names):
+        index = {g.index for g in ob.vertex_groups if g.name in set(names or [])}
+        w = np.zeros(len(me.vertices))
+        for v in me.vertices:
+            w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
+        return w
+
+    off, on_head = weights(bones), weights(head)
+    colours = np.zeros((len(me.vertices), 4), np.float32)
+    colours[:, 0], colours[:, 1], colours[:, 3] = off, on_head, 1.0
     attr = me.color_attributes.new(name="gr_head", type="FLOAT_COLOR", domain="POINT")
-    attr.data.foreach_set("color", np.repeat(w, 4).astype(np.float32))
-    log(f"no-glow mask: {int((w > 0.5).sum())} of {len(w)} vertices on the head or hands asked for")
+    attr.data.foreach_set("color", colours.ravel())
+    log(f"glow masks: {int((off > 0.5).sum())} of {len(off)} vertices keep no glow, {int((on_head > 0.5).sum())} on "
+        "the head")
     return attr.name
 
 
@@ -1342,7 +1351,8 @@ def emit_base_colour(objs, white: bool = False) -> None:
 
 
 def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None,
-               colour_objs: list | None = None, normal_objs: list | None = None) -> tuple[dict, bool]:
+               colour_objs: list | None = None, normal_objs: list | None = None,
+               glow_head: list[str] | None = None) -> tuple[dict, bool]:
     scene = bpy.context.scene
     me = ob.data
     device = setup_cycles(scene)
@@ -1496,9 +1506,9 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     if normal_objs and normal_bake is None:
         normal_bake = bake_normals(normal_objs)
         drop_finer(normal_objs)
-    head_attr = head_mask_attribute(ob, head or [])
+    head_attr = head_mask_attribute(ob, head or [], glow_head or [])
     head_bake = None
-    if head_attr:  # where the head is, from its skin weights, so the glow can stay off a face
+    if head_attr:  # the bones that keep no glow (red) and the head (green), from their skin weights
         for m in mats:
             node = m["nt"].nodes.new("ShaderNodeAttribute")
             node.attribute_name = head_attr
@@ -1558,10 +1568,12 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     cov = gr.downsample(inside, k)[..., 0]
     alb = gr.downsample(albedo[..., :3] * inside, k) / np.maximum(cov, 1e-6)[..., None]
     lit = gr.downsample(sky[..., :3] * inside, k).mean(-1) / np.maximum(cov, 1e-6)
-    exclude = None
-    if head_bake is not None:
-        exclude = gr.downsample(head_bake[..., :1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
-    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude)
+    exclude = on_head = None
+    if head_bake is not None and head:
+        exclude = gr.downsample(head_bake[..., 0:1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
+    if head_bake is not None and glow_head:
+        on_head = gr.downsample(head_bake[..., 1:2] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
+    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude, head=on_head)
     log("colour:", stats)
     p_alb = work / f"{name}_albedo.png"
     gr.write_png(p_alb, colour)
@@ -1730,7 +1742,8 @@ def main() -> None:
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
         normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T, feet, smooth_flat=True)
-    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs)
+    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs,
+                                        job.get("glow_head_bones"))
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
     arm.data.pose_position = "POSE"

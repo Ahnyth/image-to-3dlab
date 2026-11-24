@@ -13,13 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model (front + back on, a prop), the 3D step first draws the side with the picture engine, or the subject's end when
   the front shows it side-on (`make_side_views.py`), and builds from four views, the sides shaping only. Also
   `pixal3d_generate.py --draw-sides`, the studio's `sides` setting and the agents' `draw_sides` choice.
-- **`game_ready.py` caps the glow at 8 % of the figure (`--glow-max-area`) and can keep it on the head
-  (`--glow-only-on-head`).** A glow colour taken from a small accent (a knight's red eye slit) also matched his dark
-  red cape faintly: the soft part of the colour match was never judged by `--glow-max-width`, so 25.8 % of the figure
-  glowed while the report said 0.6 %. The report now counts what visibly glows (`glow_share`); past the cap the glow
-  is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin lines only, dropped) and the
-  log says what was done. When the eyes share their colour with trims on the body, `--glow-only-on-head` keeps the
-  glow on the head's skin alone. Figures under the cap glow exactly as before.
+- **`game_ready.py` caps the glow at 8 % of the figure (`--glow-max-area`) and moves it onto the head by itself
+  when the eyes carry its colour (`--glow-where auto|body|head`).** A glow colour taken from a small accent (a knight's
+  red eye slit) also matched his dark red cape faintly: the soft part of the colour match was never judged by
+  `--glow-max-width`, so 25.8 % of the figure glowed while the report said 0.6 %. The report now counts what visibly
+  glows (`glow_share`). Past the cap, when the colour lies on the head too (eyes, a visor slit), the head's skin alone
+  glows (auto, the default), since colour cannot tell an eye slit from trims of the same red but the skin weights
+  can; otherwise the glow is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin
+  lines only, dropped). The log says what was done; `--glow-where body` keeps the narrowed glow on the body,
+  `--glow-where head` (or `--glow-only-on-head`) asks for the head alone, `--glow-max-area 1` lets large areas glow.
+  Figures under the cap glow exactly as before.
 - **`make_side_views.py` notices a front picture that already shows the side.** A vehicle drawn side-on has its
   profile as the "front"; asked for its right side, the picture engine drew that profile again, and the four-view
   build took a scissor lift's length for its depth too (a near-square footprint). When the drawn side has the

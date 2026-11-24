@@ -1368,25 +1368,136 @@ def test_a_thin_accent_under_the_cap_is_left_exactly_as_before():
     assert "glow_cap" not in stats and np.array_equal(emission, emission_off)
 
 
+def _knight_head(n=64):
+    """`_cape_atlas` with a trim of the eye's red on the body, and the head's skin weights where the slit is."""
+    alb, lit, cov = _cape_atlas(n)
+    alb[40, 44:60] = gr.to_linear(np.array((0.855, 0.161, 0.298)))   # a trim of the eye's red, on the body
+    head = np.zeros(cov.shape)
+    head[14:26, 40:64] = 1.0                                         # the head's skin, where the slit is
+    return alb, lit, cov, head
+
+
 def test_a_glow_only_on_the_head_lights_the_eyes_and_not_the_same_red_on_the_body():
     """The black knight's eye slit and its trims share one red: colour cannot tell them apart, the head can."""
     parents, heads, _roles = _humanoid()
     unity = _unity(dict(parents), dict(heads))
-    s = gr.settings(["--glow-only-on-head", "--glow-not-on-hands"])
-    assert set(gr.glow_off_bones(dict(parents), unity, s)) == set(gr.head_bones(dict(parents), unity))
-    alb, lit, cov = _cape_atlas()
-    alb[40, 44:60] = gr.to_linear(np.array((0.855, 0.161, 0.298)))   # a trim of the eye's red, on the body
-    head = np.zeros(cov.shape)
-    head[14:26, 40:64] = 1.0                                         # the head's skin, where the slit is
+    s = gr.settings(["--glow", "#da294c", "--glow-only-on-head", "--glow-not-on-hands"])
+    assert set(gr.glow_head_bones(dict(parents), unity, s)) == set(gr.head_bones(dict(parents), unity))
+    assert not set(gr.glow_off_bones(dict(parents), unity, s)) & set(gr.head_bones(dict(parents), unity))
+    alb, lit, cov, head = _knight_head()
     s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-only-on-head"])
-    _, emission, _ = gr.compose(alb, lit, cov, s, exclude=head)
+    _, emission, _ = gr.compose(alb, lit, cov, s, head=head)
     assert emission[20, 52].max() > 0.5 and emission[40, 52].max() == 0.0
 
 
 def test_glow_only_on_the_head_and_not_on_the_head_cannot_both_be_asked():
-    assert gr.settings([])["glow_only_on_head"] is False
+    assert gr.settings([])["glow_where"] == "auto"
     with pytest.raises(SystemExit):
         gr.settings(["--glow-only-on-head", "--glow-not-on-head"])
+    with pytest.raises(SystemExit):
+        gr.settings(["--glow-where", "head", "--glow-not-on-head"])
+    with pytest.raises(SystemExit):
+        gr.settings(["--glow-only-on-head", "--glow-where", "body"])
+
+
+# --- the glow goes onto the head by itself when the cap fires and the colour lies there (TODO 198) ---------------------
+
+def test_where_the_glow_may_go_is_a_choice_and_the_old_flags_name_it():
+    assert gr.settings(["--glow-where", "body"])["glow_where"] == "body"
+    assert gr.settings(["--glow-only-on-head"])["glow_where"] == "head"
+    assert gr.settings(["--glow-where", "head"])["glow_where"] == "head"
+    assert gr.settings(["--glow-not-on-head"])["glow_where"] == "body"   # a face that keeps no glow: never the head alone
+    # unless auto is asked for by name: the face stays dark, and past the cap the eyes alone glow (the add-on's default)
+    assert gr.settings(["--glow-not-on-head", "--glow-where", "auto"])["glow_where"] == "auto"
+    with pytest.raises(SystemExit):
+        gr.settings(["--glow-where", "face"])
+
+
+def test_auto_with_a_dark_face_keeps_the_face_dark_under_the_cap_and_lights_the_eyes_past_it():
+    alb, lit, cov, head = _knight_head()
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-not-on-head",
+                     "--glow-where", "auto"])
+    _, emission, stats = gr.compose(alb, lit, cov, s, exclude=head, head=head)
+    assert "glow_auto" in stats and emission[20, 52].max() > 0.5 and emission[40, 52].max() == 0.0
+    thin, tlit, tcov = _atlas(64)                                     # under the cap: the head keeps no glow
+    thin[4:6, 2:6] = thin[4, 2]
+    thin[20:22, 2:6] = gr.to_linear(np.array((0.10, 0.60, 0.65)))     # the cyan strip, now on the head
+    thead = np.zeros(tcov.shape)
+    thead[16:26, 0:32] = 1.0
+    s = gr.settings(["--no-shade", "--glow", "#29e6ff", "--glow-not-on-head", "--glow-where", "auto"])
+    _, emission, stats = gr.compose(thin, tlit, tcov, s, exclude=thead, head=thead)
+    assert "glow_auto" not in stats and (emission is None or emission[21, 4].max() < 0.05)
+
+
+def test_the_head_is_baked_only_when_the_glow_may_go_there():
+    parents, heads, _roles = _humanoid()
+    unity = _unity(dict(parents), dict(heads))
+    head = set(gr.head_bones(dict(parents), unity))
+    assert set(gr.glow_head_bones(dict(parents), unity, gr.settings(["--glow", "#da294c"]))) == head
+    assert gr.glow_head_bones(dict(parents), unity, gr.settings([])) == []                      # nothing glows
+    assert gr.glow_head_bones(dict(parents), unity, gr.settings(["--glow", "#da294c", "--glow-where", "body"])) == []
+    assert gr.glow_head_bones(dict(parents), unity, gr.settings(["--glow", "#da294c", "--glow-max-area", "1"])) == []
+    assert gr.glow_head_bones(dict(parents), unity,
+                              gr.settings(["--glow", "#da294c", "--glow-not-on-head"])) == []
+
+
+def test_a_glow_past_the_cap_whose_colour_lies_on_the_head_glows_on_the_head_alone():
+    """The black knight with no option set: his eye red lit cape and trims; past the cap the eyes alone glow."""
+    alb, lit, cov, head = _knight_head()
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0"])
+    _, emission, stats = gr.compose(alb, lit, cov, s, head=head)
+    assert emission[20, 52].max() > 0.5                              # the eye slit glows
+    assert emission[40, 52].max() == 0.0 and emission[30, 20].max() == 0.0   # the trim and the cape do not
+    auto = stats["glow_auto"]
+    assert auto["before"] > 0.3 and auto["cap"] == 0.08 and auto["head"] == stats["glow_share"]
+    assert 0 < auto["head"] < auto["body"]
+    _, same, _ = gr.compose(alb, lit, cov, gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0",
+                                                        "--glow-where", "head"]), head=head)
+    assert np.array_equal(emission, same)                            # the same as asking for the head
+
+
+def test_body_keeps_the_narrowed_glow_on_the_body():
+    alb, lit, cov, head = _knight_head()
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-where", "body"])
+    _, emission, stats = gr.compose(alb, lit, cov, s, head=head)
+    assert "glow_auto" not in stats and emission[40, 52].max() > 0.5   # the trim glows, as before TODO 198
+
+
+def test_a_glow_past_the_cap_with_nothing_of_its_colour_on_the_head_stays_narrowed():
+    alb, lit, cov, head = _knight_head()
+    head[:] = 0.0
+    head[0:6, 0:10] = 1.0                                            # a head with no red on it
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0"])
+    _, emission, stats = gr.compose(alb, lit, cov, s, head=head)
+    _, body, _ = gr.compose(alb, lit, cov, gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0",
+                                                        "--glow-where", "body"]), head=head)
+    assert "glow_auto" not in stats and np.array_equal(emission, body)
+
+
+def test_without_a_head_map_or_under_the_cap_the_glow_is_left_as_before():
+    alb, lit, cov, _head = _knight_head()
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0"])
+    body = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-where", "body"])
+    assert np.array_equal(gr.compose(alb, lit, cov, s)[1], gr.compose(alb, lit, cov, body)[1])
+    thin, tlit, tcov = _atlas(64)                                    # the thin accent: about 3 %, under the cap
+    thead = np.ones(tcov.shape)
+    s = gr.settings(["--no-shade", "--glow", "#29e6ff"])
+    _, emission, stats = gr.compose(thin, tlit, tcov, s, head=thead)
+    _, before, _ = gr.compose(thin, tlit, tcov, gr.settings(["--no-shade", "--glow", "#29e6ff", "--glow-where", "body"]))
+    assert "glow_auto" not in stats and np.array_equal(emission, before)
+
+
+def test_large_areas_may_glow_when_the_cap_is_off():
+    alb, lit, cov, head = _knight_head()
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-max-area", "1"])
+    _, emission, stats = gr.compose(alb, lit, cov, s, head=head)
+    assert "glow_auto" not in stats and emission[30, 20].max() > 0.1   # the cape glows, as asked
+
+
+def test_the_log_says_when_the_glow_went_onto_the_head():
+    note = gr.glow_note({"glow_auto": {"before": 0.2576, "body": 0.0602, "head": 0.0041, "cap": 0.08}})
+    assert "25.8%" in note and "0.4%" in note and "head" in note
+    assert "--glow-where body" in note and "--glow-max-area 1" in note
 
 
 def test_the_log_says_when_the_glow_was_narrowed():
@@ -1394,7 +1505,7 @@ def test_the_log_says_when_the_glow_was_narrowed():
     note = gr.glow_note({"glow_cap": {"before": 0.2576, "after": 0.0602, "cap": 0.08,
                                       "steps": {"#da294c": "only beside a solid accent"}}})
     assert "25.8%" in note and "6.0%" in note and "#da294c: only beside a solid accent" in note
-    assert "--glow-max-area 1" in note and "--glow-only-on-head" in note
+    assert "--glow-max-area 1" in note and "--glow-where head" in note
 
 
 def test_a_glow_only_on_the_head_leaves_the_necks_shared_skin_out():
@@ -1406,5 +1517,5 @@ def test_a_glow_only_on_the_head_leaves_the_necks_shared_skin_out():
     head[14:26, 40:64] = 1.0                                          # the head
     head[28:33, 40:64] = 0.6                                          # the neck, partly the head's
     s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-only-on-head"])
-    _, emission, _ = gr.compose(alb, lit, cov, s, exclude=head)
+    _, emission, _ = gr.compose(alb, lit, cov, s, head=head)
     assert emission[20, 52].max() > 0.5 and emission[30, 52].max() < 0.05
