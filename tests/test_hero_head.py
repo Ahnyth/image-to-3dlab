@@ -1141,38 +1141,3 @@ def test_rounding_an_ear_or_laying_a_strand_down_never_narrows_the_head_under_th
     hd.tube_radius(zone, {"radius": radius, "known": np.ones(radius.shape, bool), "inner": inner})
     assert calls.index("crown") < calls.index("flaps")   # ... which comes after the head's own width under the brim is
     # read (`crown_width`): rounded before, the Zauberer's ears narrowed it (533 see-through pixels against 20)
-
-
-def freed_zone(outer=0.05, new=0.03):
-    """A head's zone round an upright axis at x = z = 0 from y 0.1 to 0.3: the old head's outermost surface OUTER from
-    the axis, the new head's NEW; the columns facing the back (|angle| > 2.5) held a collar (outer -inf)."""
-    frame = hd.cylinder(hd.line_axis((0.0, 0.0, 0.0), (0.0, 1.0, 0.0)), 0.1, 0.3, 0.002, 0.05)
-    old = np.full((frame["rows"], frame["cols"]), outer)
-    old[:, np.abs(hd.column_angles(frame)) > 2.5] = -np.inf
-    zone = {"frame": frame, "outer": old, "low": 0.1, "bottom": 0.12, "width": 0.1, "pixel": 0.002}
-    return zone, np.full((frame["rows"], frame["cols"]), new)
-
-
-def test_a_piece_the_old_head_hid_and_the_new_one_leaves_free_is_found():
-    # the Zauberer's jaw (round 27): 13 triangles of his collar's inner edge, 3.4-4.0 cm from the neck's axis, sat
-    # inside his old, wider jaw; beside the slimmer new head they stood free in front of it as a dark wedge
-    zone, radius = freed_zone()
-    points = np.array([[0.0, 0.2, 0.04],     # between the new head and where the old one was: freed
-                       [0.0, 0.2, 0.02],     # inside the new head: hidden still
-                       [0.0, 0.2, 0.06],     # outside where the old head was: it showed before too
-                       [0.0, 0.35, 0.04],    # above the head's region
-                       [0.0, 0.2, -0.04]])   # behind, where a collar stood outermost: not the old head's
-    assert hd.freed_points(points, zone, radius).tolist() == [True, False, False, False, False]
-
-
-def test_freed_pieces_are_tucked_inside_the_new_head_and_the_rest_stays():
-    zone, radius = freed_zone()
-    part = {"positions": np.array([[0.0, 0.2, 0.04], [0.004, 0.2, 0.04], [0.0, 0.204, 0.04], [0.0, 0.2, 0.06]]),
-            "faces": np.array([[0, 1, 2], [0, 2, 3]])}
-    out, moved = hd.tuck_freed(part, zone, radius, keep=np.array([False, False, False, False]))
-    assert moved == 3
-    _, r = hd.polar(zone["frame"], out["positions"])
-    assert np.all(r[:3] < 0.03) and r[3] == pytest.approx(0.06)               # tucked inside; the outside one stays
-    assert np.allclose(out["positions"][:3, 1], part["positions"][:3, 1])     # at its own height
-    again, moved = hd.tuck_freed(part, zone, radius, keep=np.array([True, False, False, False]))
-    assert moved == 2 and np.allclose(again["positions"][0], part["positions"][0])   # a rim point stays where it is

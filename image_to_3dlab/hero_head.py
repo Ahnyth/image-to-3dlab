@@ -1468,45 +1468,6 @@ def zone_box(zone: dict) -> tuple[float, ...]:
             float(z.min() - r), float(z.max() + r))
 
 
-FREED_TUCK_SHARE = 0.02   # a piece the new head leaves free goes this share of the head's width inside it
-
-
-def freed_points(points: np.ndarray, zone: dict, radius: np.ndarray) -> np.ndarray:
-    """Which POINTS of the figure the old head hid and the new one leaves free: within the head's rows (from the new
-    neck's lowest point, `tube_low`, up), further from the axis than the new head (RADIUS, a picture of the zone's
-    frame) and nearer than the old head's outermost surface (zone "outer"; where a collar stood outermost, -inf, no
-    point counts). The Zauberer's collar had an inner edge 3.4-4.0 cm from his neck's axis that sat inside his old,
-    wider jaw; beside the slimmer new head it stood free in front of the new jaw as a dark wedge (round 27 of the
-    AssetFurnace Support notes)."""
-    frame = zone["frame"]
-    p = np.asarray(points, dtype=np.float64)
-    angle, distance = polar(frame, p)
-    height = p[:, 1]
-    rows = (height <= frame["y_hi"]) & (height >= max(frame["y_lo"], tube_low(zone)))
-    outer = np.asarray(zone["outer"], dtype=np.float64)
-    old = sample_map(frame, np.where(np.isfinite(outer), outer, -1.0), angle, height)
-    new = sample_map(frame, np.asarray(radius, dtype=np.float64), angle, height)
-    return rows & (distance > new) & (distance < old - 0.5 * zone["pixel"])
-
-
-def tuck_freed(part: dict, zone: dict, radius: np.ndarray, keep: np.ndarray | None = None) -> tuple[dict, int]:
-    """PART with its points `freed_points` finds moved toward the axis to FREED_TUCK_SHARE of the head's width inside
-    the new head, each at its own height and angle, so a piece of the figure the old head hid stays hidden; KEEP (a mask)
-    are points that stay where they are (the cut's rim). Returns (the part, how many points moved)."""
-    p = np.asarray(part["positions"], dtype=np.float64)
-    freed = freed_points(p, zone, radius)
-    if keep is not None:
-        freed &= ~np.asarray(keep, dtype=bool)
-    if not freed.any():
-        return part, 0
-    frame = zone["frame"]
-    angle, _ = polar(frame, p[freed])
-    inside = sample_map(frame, np.asarray(radius, dtype=np.float64), angle, p[freed, 1])
-    out = p.copy()
-    out[freed] = unpolar(frame, angle, np.maximum(inside - FREED_TUCK_SHARE * zone["width"], 0.0), p[freed, 1])
-    return {**part, "positions": out}, int(freed.sum())
-
-
 def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -> tuple[list[dict], dict, dict]:
     """PARTS (one model of the figure, part by part, in the figure's frame) with the zone's old head cut out and the new
     head (`tube_part` of RADIUS every STEP) set in. Returns (the model's parts, the new head part, report).
@@ -1584,16 +1545,6 @@ def graft_head(parts: list[dict], zone: dict, radius: np.ndarray, step: float) -
         colour = hat_colour(parts[body_index], zone)
         cap = opening_cap(body, opening, None if colour is None else colour_material(colour))
         report["hat_colour"] = None if colour is None else [round(float(c), 1) for c in colour]
-    # what the old head hid and the new one leaves free goes inside the new head; the cut's outlines stay where they are
-    tucked = 0
-    for index, part in enumerate(out_parts):
-        keep = np.zeros(len(part["positions"]), bool)
-        if len(rims[index]):
-            keep[np.unique(rims[index])] = True
-        out_parts[index], moved = tuck_freed(part, zone, radius, keep)
-        tucked += moved
-    report["freed_points_tucked"] = tucked
-    body = out_parts[body_index]
     body, closed = cap_loops(body, rest)
     out_parts[body_index] = body
     if cap is not None:
