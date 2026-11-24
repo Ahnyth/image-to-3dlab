@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nose without a cliff and less than a quarter of the head's width behind the figure's front; the four models it wrote
   for skin_sorcerer_c show no hole from behind. Where the new face falls into the head, the log says so and face.json
   gives its share (`off_cliff_share`).
+- **Where the new face is no face, the figure keeps its own skin.** On skin_sorcerer_c the old lower cheeks were cut
+  away all the same, and the new face's pits showed from the front as mottled grey, white and maroon patches with
+  ragged edges beside the jaw. The face's window now shrinks to what the new face takes: the part reached from the nose
+  without a cliff and less than a quarter of the head's width behind the figure's front, smoothed as the window's own
+  edge and holding the nose; outside it neither is the figure cut nor the new face set in. face.json gives the share
+  left out (`face_left_out_share`).
 - **Hero parts set a part into each finer model no finer than that model.** The finer models a figure's game step takes
   its shape and paint from got every new part at 150,000 faces: skin_sorcerer_b's two boots took its 58,000-triangle
   shape model to 344,000, and the game step's even thinning to 14,000 left the body a few thousand (a smashed face, no

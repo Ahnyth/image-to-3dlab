@@ -604,6 +604,30 @@ def reference_depth(own: np.ndarray, new: np.ndarray, dive: float = np.inf) -> n
     return out
 
 
+def face_area(window: dict, new_depth: np.ndarray, is_face: np.ndarray, dive: float) -> np.ndarray:
+    """The part of the window's mask the new face takes: everywhere but where the new face is there and is no face,
+    off a cliff from the nose (`reached`) or more than DIVE behind the figure's own front (`window["depth"]`). There
+    the figure keeps its own skin: on skin_sorcerer_c's lower cheeks the old skin was cut away and the new face's pit
+    showed from the front as mottled grey, white and maroon patches with ragged edges (round 28 of the AssetFurnace
+    Support notes). Smoothed as the window's own edge is, the piece holding the nose kept, its holes filled."""
+    own = window["depth"]
+    with np.errstate(invalid="ignore"):
+        deep = np.isfinite(own) & np.isfinite(new_depth) & (own - new_depth >= dive)
+    no_face = np.isfinite(new_depth) & (~is_face | deep)
+    area = window["mask"] & ~no_face
+    if not no_face[window["mask"]].any():
+        return window["mask"]
+    smooth = SMOOTH_SHARE * window["width"] / window["pixel"]
+    if smooth > 0:
+        area = window["mask"] & (ndimage.gaussian_filter(area.astype(np.float64), smooth) > 0.5)
+    label, count = ndimage.label(area)
+    seed = window["seed"]
+    if not count:
+        return area
+    keep = label[seed] if label[seed] else 1 + int(np.argmax(ndimage.sum(area, label, range(1, count + 1))))
+    return ndimage.binary_fill_holes(label == keep) & window["mask"]
+
+
 def spread(depth: np.ndarray, reach: int) -> np.ndarray:
     """DEPTH with its empty pixels within REACH of a full one given that one's value: the new face's depth carried a
     little past its outline, for the faces the seam cuts there."""
@@ -922,17 +946,26 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     cap = EASE_SHARE * width if ease is None else ease
     box, pixel = window["box"], window["pixel"]
     skirt = SKIRT_PIXELS * pixel
-    new, _ = hh.cut_part_values(face, -(window_values(window, face["positions"]) + skirt))
-    if not len(new["faces"]):
-        raise ValueError("the new face does not reach into the window: check its placement")
-    new, _ = hh.keep_faces(new, front_piece(new["positions"], new["faces"]))
-    new_depth = spread(depth_map(new["positions"], new["faces"], box, pixel)[0], NEAR_PIXELS)
-    # the cut measures against the new face only where it is a face: reached from the nose without a cliff
-    is_face = reached(new_depth, window["seed"], JUMP_SHARE * width)
-    counted = np.where(is_face, new_depth, -np.inf)
+    def set_in(window):
+        new, _ = hh.cut_part_values(face, -(window_values(window, face["positions"]) + skirt))
+        if not len(new["faces"]):
+            raise ValueError("the new face does not reach into the window: check its placement")
+        new, _ = hh.keep_faces(new, front_piece(new["positions"], new["faces"]))
+        new_depth = spread(depth_map(new["positions"], new["faces"], box, pixel)[0], NEAR_PIXELS)
+        # the cut measures against the new face only where it is a face: reached from the nose without a cliff
+        return new, new_depth, reached(new_depth, window["seed"], JUMP_SHARE * width)
+
+    new, new_depth, is_face = set_in(window)
     shown = np.isfinite(new_depth) & (window["field"] > 0)
     out_parts, old_points, old_dense, report = [], [], [], {"parts": []}
     report["off_cliff_share"] = float((shown & ~is_face).sum() / max(int(shown.sum()), 1))
+    # where the new face is no face the figure keeps its own skin: the window shrinks to what the new face takes
+    area = face_area(window, new_depth, is_face, DIVE_SHARE * width)
+    report["face_left_out_share"] = float((window["mask"] & ~area).sum() / max(int(window["mask"].sum()), 1))
+    if report["face_left_out_share"] > 0:
+        window = {**window, "mask": area, "field": signed_distance(area, pixel)}
+        new, new_depth, is_face = set_in(window)
+    counted = np.where(is_face, new_depth, -np.inf)
     body_index, target, most = None, None, 0
     for index, part in enumerate(parts):
         p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)

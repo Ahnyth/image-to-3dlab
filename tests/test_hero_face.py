@@ -634,8 +634,34 @@ def test_graft_face_never_cuts_through_the_head_where_the_new_face_dives_into_it
     kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
     assert (kept[:, 2] < 0).sum() == (v[f].mean(axis=1)[:, 2] < 0).sum()      # nothing of the head's back went
     assert holes_from_behind(parts + [new]) == 0                              # seen from behind, no hole
-    assert not ((kept[:, 2] > 0.03) & (np.hypot(kept[:, 0], kept[:, 1]) < 0.03)).any()   # the old face did go
+    beside_pit = np.hypot(kept[:, 0] - 0.02, kept[:, 1] + 0.01) < 0.014       # the pit, its cliff band: kept
+    assert not ((kept[:, 2] > 0.03) & (np.hypot(kept[:, 0], kept[:, 1]) < 0.03) & ~beside_pit).any()  # the old face went
     assert 0.03 < report["off_cliff_share"] < 0.2                             # the pit and its rim, said
+
+
+def test_graft_face_keeps_the_figures_own_skin_where_the_new_face_is_no_face():
+    # skin_sorcerer_c's lower cheeks (round 28 of the AssetFurnace Support notes): where the build showed no face the
+    # new face falls into a pit; the old cheek was cut away all the same, and the pit's walls showed from the front
+    # as mottled grey, white and maroon patches with ragged edges. There the figure keeps its own skin, and the new
+    # face is set in only where it is reached from the nose
+    v, f = hollow_head()
+    body = {"positions": v, "faces": f}
+    pit, radius = np.array([0.02, -0.01]), 0.006
+    parts, new, report = hf.graft_face([body], disk_window(0.035, width=0.1), diving_face())
+    kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
+    over_pit = (np.hypot(*(kept[:, :2] - pit).T) < radius - 0.002) & (kept[:, 2] > 0.04)
+    assert over_pit.sum() >= 3                                                # the old cheek over the pit stayed
+    added = new["positions"][new["faces"]].mean(axis=1)
+    assert not ((np.hypot(*(added[:, :2] - pit).T) < radius - 0.002) & (added[:, 2] < 0.03)).any()  # no pit set in
+    front = hf.depth_map(np.concatenate([parts[0]["positions"], new["positions"]]),
+                         np.concatenate([parts[0]["faces"], new["faces"] + len(parts[0]["positions"])]),
+                         (pit[0] - 0.003, pit[0] + 0.003, pit[1] - 0.003, pit[1] + 0.003), 0.001)[0]
+    assert np.isfinite(front).all() and front.min() > 0.04                   # from the front: skin, no pit
+    assert not ((kept[:, 2] > 0.03) & (np.hypot(kept[:, 0], kept[:, 1]) < 0.03)
+                & (np.hypot(*(kept[:, :2] - pit).T) > radius + 0.008)).any()  # the old face went beyond the pit's cliff band
+    assert holes_from_behind(parts + [new]) == 0
+    assert 0.03 < report["off_cliff_share"] < 0.2                             # still said
+    assert 0.0 < report["face_left_out_share"] < 0.2                          # and how much was left out
 
 
 def plate(depth, half=0.06, pixel=0.002, back=False):
