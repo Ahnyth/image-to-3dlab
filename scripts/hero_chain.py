@@ -103,6 +103,20 @@ def gpu_locks(paths: list[Path], what: str, wait: float = LOCK_MINUTES * 60, ste
             shutil.rmtree(path, ignore_errors=True)
 
 
+def game_cut_share(game: list[str]) -> float | None:
+    """Where the game step will cut the figure's feet (a share of its height above its lowest point), as game_ready
+    plans it from the figure's Finish run (`--feet-from`, `--feet`); None when it cuts nothing there. New boots stand
+    there: stood lower, on the made-up sole's floor, the cut took their feet (skin_sorcerer_c, 2026-11-24)."""
+    mode, run = hc.option_value(game, "--feet") or "auto", hc.option_value(game, "--feet-from")
+    if mode == "off" or not run:
+        return None
+    import game_ready
+
+    plan = game_ready.feet_plan(game_ready.outline_parts(Path(run))["parts"], mode,
+                                float(hc.option_value(game, "--height") or 1.8), game_ready.FIXED)
+    return float(plan["at"]) if plan else None
+
+
 def stage_command(stage: str, models: hc.Models, picture: Path, folder: Path, given: dict) -> list[str]:
     """The command line of STAGE's tool on MODELS, writing into FOLDER. GIVEN: what a person gave by hand ("top": the
     boots' row in the picture; "boxes": the band's boxes; "views": the cameras' folder)."""
@@ -116,6 +130,8 @@ def stage_command(stage: str, models: hc.Models, picture: Path, folder: Path, gi
     if stage == "boots":
         command = [*tool, str(models.rig), str(picture), "--out", str(folder), "--boots", "--name", "boots",
                    "--top", str(given.get("top", "auto"))]
+        if given.get("floor_at"):
+            command += ["--floor-at", f"{given['floor_at']:g}"]
         if given.get("views"):
             command += ["--views", str(given["views"])]
         return command + (["--also", *also] if also else [])
@@ -248,6 +264,14 @@ class Chain:
         if name == "boots":
             if self.args.boot_top is not None:
                 given["top"] = self.args.boot_top
+            try:
+                cut = game_cut_share(game)
+            except (OSError, ValueError, KeyError, LookupError) as error:
+                cut = None
+                self.run.say(f"boots: the game step's foot cut could not be read ({error}): the boots stand on the "
+                             "figure's floor")
+            if cut:
+                given["floor_at"] = cut
             if self.args.views:
                 given["views"] = self.args.views
         if name == "band":

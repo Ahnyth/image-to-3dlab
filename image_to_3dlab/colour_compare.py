@@ -324,11 +324,21 @@ def compare_view(old: Model, new: Model, name: str, direction, size: int = 384, 
     return patches, {"old": a, "new": b, "old_covered": ca, "new_covered": cb, "changed": changed}
 
 
+def shared_frame(old: Model, new: Model) -> tuple[tuple, tuple]:
+    """One frame round both models, for two versions of a figure that a step changed in place (it never moves it):
+    `frames` draws each in its own frame when their boxes differ by 5 % or more, and new boots that took away a made-up
+    sole (5.7 % of the height) were drawn a few pixels off, every thin trim a changed patch (2026-11-24)."""
+    lo = np.minimum(old.positions.min(0), new.positions.min(0))
+    hi = np.maximum(old.positions.max(0), new.positions.max(0))
+    shared = ((lo + hi) / 2, 1.0 / max(float((hi - lo).max()), 1e-9))
+    return shared, shared
+
+
 def compare(old: Model, new: Model, size: int = 384, delta: float = 12.0, min_share: float = 0.003,
-            views=VIEWS, ignore: Model | None = None, leave_out=None) -> list[Patch]:
+            views=VIEWS, ignore: Model | None = None, leave_out=None, frame=None) -> list[Patch]:
     """Every patch, over all `views`, where `new` differs in colour from `old` (outside `ignore`'s glow and what
-    `leave_out` marks)."""
-    frame = frames(old, new)
+    `leave_out` marks); FRAME (`frames`, `shared_frame`) as `frames` finds it when not given."""
+    frame = frame or frames(old, new)
     found = []
     for name, direction in views:
         found += compare_view(old, new, name, direction, size, delta, min_share, frame=frame, ignore=ignore,
@@ -338,9 +348,9 @@ def compare(old: Model, new: Model, size: int = 384, delta: float = 12.0, min_sh
 
 def marked_picture(old: Model, new: Model, path: Path, size: int = 384, delta: float = 12.0,
                    min_share: float = 0.003, views=VIEWS, ignore: Model | None = None,
-                   leave_out=None) -> list[Patch]:
+                   leave_out=None, frame=None) -> list[Patch]:
     """`compare`, and a picture of every view with a patch: old | new | new with the patches in red."""
-    frame = frames(old, new)
+    frame = frame or frames(old, new)
     rows, found = [], []
     for name, direction in views:
         patches, pics = compare_view(old, new, name, direction, size, delta, min_share, frame=frame,

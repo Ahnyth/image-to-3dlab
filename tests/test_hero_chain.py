@@ -243,3 +243,51 @@ def test_a_stage_whose_game_figure_lost_its_feet_is_dropped(tmp_path, monkeypatc
     assert (False, "the game figure: the left and right foot lost its toe") in checks
     assert stage.measured["game figure: feet forward"] == -0.009
     assert chain.game_checks("band", before, after, ch.Stage("band", "kept", ""), []) == []
+
+
+def test_new_boots_stand_where_the_game_step_cuts_the_figures_feet(monkeypatch):
+    # skin_sorcerer_c's game options cut a made-up platform sole at 5.8 % of its height (--feet-from its Finish run);
+    # the new boots stood on the platform's floor and the cut took their feet (2026-11-24)
+    import game_ready
+    import hero_chain
+
+    parts = {"parts": [{"side": "below", "low": 0.0, "high": 0.05, "reach": 0.0578}]}
+    monkeypatch.setattr(game_ready, "outline_parts", lambda path: parts)
+    assert hero_chain.game_cut_share(["--height", "2.2", "--feet", "cut", "--feet-from", "C:/finish/run"]) == 0.0578
+    assert hero_chain.game_cut_share(["--height", "2.2", "--feet", "off", "--feet-from", "C:/finish/run"]) is None
+    assert hero_chain.game_cut_share(["--height", "2.2"]) is None
+    models = ch.Models(Path("C:/f/rig.glb"), {})
+    boots = hero_chain.stage_command("boots", models, Path("C:/f/front.png"), Path("C:/o/3_boots"), {"floor_at": 0.0578})
+    assert boots[boots.index("--floor-at") + 1] == "0.0578"
+
+
+def test_a_stage_that_drops_a_made_up_sole_is_compared_in_one_frame():
+    # skin_sorcerer_c's boots took away a made-up platform sole, its lowest point rose 5.7 % of its height, and the
+    # two models were drawn each in its own frame: a few pixels apart, every red trim read as a changed patch (52)
+    from test_colour_compare import cube, texture
+
+    tex = texture()
+    for k in range(6):
+        tex[2::6, k * 64:(k + 1) * 64] = (220, 30, 40)         # thin red trims: a shift of a pixel or two shows
+        tex[:, k * 64 + 2:(k + 1) * 64:6] = (220, 30, 40)
+    p, uv, f = cube(n=8)
+    old = cc.Model.single(p, uv, f, tex)
+    raised = p.copy()
+    raised[raised[:, 1] < -0.45, 1] = -0.43                   # the bottom 7 % of the height gone
+    new = cc.Model.single(raised, uv, f, tex)
+
+    def changed(points):
+        return points[:, 1] < -0.3
+
+    assert ch.colour_outside(old, new, changed) == []
+    seen = {}
+    real = cc.compare
+    cc.compare = lambda *a, **k: seen.update(k) or []
+    try:
+        ch.colour_outside(old, new, changed)
+    finally:
+        cc.compare = real
+    (centre, scale), other = seen["frame"]
+    want = cc.shared_frame(old, new)[0]
+    assert other is seen["frame"][0] and np.allclose(centre, want[0]) and scale == pytest.approx(want[1])
+    assert cc.frames(old, new)[0] is not cc.frames(old, new)[1]        # alone, the two boxes count as two places

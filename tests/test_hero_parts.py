@@ -381,6 +381,13 @@ def test_a_made_up_sole_under_the_old_foot_lowers_no_new_boot():
     assert hp.picture_floor(view, high, float(high[:, 1].min())) == pytest.approx(float(high[:, 1].min()))
 
 
+def test_a_boot_stands_where_the_game_step_will_cut_a_made_up_sole():
+    figure = np.array([[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]])                 # 2 tall, standing on y = -1
+    assert hp.cut_floor(-1.0, figure, 0.058) == pytest.approx(-1.0 + 0.116)
+    assert hp.cut_floor(-0.5, figure, 0.058) == -0.5                       # an old floor above the cut stays
+    assert hp.cut_floor(-1.0, figure, None) == -1.0
+
+
 def test_a_boot_takes_the_old_legs_weights_point_by_point():
     figure, bone = lower_leg()
     plan = hp.leg_plan(figure["positions"], bone, shin=1, foot=[2], knee=np.array([-0.07, -0.2, 0.0]),

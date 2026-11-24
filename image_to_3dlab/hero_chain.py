@@ -173,9 +173,10 @@ def colour_outside(old, new, inside, picture: Path | None = None, size: int = 38
         glow = cc.read_glow(Path(new))
     a = cc.read_model(Path(old)) if isinstance(old, (str, Path)) else old
     b = cc.read_model(Path(new)) if isinstance(new, (str, Path)) else new
+    frame = cc.shared_frame(a, b)          # a stage changes the figure in place, never moves it
     if picture is not None:
-        return cc.marked_picture(a, b, Path(picture), size=size, ignore=glow, leave_out=inside)
-    return cc.compare(a, b, size=size, ignore=glow, leave_out=inside)
+        return cc.marked_picture(a, b, Path(picture), size=size, ignore=glow, leave_out=inside, frame=frame)
+    return cc.compare(a, b, size=size, ignore=glow, leave_out=inside, frame=frame)
 
 
 def model_points(path: Path) -> np.ndarray:

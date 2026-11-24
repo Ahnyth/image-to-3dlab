@@ -403,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
                              "or auto: found there, where the boot's colour ends up the shin (exit code 3 when the "
                              "picture shows no boots); the drawing's own proportions decide without it, from the old "
                              "foot's length")
+    parser.add_argument("--floor-at", type=float, default=None, metavar="SHARE",
+                        help="with --boots: the game-ready step will cut the figure's feet at this share of its height "
+                             "above its lowest point (a sole the generator made up: game_ready.py --feet-from); the "
+                             "new boots stand there, so the cut leaves them whole")
     parser.add_argument("--left", choices=("mirror", "own"), default="mirror",
                         help="with --boots: mirror: the left boot is the right one mirrored; own: drawn and built "
                              "from its own crop")
@@ -513,13 +517,15 @@ def main(argv: list[str] | None = None) -> int:
         plans = {side: hp.leg_plan(every, all_bones, joint_index[legs[side]["shin"]],
                                    [joint_index[b] for b in [legs[side]["foot"], *legs[side]["below"]]],
                                    heads[legs[side]["shin"]], heads[legs[side]["foot"]]) for side in hh.SIDES}
-        if views_dir is not None:        # a sole Pixal3D made up below the drawn feet is no floor for a new boot
-            for side, plan in plans.items():
-                floor = hp.picture_floor(view, plan["foot"], plan["floor"], mesh_scale, SOLE_LIMIT_PX)
-                if floor > plan["floor"]:
-                    run.say(f"measure: {side} leg: the old sole lies below the picture's feet (made up); the new boot "
-                            f"stands {floor - plan['floor']:.4f} higher, on the drawn feet")
-                    plan["floor"] = floor
+        for side, plan in plans.items():  # a sole Pixal3D made up below the drawn feet is no floor for a new boot
+            floor = hp.cut_floor(plan["floor"], every, args.floor_at)
+            if views_dir is not None:
+                floor = max(floor, hp.picture_floor(view, plan["foot"], plan["floor"], mesh_scale, SOLE_LIMIT_PX))
+            if floor > plan["floor"]:
+                run.say(f"measure: {side} leg: the old sole is made up below the drawn feet; the new boot stands "
+                        f"{floor - plan['floor']:.4f} higher" + (f" (where the game step cuts: {args.floor_at:.2%} "
+                                                                 "of the height)" if args.floor_at else ""))
+                plan["floor"] = floor
         top_view = None                  # where the boots end, in the view's pixels
         if args.top == "auto":
             pixels = {}

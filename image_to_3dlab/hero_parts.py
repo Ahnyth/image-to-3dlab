@@ -875,6 +875,17 @@ def sole_below_feet(view: pp.View, points: np.ndarray, mesh_scale: float = 1.0, 
     return float(y[sole].max() - max(bottoms)) if bottoms else float("nan")
 
 
+def cut_floor(floor: float, figure: np.ndarray, share: float | None) -> float:
+    """The floor a new boot stands on when the game-ready step will cut the figure's feet at SHARE of its height above
+    its lowest point (a sole the generator made up, `game_ready.py --feet-from`): there, or FLOOR when that is higher.
+    skin_sorcerer_c stood on a made-up platform 5.8 % of its height deep; new boots stood on the platform's floor and
+    the cut took their feet, leaving straight shafts (2026-11-24)."""
+    if not share:
+        return float(floor)
+    y = np.asarray(figure, dtype=np.float64)[:, 1]
+    return max(float(floor), float(y.min()) + float(share) * float(np.ptp(y)))
+
+
 def picture_floor(view: pp.View, foot: np.ndarray, floor: float, mesh_scale: float = 1.0,
                   limit_px: float = 3.0) -> float:
     """The floor a new boot stands on: FLOOR (the old foot's lowest point) when the picture's feet are there, else the
