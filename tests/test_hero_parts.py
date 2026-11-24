@@ -509,3 +509,36 @@ def test_a_boot_built_as_a_pair_one_behind_the_other_is_no_boot():
     pair = np.concatenate([one, one + [0.0, 0.0, 0.55]])                             # a second one behind it
     assert hp.single_boot(one)[0] and not hp.single_boot(pair)[0]
     assert hp.single_boot(pair)[1] == pytest.approx(1.6, abs=0.01)
+
+
+# --- a part as fine as the model it goes into (TODO 201 of the AssetFurnace Support notes) ----------------------------
+
+def _grid(n, size=1.0, y=0.0):
+    """A flat square SIZE wide at height Y in n x n cells, two triangles each."""
+    xs = np.linspace(0, size, n + 1)
+    v = np.array([[x, y, z] for z in xs for x in xs])
+    f = []
+    for i in range(n):
+        for j in range(n):
+            a, b, c, d = i * (n + 1) + j, i * (n + 1) + j + 1, (i + 1) * (n + 1) + j, (i + 1) * (n + 1) + j + 1
+            f += [[a, c, b], [b, c, d]]
+    return {"positions": v, "faces": np.array(f)}
+
+
+def test_surface_density_counts_the_triangles_and_area_in_a_box():
+    model = _grid(20, size=2.0)                         # 800 triangles over 4 square units
+    count, area = hp.surface_density([model], ((0.0, -1.0, 0.0), (1.0, 1.0, 1.0)))
+    assert count == 200 and area == pytest.approx(1.0)
+
+
+def test_a_part_far_finer_than_the_model_round_it_is_matched_to_it():
+    # skin_sorcerer_b's boots: 150,000 faces each into a 58,000-triangle model; the part should be as fine as the model
+    # there, a little finer allowed, never past the bounds given
+    model = _grid(40, size=4.0)                         # 3,200 triangles over 16: 200 per square unit
+    part = _grid(100, size=1.0, y=0.01)                 # 20,000 triangles over 1 square unit, laid on it
+    part["positions"] = part["positions"] + [1.5, 0.0, 1.5]
+    faces = hp.matched_faces(part, [model], 100, 150000)
+    grown = (1 + 2 * hp.DENSITY_BOX_GROW) ** 2          # the box round the part, grown: about that much of the model
+    assert faces == pytest.approx(200 * hp.DENSITY_SLACK, rel=0.25 * grown)
+    assert hp.matched_faces(part, [model], 1000, 150000) == 1000          # never under the least
+    assert hp.matched_faces(part, [_grid(2, size=0.1)], 100, 150000) is None   # too little of the model there to tell

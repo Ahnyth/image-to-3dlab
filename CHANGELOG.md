@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Hero parts set a part into each finer model no finer than that model.** The finer models a figure's game step takes
+  its shape and paint from got every new part at 150,000 faces: skin_sorcerer_b's two boots took its 58,000-triangle
+  shape model to 344,000, and the game step's even thinning to 14,000 left the body a few thousand (a smashed face, no
+  shins). `hero_parts.py` now measures each finer model's own density round the part (triangles per area in the part's
+  box) and, where the part is more than 1.25 times finer, cleans it up again at a matching size (1.5 times the model's
+  density, at least 1,500 faces); the shape model then grew to 60,000 and the game figure kept its body.
 - **The Hero chain judges each stage on its game figure, and new boots keep their feet.** Each stage that changes the
   shape is compared on the game figure with the one before it, in its own region: the head's jagged outline, flakes and
   jaw strokes (`figure_check.against`), the feet reaching ahead of the ankles (`figure_check.feet`, also in the

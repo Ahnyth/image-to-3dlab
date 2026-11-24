@@ -51,6 +51,11 @@ THIN_SHARE = 0.25            # a layer thinner than this share of the part's hei
 TILT_LIMITS_DEG = (30.0, 20.0)   # a part is turned at most this far to lie along the body: its lean, its turn round it
 FIELD_PIXELS = 320           # the part's footprint is read this many pixels over its height
 CRUMB_SHARE = 0.002          # a build's separate piece with fewer faces than this share of it is a crumb
+DENSITY_SLACK = 1.5          # a part set into a finer model may be this much finer than the model round it, no more:
+                             # skin_sorcerer_b's boots at 150,000 faces each took its 58,000-triangle shape model to
+                             # 344,000, and the game step's even thinning left the body a few thousand (round 26)
+DENSITY_BOX_GROW = 0.25      # the model's own density is read in the part's box grown by this share of its size
+DENSITY_LEAST = 200          # ... from at least this many of its triangles there, else the part is left as built
 BOOT_FOOT_SHARE = 0.3        # a boot's foot is its lowest this share of its height ...
 HEADING_LIMIT_DEG = 35.0     # ... turned at most this far from straight ahead to follow the old foot
 LEVEL_LIMIT_DEG = 10.0       # a built sole is laid flat when it leans at most this much
@@ -1137,6 +1142,44 @@ def harden(part: dict, move: float = 2 * PLANE_FLAT_SHARE) -> tuple[dict, dict]:
 
 
 # --- Counting -----------------------------------------------------------------------------------------------------------
+
+def surface_density(parts: list[dict], box) -> tuple[int, float]:
+    """(triangles, area) of PARTS' triangles whose middle lies in BOX ((x0, y0, z0), (x1, y1, z1))."""
+    lo, hi = np.asarray(box[0], dtype=np.float64), np.asarray(box[1], dtype=np.float64)
+    count, area = 0, 0.0
+    for part in parts:
+        p = np.asarray(part["positions"], dtype=np.float64)
+        f = np.asarray(part["faces"], dtype=np.int64)
+        if not len(f):
+            continue
+        middle = p[f].mean(axis=1)
+        inside = ((middle >= lo) & (middle <= hi)).all(axis=1)
+        t = p[f[inside]]
+        count += int(inside.sum())
+        area += float(0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    return count, area
+
+
+def part_box(points: np.ndarray, grow: float = DENSITY_BOX_GROW) -> tuple[np.ndarray, np.ndarray]:
+    """The box round POINTS grown by GROW of its largest side on every side."""
+    p = np.asarray(points, dtype=np.float64)
+    lo, hi = p.min(axis=0), p.max(axis=0)
+    pad = grow * float((hi - lo).max())
+    return lo - pad, hi + pad
+
+
+def matched_faces(part: dict, parts: list[dict], least: int, most: int) -> int | None:
+    """How many faces PART (placed in the figure's frame) should have to be no finer than DENSITY_SLACK times the
+    model PARTS round it (`surface_density` in its grown box), between LEAST and MOST; None where the model has too
+    few triangles there to tell (DENSITY_LEAST)."""
+    count, area = surface_density(parts, part_box(part["positions"]))
+    if count < DENSITY_LEAST or area <= 0:
+        return None
+    p = np.asarray(part["positions"], dtype=np.float64)
+    t = p[np.asarray(part["faces"], dtype=np.int64)]
+    own = float(0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    return int(np.clip(round(own * count / area * DENSITY_SLACK), least, most))
+
 
 def pieces(part: dict) -> int:
     """How many separate pieces PART is (faces joined at a shared place, `hero_hands.components`)."""

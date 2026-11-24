@@ -70,6 +70,10 @@ TRIES, KEEP, SEEDS = 6, 2, (42, 7)
 PART_FACES = 20000            # Pixal3D's clean-up of a part built alone, for the rigged model ...
 FINE_FACES = 150000           # ... and for the finer --also models: the raw build is about a million faces a part, and two
                               # raw boots in the Zauberer's mesh source made game_ready walk 2.4 million faces, not 0.42
+MATCH_MARGIN = 1.25           # ... at most, for each finer model the part is cleaned up again to match it when it is more
+                              # than this much finer than that model round it (`hero_parts.matched_faces`)
+MATCH_LEAST = 1500            # ... down to this many faces: the rigged model's clean-up size (--part-faces, 20,000) as the
+                              # floor still left skin_sorcerer_b's boots 40 % of its 90,000-triangle shape model
 DRAW_SIZE = 1024
 CROP_PAD = 1.25               # a part's crop is this many times its own size
 PAINT_SIZE = 2048             # a part's paint is laid out at most this many texels square
@@ -674,8 +678,8 @@ def main(argv: list[str] | None = None) -> int:
     stage(run, "graft", "Setting the parts in")
     fresh(run, "graft")
 
-    def placed(t, which):
-        part = dict(built[t["source"]][which])
+    def placed(t, which, own=None):
+        part = dict(own if own is not None else built[t["source"]][which])
         p = part["positions"] @ t["turn"].T
         normals = None if part.get("normals") is None else part["normals"] @ t["turn"].T
         faces = part["faces"]
@@ -686,11 +690,19 @@ def main(argv: list[str] | None = None) -> int:
             part["normals"] = normals @ (t["tf"][:3, :3] / np.cbrt(np.linalg.det(t["tf"][:3, :3]))).T
         return part
 
-    def graft(parts, part_bones, which, main):
+    def sized(t, faces):
+        """T's part cleaned up at FACES (cached), placed: as fine as the finer model it goes into (TODO 201)."""
+        cache = built[t["source"]].setdefault("sized", {})
+        if faces not in cache:
+            clean = clean_part(run, built[t["source"]]["raw_path"], faces, folder)
+            cache[faces] = built_part(clean, args.hard, run, folder / f"{clean.stem}_hard.glb")[0]
+        return placed(t, "raw", cache[faces])
+
+    def graft(parts, part_bones, which, main, sizes=None):
         reports = {}
         new = []
-        for t in targets:
-            part = placed(t, which)
+        for index, t in enumerate(targets):
+            part = sized(t, sizes[index]) if sizes and index in sizes else placed(t, which)
             if args.boots:
                 parts, report = hp.graft_boot(parts, part_bones, t["leg"], t["cut_y"], placed(t, "clean"))
                 if main is not None:
@@ -768,11 +780,22 @@ def main(argv: list[str] | None = None) -> int:
             continue
         _, _, extra_parts = hf.read_parts(extra.read_bytes())
         extra_bones = [bones(p) for p in extra_parts]
-        cut, new, _ = graft(extra_parts, extra_bones, "raw", None)
+        # each part no finer than this model round it: a part far finer than the model ate the game step's triangle
+        # budget (skin_sorcerer_b's boots took its 58,000-triangle shape model to 344,000, round 26)
+        sizes = {}
+        for index, t in enumerate(targets):
+            fine = placed(t, "raw")
+            want = hp.matched_faces(fine, extra_parts, MATCH_LEAST, max(args.fine_faces, args.part_faces))
+            if want is not None and len(fine["faces"]) > MATCH_MARGIN * want:
+                sizes[index] = want
+                run.say(f"density: {t['name']} into {extra.name}: {len(fine['faces'])} faces, the model round it "
+                        f"takes {want}")
+        cut, new, _ = graft(extra_parts, extra_bones, "raw", None, sizes)
         for index, (t, part) in enumerate(zip(targets, new)):
-            if index not in raw_painted:
-                raw_painted[index], share = paint(t, part, "raw")
-            new[index] = {**part, "material": raw_painted[index]["material"]}
+            key = (index, sizes.get(index))
+            if key not in raw_painted:
+                raw_painted[key], share = paint(t, part, "raw")
+            new[index] = {**part, "material": raw_painted[key]["material"]}
         write(extra, cut, new, target_path)
         run.say(f"graft: {target_path.name}")
         del extra_parts, cut, new
