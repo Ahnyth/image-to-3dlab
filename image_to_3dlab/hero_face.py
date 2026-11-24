@@ -14,8 +14,11 @@ inside it, through skin and hair, where the old and the new face nearly agree. H
 stay the figure's own. The figure is cut along that outline (`hero_hands.clip_values`). The new face is put where
 the picture has it through its build's own camera, taken as the build's skin seen from the front (`relief`), its
 creases rounded a little (`round_relief`), and painted by the crop moved to the figure's own paint at the seam
-(`match_face_paint`); it reaches a little past the seam and is tucked just behind the figure's surface there
-(`tuck`), so the figure's cut edge lies over it. A rigged figure's new face takes the old face's skin weights.
+(`match_face_paint`, read at every pixel just outside the seam); it rises to meet the figure's surface at the seam
+(its front without the strands standing off it, `seam_surface`), reaches a little past the seam and is tucked just
+behind the figure's surface there (`tuck`), so the figure's cut edge lies over it; a strand's cut end still standing
+over the face eases down onto it (`ease_onto`), and where the new face is no face (a pit its build fell into) it takes
+the figure's own shape (`fill_pits`). A rigged figure's new face takes the old face's skin weights.
 `scripts/hero_face.py` runs the steps.
 
 Models face +Z (glTF's front) with Y up, as Pixal3D builds them; "depth" is Z, larger is nearer the camera.
@@ -52,9 +55,22 @@ DIVE_SHARE = 0.25      # ... but the new face counts there only where it lies le
                        # face, and 0.4 to 0.9 behind it in two pits where the build showed no face (round 27)
 NEAR_PIXELS = 3        # the new face's depth is carried this many pixels past its outline, for the faces the seam cuts
 BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this share of the head's width ...
-EASE_SHARE = 0.05      # ... toward the front by at most this share of it (`tuck`)
+EASE_SHARE = 0.2       # ... toward the front by at most this share of it (`tuck`): the Nachtschwinge's cheek stood up
+                       # to 0.17 of its head's width in front of its new face at the seam (round 28); 0.05 left the
+                       # figure's cut edge hanging over the face, a light line down the cheek
+OVER_SHARE = 0.03      # inside the seam the face eases toward the figure's own front at most this share of the head's
+                       # width above that front carried in from the seam (`seam_target`): a hood's edge (round 28)
+STRAND_SHARE = 0.08    # a ridge of the figure's front narrower than this share of the head's width stands off the face
+                       # (a strand): the face goes on into the surface beside it, not up to it (`seam_surface`)
 SKIRT_PIXELS = 3       # the new face reaches this many pixels past the seam, under the figure's cut edge ...
-TUCK_SHARE = 0.01      # ... and lies this share of the head's width behind the figure's surface there
+TUCK_SHARE = 0.005     # ... and lies this share of the head's width behind the figure's surface there
+SEAM_BAND_SHARE = 0.12  # where the figure still stands in front of the new face at the seam (a strand's cut end, or a
+                        # rise past EASE_SHARE), its own surface eases back onto the face over this share of the head's
+                        # width outside the seam (`ease_onto`)
+EASED_LIMIT_SHARE = 0.15   # the figure's surface eased back further than this share of the head's width is said
+STRAND_EASE_SHARE = 0.05   # a cut end standing further over the face than this share of the head's width is a strand
+                           # and stays as it is (`ease_onto`): laid down, the Nachtschwinge's hair locks scratched its
+                           # cheeks dark (round 28)
 ROUND_SHARE = 0.0125   # the new face's relief is rounded over this share of the head's width (`round_relief`): built
                        # alone, the Zauberer's face came out in crisp planes, its nose a ridge 60 degrees sharp within
                        # two pixels, and the game figure's decimation kept the planes: a hard line down the nose, its
@@ -573,11 +589,12 @@ def front_piece(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
 def tuck(points: np.ndarray, values: np.ndarray, target: np.ndarray, blend: float, cap: float,
          gap: float) -> np.ndarray:
     """POINTS of the new face moved in depth toward TARGET less GAP (the figure's own surface where each point is,
-    from its front depth map): in full where VALUES (the distance inside the seam) is at most 0, the skirt under the
-    figure's cut edge, fading out smoothly over BLEND inside. Toward the back without limit: a new face standing proud
-    would show its edge. Toward the front at most CAP: at the Zauberer's brow the figure's own strand stood 0.012 in
-    front at the seam, and raising the face to it made a ramp across the brow; its cut end hides the edge instead.
-    Where TARGET is NaN (no figure there) a point stays."""
+    from its front depth map without its strands, `seam_surface`): in full where VALUES (the distance inside the seam)
+    is at most 0, the skirt under the figure's cut edge, fading out smoothly over BLEND inside. Toward the back
+    without limit: a new face standing proud would show its edge. Toward the front at most CAP; what still stands in
+    front then is eased back onto the face (`ease_onto`). At the Zauberer's brow the figure's own strand stood 0.012
+    in front at the seam, and raising the face to it made a ramp across the brow: the strand is no target. Where
+    TARGET is NaN (no figure there) a point stays."""
     p = np.array(points, dtype=np.float64)
     w = np.clip(1.0 - np.asarray(values, dtype=np.float64) / max(blend, 1e-12), 0.0, 1.0)
     w = w * w * (3.0 - 2.0 * w)
@@ -585,6 +602,173 @@ def tuck(points: np.ndarray, values: np.ndarray, target: np.ndarray, blend: floa
     change = np.where(np.isfinite(change), np.minimum(change, cap), 0.0)
     p[:, 2] += w * change
     return p
+
+
+def face_continued(positions: np.ndarray, faces: np.ndarray, window: dict, reach: int) -> np.ndarray:
+    """The new face's depth seen from the front where it shows (inside the seam, the window's field above 0), carried
+    REACH pixels past the seam, each pixel there taking its nearest face pixel's depth: where the face would go on
+    under the figure's cut edge (`skirt_under`). -inf further out."""
+    depth, _ = depth_map(positions, faces, window["box"], window["pixel"])
+    return spread(np.where(window["field"] > 0, depth, -np.inf), reach)
+
+
+def skirt_under(points: np.ndarray, values: np.ndarray, continued: np.ndarray, own: np.ndarray,
+                gap: float) -> np.ndarray:
+    """POINTS of the new face with their skirt (VALUES at most 0: past the seam, under the figure's cut edge) laid
+    flat in depth at CONTINUED (`face_continued` at each point), never nearer than GAP behind OWN (the figure's
+    surface there). Where the figure has none (NaN) a point stays: a skirt laid flat into the air would show. Tucked
+    as its own relief ran, the skirt went down a pit's wall at skin_sorcerer_c's jaw, deep under the figure's edge, and
+    one saw past the edge into the head from the side and below (round 28 of the AssetFurnace Support notes)."""
+    p = np.array(points, dtype=np.float64)
+    own = np.asarray(own, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        z = np.where(np.isfinite(own), np.fmin(np.asarray(continued, dtype=np.float64), own - gap), np.nan)
+    flat = (np.asarray(values, dtype=np.float64) <= 0) & np.isfinite(z)
+    p[flat, 2] = z[flat]
+    return p
+
+
+def seam_target(surface: np.ndarray, field: np.ndarray, reach: int, pixel: float) -> np.ndarray:
+    """What the new face eases into near its seam (`tuck`): SURFACE (a front depth map) where FIELD (the signed distance
+    to the seam) is at most 0, and up to REACH pixels inside the seam the surface carried in along its own slope: each
+    pixel there takes its nearest outside pixel's depth plus that pixel's slope (read two pixels further out, at most
+    PIXEL of depth a pixel, 45 degrees) times the way. Read inside the seam instead, the target took what the new face replaces:
+    on skin_sorcerer_c a hood's edge 2 cm in front of the jaw pulled one point of the face up into a light spike (round
+    28 of the AssetFurnace Support notes). -inf where nothing is known."""
+    surface = np.asarray(surface, dtype=np.float64)
+    outside = (np.asarray(field) <= 0) & np.isfinite(surface)
+    out = np.where(outside, surface, -np.inf)
+    if not outside.any():
+        return out
+    distance, (qr, qc) = ndimage.distance_transform_edt(~outside, return_indices=True)
+    rows, cols = np.mgrid[0:surface.shape[0], 0:surface.shape[1]]
+    inside = ~outside & (distance <= reach) & (distance > 0)
+    if not inside.any():
+        return out
+    r, c, d = rows[inside], cols[inside], distance[inside]
+    q_r, q_c = qr[inside], qc[inside]
+    step_r = np.round(2 * (q_r - r) / d).astype(np.int64)
+    step_c = np.round(2 * (q_c - c) / d).astype(np.int64)
+    r2 = np.clip(q_r + step_r, 0, surface.shape[0] - 1)
+    c2 = np.clip(q_c + step_c, 0, surface.shape[1] - 1)
+    near, far = surface[q_r, q_c], surface[r2, c2]
+    known = outside[r2, c2] & np.isfinite(far)
+    apart = np.maximum(np.hypot(r2 - q_r, c2 - q_c), 1.0)
+    slope = np.where(known, (near - far) / apart, 0.0)
+    out[r, c] = near + np.clip(slope, -pixel, pixel) * d
+    return out
+
+
+def rise_target(own: np.ndarray, surface: np.ndarray, carried: np.ndarray, new: np.ndarray,
+                over: float) -> np.ndarray:
+    """What the new face eases into near its seam (`tuck`), pixel by pixel. Where the figure's own front OWN lies
+    behind the face (NEW, the face's own depth): that front, so the face sinks just behind it. Where it stands in
+    front: no higher than the front without its strands (SURFACE, `seam_surface`) nor than OVER above that front
+    carried in from the seam (CARRIED, `seam_target`), so the face rises to a cheek but not to a strand, and sinks
+    under a thin hood's edge to the surface beside it. Used where the figure lies behind the face too, the strand-free
+    front pulled the Nachtschwinge's chin back: it took the old chin for a strand and dropped to the neck 7 cm behind
+    it, and the new chin's coarse triangles, pulled back by up to 3.4 cm, tilted away and drew a dark grey patch
+    (round 28 of the AssetFurnace Support notes). -inf where OWN has nothing."""
+    own = np.asarray(own, dtype=np.float64)
+    new = np.asarray(new, dtype=np.float64)
+    out = own.copy()
+    with np.errstate(invalid="ignore"):
+        up = np.isfinite(own) & np.isfinite(new) & (own > new)
+        limit = np.fmin(np.asarray(surface, dtype=np.float64), np.asarray(carried, dtype=np.float64) + over)
+        out[up] = np.fmin(own[up], limit[up])
+    return out
+
+
+def seam_surface(own: np.ndarray, across: float, least: float = 0.0) -> np.ndarray:
+    """OWN (the figure's front depth map) with what stands off it narrower than ACROSS pixels, and more than LEAST in
+    front of the surface round it, replaced by that surface: such a strand is found where the depth stands above its
+    grey opening (its erosion, then its dilation, over a disc ACROSS wide; an opening keeps any plane or dome as it
+    is), and filled from the pixels beside it, each weighed by a Gaussian ACROSS / 2 wide, so a strand in front of the
+    brow gives way to the brow beside it at its own height. A cheek or a mass of hair, broad, stays exactly as it is.
+    The figure's outline is carried outward first, so the empty background does not eat into it; -inf where OWN has
+    nothing. The surface a new face goes on into at its seam (`tuck`): the face rises to a cheek standing in front of
+    it, never up to a strand."""
+    own = np.asarray(own, dtype=np.float64)
+    seen = np.isfinite(own)
+    if across < 2 or not seen.any():
+        return own.copy()
+    _, (r, c) = ndimage.distance_transform_edt(~seen, return_indices=True)
+    filled = own[r, c]
+    radius = across / 2.0
+    k = int(np.ceil(radius))
+    yy, xx = np.mgrid[-k:k + 1, -k:k + 1]
+    opened = ndimage.grey_opening(filled, footprint=(xx * xx + yy * yy) <= radius * radius)
+    strand = seen & (filled - opened > least)
+    if not strand.any():
+        return own.copy()
+    keep = seen & ~strand
+    weight = ndimage.gaussian_filter(keep.astype(np.float64), radius)
+    beside = ndimage.gaussian_filter(np.where(keep, filled, 0.0), radius) / np.maximum(weight, 1e-12)
+    out = own.copy()
+    out[strand] = np.where(weight[strand] > 1e-3, beside[strand], opened[strand])
+    return out
+
+
+def ease_onto(points: np.ndarray, faces: np.ndarray, rim: np.ndarray, values: np.ndarray, under: np.ndarray,
+              band: float, gap: float, most: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(POINTS moved, how far each moved back): the figure's own surface beside the seam eased back in depth onto the
+    new face where its cut edge still stands in front of it. Each point of the cut's RIM (edges, in the part's
+    numbering) stands over the face by its depth less UNDER (the new face's depth there; NaN where the face is not
+    under it) less GAP; a point outside the seam (VALUES at most 0) less than BAND from it, joined to the rim through
+    such points (welded by position, so a UV seam does not stop it, while a separate strand or a hidden collar stays),
+    moves back by what its nearest rim point (in 3D) stands over, times a weight easing from 1 at the seam to 0 at
+    BAND outside it, smoothly: the surface keeps its own shape and is laid down at its cut end. In depth only, so seen
+    from the front nothing folds.
+
+    A strand's cut end, or a cheek standing further in front than the face may rise (EASE_SHARE), hung over the face
+    as an edge: down the Nachtschwinge's cheek a light line, up to 2.5 cm in front, and from the side and below one saw
+    past it into the head (round 28 of the AssetFurnace Support notes). Pushing only the points over the face behind it
+    left saw-tooth notches (its v19f), dropping the triangles over it small notches and the line seen from the other
+    side (v19g); and measuring each point against the face carried past the seam pulled the jaw down where the face
+    turned away under the chin: the surface has to ease from its rim, not each point on its own. A cut end (one piece
+    of the rim) standing more than MOST over the face anywhere is a strand and is left as it is: laid down 2.8 cm onto
+    the Nachtschwinge's cheeks, its hair locks drew dark scratches on the skin."""
+    p = np.array(points, dtype=np.float64)
+    moved = np.zeros(len(p))
+    rim = np.asarray(rim, dtype=np.int64).reshape(-1, 2)
+    if not len(rim) or band <= 0:
+        return p, moved
+    values = np.asarray(values, dtype=np.float64)
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    group = hh.weld_groups(p)              # copies of a point (split along UV seams) move as one
+    rim_group = np.zeros(group.max() + 1, bool)
+    rim_group[group[rim.reshape(-1)]] = True
+    on_rim = rim_group[group]
+    near_group = rim_group.copy()
+    near_group[group[(values <= 0) & (values > -band)]] = True
+    near = near_group[group]
+    f = group[np.asarray(faces, dtype=np.int64)]
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    e = e[near_group[e[:, 0]] & near_group[e[:, 1]]]
+    graph = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(near_group), len(near_group)))
+    _, label = connected_components(graph, directed=False)
+    joined = near & np.isin(label[group], np.unique(label[rim_group.nonzero()[0]]))
+    ends = np.unique(rim.reshape(-1))
+    with np.errstate(invalid="ignore"):
+        over = p[ends, 2] - (np.asarray(under, dtype=np.float64)[ends] + gap)
+    over = np.where(np.isfinite(over), np.maximum(over, 0.0), 0.0)
+    if most is not None:      # a cut end standing further over the face anywhere is a strand: left as it is
+        loops = coo_matrix((np.ones(len(rim)), (group[rim[:, 0]], group[rim[:, 1]])),
+                           shape=(len(near_group), len(near_group)))
+        _, loop = connected_components(loops, directed=False)
+        worst = np.zeros(loop.max() + 1)
+        np.maximum.at(worst, loop[group[ends]], over)
+        over[worst[loop[group[ends]]] > most] = 0.0
+    if not over.any() or not joined.any():
+        return p, moved
+    which = np.flatnonzero(joined)
+    _, nearest = cKDTree(p[ends]).query(p[which], workers=-1)
+    w = np.where(on_rim[which], 1.0, np.clip(1.0 + values[which] / band, 0.0, 1.0))
+    moved[which] = w * w * (3.0 - 2.0 * w) * over[nearest]
+    p[:, 2] -= moved
+    return p, moved
 
 
 def reference_depth(own: np.ndarray, new: np.ndarray, dive: float = np.inf) -> np.ndarray:
@@ -604,28 +788,42 @@ def reference_depth(own: np.ndarray, new: np.ndarray, dive: float = np.inf) -> n
     return out
 
 
-def face_area(window: dict, new_depth: np.ndarray, is_face: np.ndarray, dive: float) -> np.ndarray:
-    """The part of the window's mask the new face takes: everywhere but where the new face is there and is no face,
-    off a cliff from the nose (`reached`) or more than DIVE behind the figure's own front (`window["depth"]`). There
-    the figure keeps its own skin: on skin_sorcerer_c's lower cheeks the old skin was cut away and the new face's pit
-    showed from the front as mottled grey, white and maroon patches with ragged edges (round 28 of the AssetFurnace
-    Support notes). Smoothed as the window's own edge is, the piece holding the nose kept, its holes filled."""
-    own = window["depth"]
+def fill_pits(part: dict, new_depth: np.ndarray, is_face: np.ndarray, surface: np.ndarray, window: dict,
+              limit: float, blend: float, gap: float) -> tuple[dict, float, np.ndarray]:
+    """(PART, the new face, with its pits filled; the share of the window's mask they take; where they are, a mask of
+    NEW_DEPTH's pixels). A pit is where the new
+    face is there (NEW_DEPTH, its front depth map) and is no face: off a cliff from the nose (IS_FACE, `reached`), or
+    LIMIT or more under SURFACE (the figure's own front without its strands, `seam_surface`). There the face takes that
+    surface's depth less GAP, but never higher than the face round the pit's rim, and within BLEND round a pit it eases
+    toward it (`tuck`, rising freely): a pit becomes the figure's own shape, painted by the picture like the rest of the
+    face.
+
+    Pixal3D shows no face where the picture's face is dark or thin: built alone, skin_sorcerer_c's face fell 3 to 8 cm
+    into the head beside its jaw. The figure's old skin was cut away there and the pit showed the old head's inside as
+    grey, white and maroon patches (rounds 27 and 28 of the AssetFurnace Support notes); keeping the old skin there
+    instead left a crumpled piece of the old jaw inside the new face, its shape and paint unlike the face round it
+    (round 28, TODO 207). Filled, a pit lies just behind the figure's surface, so the cut measuring against it there
+    (`reference_depth`) never takes the back of the head with it."""
+    surface = np.asarray(surface, dtype=np.float64)
     with np.errstate(invalid="ignore"):
-        deep = np.isfinite(own) & np.isfinite(new_depth) & (own - new_depth >= dive)
-    no_face = np.isfinite(new_depth) & (~is_face | deep)
-    area = window["mask"] & ~no_face
-    if not no_face[window["mask"]].any():
-        return window["mask"]
-    smooth = SMOOTH_SHARE * window["width"] / window["pixel"]
-    if smooth > 0:
-        area = window["mask"] & (ndimage.gaussian_filter(area.astype(np.float64), smooth) > 0.5)
-    label, count = ndimage.label(area)
-    seed = window["seed"]
-    if not count:
-        return area
-    keep = label[seed] if label[seed] else 1 + int(np.argmax(ndimage.sum(area, label, range(1, count + 1))))
-    return ndimage.binary_fill_holes(label == keep) & window["mask"]
+        deep = np.isfinite(surface) & np.isfinite(new_depth) & (surface - new_depth >= limit)
+    pit = np.isfinite(new_depth) & np.isfinite(surface) & (~np.asarray(is_face, bool) | deep)
+    if not pit.any():
+        return part, 0.0, pit
+    box, pixel = window["box"], window["pixel"]
+    p = np.asarray(part["positions"], dtype=np.float64)
+    f = np.asarray(part["faces"], dtype=np.int64)
+    # a point within one of the face's own steps of a pit is filled in full: laid out coarser (`matched_step`), a
+    # point next to the pit kept its depth and its triangles fell into the pit as a wall (round 28)
+    step = float(np.median(np.linalg.norm(p[f[:, 0], :2] - p[f[:, 1], :2], axis=1))) if len(f) else 0.0
+    away = sample(signed_distance(~pit, pixel), box, pixel, p, outside=FAR) - step    # at most 0 in a pit
+    # filled up to its rim at most: where the figure's surface stands higher (a hood's edge in front of the jaw),
+    # following it raised a spike of the face, painted as skin (round 28)
+    rim = spread(np.where(pit, -np.inf, new_depth), sum(pit.shape))
+    level = np.where(np.isfinite(rim), np.fmin(surface, rim), surface)
+    target = sample(np.where(np.isfinite(level), level, np.nan), box, pixel, p, outside=np.nan)
+    share = float((pit & window["mask"]).sum() / max(int(window["mask"].sum()), 1))
+    return {**part, "positions": tuck(p, away, target, blend, np.inf, gap)}, share, pit
 
 
 def spread(depth: np.ndarray, reach: int) -> np.ndarray:
@@ -729,27 +927,58 @@ def paint_at(paint: np.ndarray, uvs: np.ndarray) -> np.ndarray:
     return paint[y, x]
 
 
+def front_uvs(positions: np.ndarray, faces: np.ndarray, uvs: np.ndarray, owner: np.ndarray, rows: np.ndarray,
+              cols: np.ndarray, box, pixel: float) -> tuple[np.ndarray, np.ndarray]:
+    """((x, y), texture coordinates) of the pixel centres ROWS, COLS of a front view over BOX, each on its OWNER
+    triangle (`depth_map`): its corners' UVs mixed by where the centre lies in it seen from the front."""
+    x = box[0] + (np.asarray(cols) + 0.5) * pixel
+    y = box[3] - (np.asarray(rows) + 0.5) * pixel
+    f = np.asarray(faces, dtype=np.int64)[owner]
+    t = np.asarray(positions, dtype=np.float64)[f][:, :, :2]
+    a, b, c = t[:, 0], t[:, 1], t[:, 2]
+    den = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+    flat = np.abs(den) < 1e-18
+    den = np.where(flat, 1.0, den)
+    w0 = ((b[:, 1] - c[:, 1]) * (x - c[:, 0]) + (c[:, 0] - b[:, 0]) * (y - c[:, 1])) / den
+    w1 = ((c[:, 1] - a[:, 1]) * (x - c[:, 0]) + (a[:, 0] - c[:, 0]) * (y - c[:, 1])) / den
+    w = np.where(flat[:, None], [1.0, 0.0, 0.0], np.clip(np.stack([w0, w1, 1.0 - w0 - w1], axis=1), 0.0, 1.0))
+    w /= np.maximum(w.sum(axis=1, keepdims=True), 1e-12)
+    uv = np.einsum("nk,nkd->nd", w, np.asarray(uvs, dtype=np.float64)[f])
+    return np.stack([x, y], axis=1), uv
+
+
 def seam_paint(parts: list[dict], window: dict, crop_rgb: np.ndarray, crop: tuple[int, int, int, int], frame,
                ring: int = RING_PIXELS) -> tuple[np.ndarray, np.ndarray]:
     """(points, offsets): the figure's own surface in a band RING pixels wide just outside the seam, and there the
     figure's paint less the crop's (RGB). The crop is the picture as it is, and a figure's paint is often lighter or
-    darker (the Zauberer's was 12 to 36 levels lighter all round the seam), so the new face's outline showed."""
-    pixel = window["pixel"]
+    darker (the Zauberer's was 12 to 36 levels lighter all round the seam), so the new face's outline showed. Read at
+    every pixel of the band the figure shows there (`front_uvs`) as well as at its points: on the Nachtschwinge's 8k
+    rigged model a few points lay in the band, and its cheek, lighter than the crop by 5 L*, still drew a line down the
+    seam (round 28 of the AssetFurnace Support notes)."""
+    pixel, box = window["pixel"], window["box"]
     points, offsets = [], []
+    ring_px = (window["field"] <= 0) & (window["field"] > -ring * pixel)
     for part in parts:
         paint = part_paint(part)
         if paint is None:
             continue
         p = np.asarray(part["positions"], dtype=np.float64)
         values = window_values(window, p)
-        seen = sample(window["depth"], window["box"], pixel, p, outside=-np.inf, nearest=True)
+        seen = sample(window["depth"], box, pixel, p, outside=-np.inf, nearest=True)
         band = (values <= 0) & (values > -ring * pixel) & (p[:, 2] > seen - ring * pixel)
-        if not band.any():
-            continue
-        own = paint_at(paint, np.asarray(part["uvs"])[band])
-        new = paint_at(crop_rgb, picture_uvs(p[band], crop, crop_rgb.shape[1], frame))
-        points.append(p[band, :2])
-        offsets.append(own - new)
+        if band.any():
+            own = paint_at(paint, np.asarray(part["uvs"])[band])
+            new = paint_at(crop_rgb, picture_uvs(p[band], crop, crop_rgb.shape[1], frame))
+            points.append(p[band, :2])
+            offsets.append(own - new)
+        depth, owner = depth_map(p, part["faces"], box, pixel)
+        shown = ring_px & (owner >= 0) & (depth > window["depth"] - ring * pixel)
+        if shown.any():
+            rows, cols = np.nonzero(shown)
+            xy, uv = front_uvs(p, part["faces"], part["uvs"], owner[rows, cols], rows, cols, box, pixel)
+            new = paint_at(crop_rgb, picture_uvs(np.c_[xy, np.zeros(len(xy))], crop, crop_rgb.shape[1], frame))
+            points.append(xy)
+            offsets.append(paint_at(paint, uv) - new)
     if not points:
         return np.zeros((0, 2)), np.zeros((0, 3))
     return np.concatenate(points), np.concatenate(offsets)
@@ -940,7 +1169,8 @@ def cut_face(face: dict, window: dict) -> tuple[dict, np.ndarray]:
 
 
 def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None = None,
-               blend: float | None = None, ease: float | None = None) -> tuple[list[dict], dict, dict]:
+               blend: float | None = None, ease: float | None = None,
+               band: float | None = None) -> tuple[list[dict], dict, dict]:
     """PARTS (one model of the figure, part by part, in the figure's frame) with their face cut out along the
     window's seam and the placed new FACE set in. Returns (the model's parts cut, the new face part, report).
 
@@ -950,15 +1180,20 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     reached from the nose without a cliff (`reached`) and less than DIVE_SHARE of the head's width behind the figure's
     front (`reference_depth`), so a new face that falls into the head where its build showed no face never takes the
     back of the head with it; the report's off_cliff_share says how much of the face that is. The new face reaches
-    SKIRT_PIXELS past the seam and is tucked just behind the figure's surface there (`tuck`, at most EASE toward the
-    front, default EASE_SHARE of the head's width), so the figure's cut edge lies over it. Not stitched: Pixal3D builds
-    skin and inner wall as one surface joined all over (the Zauberer's figure and face both), so neither side's cut
-    gives one clean rim, and a stitch between two such rims tore across the face. With skin weights (dense) the new
-    face takes the weights of the nearest old face point."""
+    SKIRT_PIXELS past the seam and is tucked just behind the figure's surface there, its front without the strands
+    standing off it (`seam_surface`; `tuck`, at most EASE toward the front, default EASE_SHARE of the head's width),
+    so the figure's cut edge lies over it. Where that edge still stands in front of the face (a strand's cut end, a
+    rise past the cap), the figure's own surface eases back onto the face over BAND (default SEAM_BAND_SHARE of the
+    head's width, `ease_onto`): no edge hanging over the face, no gap to see into the head through; the report says
+    how far the face rose (seam_rise_max) and the figure was eased (seam_eased_max). Not stitched: Pixal3D builds skin
+    and inner wall as one surface joined all over (the Zauberer's figure and face both), so neither side's cut gives
+    one clean rim, and a stitch between two such rims tore across the face. With skin weights (dense) the new face
+    takes the weights of the nearest old face point."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
     cap = EASE_SHARE * width if ease is None else ease
+    band = SEAM_BAND_SHARE * width if band is None else band
     box, pixel = window["box"], window["pixel"]
     skirt = SKIRT_PIXELS * pixel
     def set_in(window):
@@ -974,14 +1209,16 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     shown = np.isfinite(new_depth) & (window["field"] > 0)
     out_parts, old_points, old_dense, report = [], [], [], {"parts": []}
     report["off_cliff_share"] = float((shown & ~is_face).sum() / max(int(shown.sum()), 1))
-    # where the new face is no face the figure keeps its own skin: the window shrinks to what the new face takes
-    area = face_area(window, new_depth, is_face, DIVE_SHARE * width)
-    report["face_left_out_share"] = float((window["mask"] & ~area).sum() / max(int(window["mask"].sum()), 1))
-    if report["face_left_out_share"] > 0:
-        window = {**window, "mask": area, "field": signed_distance(area, pixel)}
-        new, new_depth, is_face = set_in(window)
+    # where the new face is no face, or lies deeper under the figure's surface than it may rise at a seam, it takes
+    # that surface's shape, still painted by the picture
+    new, report["face_filled_share"], pit = fill_pits(
+        new, new_depth, is_face, seam_surface(window["depth"], STRAND_SHARE * width / pixel, TUCK_SHARE * width),
+        window, min(DIVE_SHARE * width, cap), blend, TUCK_SHARE * width)
+    if pit.any():      # filled, a pit is face: the cut measures against it there, so nothing of the old pokes through
+        new_depth = spread(depth_map(new["positions"], new["faces"], box, pixel)[0], NEAR_PIXELS)
+        is_face = is_face | pit
     counted = np.where(is_face, new_depth, -np.inf)
-    body_index, target, most = None, None, 0
+    body_index, target, most, rims = None, None, 0, []
     for index, part in enumerate(parts):
         p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
         values = window_values(window, p)
@@ -989,6 +1226,7 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
         reach = (values[f] > -skirt - NEAR_PIXELS * pixel).any(axis=1)
         if not reach.any():
             out_parts.append(part)
+            rims.append(None)
             report["parts"].append({"cut": False})
             continue
         own, _ = depth_map(p, f[reach], box, pixel)
@@ -1001,21 +1239,64 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             old_points.append(p[used])
             old_dense.append(np.asarray(part["dense"])[used])
         in_front = middle[gone, 2] - sample(counted, box, pixel, middle[gone], outside=-np.inf, nearest=True)
-        cut, _ = hh.cut_part_values(part, values, cuttable)
+        cut, rim = hh.cut_part_values(part, values, cuttable)
         report["parts"].append({"cut": True, "faces_removed": int(gone.sum()),
                                 "old_in_front_max": float(np.max(in_front[np.isfinite(in_front)], initial=0.0))})
         if gone.sum() > most:
             body_index, most = len(out_parts), int(gone.sum())
-            target = spread(own, NEAR_PIXELS)
+            # the surface the face goes on into: the figure's own front, a rise toward it no higher than that front
+            # without its strands, nor than a little over it carried in from the seam along its slope
+            surface = spread(seam_surface(own, STRAND_SHARE * width / pixel, TUCK_SHARE * width), NEAR_PIXELS)
+            carried = seam_target(surface, window["field"], int(np.ceil(blend / pixel)) + 1, pixel)
+            target = rise_target(spread(own, NEAR_PIXELS), surface, carried, new_depth, OVER_SHARE * width)
         out_parts.append(cut)
+        rims.append(rim)
     if target is None:
         raise ValueError("nothing of the model lies in the window: check the window")
     values = window_values(window, new["positions"])
     at = sample(np.where(np.isfinite(target), target, np.nan), box, pixel, new["positions"], outside=np.nan)
     seam = np.abs(values) <= pixel
-    gaps = (at - TUCK_SHARE * width - new["positions"][:, 2])[seam]
+    gap = TUCK_SHARE * width
+    gaps = (at - gap - new["positions"][:, 2])[seam]
     gaps = gaps[np.isfinite(gaps)]
-    new = {**new, "positions": tuck(new["positions"], values, at, blend, cap, TUCK_SHARE * width)}
+    before = new["positions"][:, 2]
+    new = {**new, "positions": tuck(new["positions"], values, at, blend, cap, gap)}
+    rise = (new["positions"][:, 2] - before)[seam]
+    continued = face_continued(new["positions"], new["faces"], window, SKIRT_PIXELS + NEAR_PIXELS)
+    continued = sample(np.where(np.isfinite(continued), continued, np.nan), box, pixel, new["positions"],
+                       outside=np.nan)
+    new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap)}
+    # the seam closed: where the figure's cut edge still stands in front of the face (a strand's cut end, a rise past
+    # the cap), its own surface eases back onto the face
+    under, _ = depth_map(new["positions"], new["faces"], box, pixel)
+    under = np.where(np.isfinite(under), under, np.nan)
+    edge_over, rim_moved = [], []
+    for index, rim in enumerate(rims):
+        if rim is None or not len(rim):
+            continue
+        part = out_parts[index]
+        beneath = sample(under, box, pixel, part["positions"], outside=np.nan)
+        eased, by = ease_onto(part["positions"], part["faces"], rim, window_values(window, part["positions"]),
+                              beneath, band, gap, STRAND_EASE_SHARE * width)
+        report["parts"][index]["eased_max"] = float(by.max(initial=0.0))
+        ends = np.unique(rim)
+        with np.errstate(invalid="ignore"):
+            edge_over.append((eased[ends, 2] - beneath[ends])[np.isfinite(beneath[ends])])
+        rim_moved.append(by[ends])
+        if by.any():
+            out_parts[index] = {**part, "positions": eased}
+            if part.get("normals") is not None:
+                from image_to_3dlab.pixal3d_native import smooth_normals
+
+                normals = np.array(part["normals"], dtype=np.float64)
+                normals[by > 0] = smooth_normals(eased, part["faces"])[by > 0]
+                out_parts[index]["normals"] = normals
+    edge_over = np.concatenate(edge_over) if edge_over else np.zeros(0)
+    rim_moved = np.concatenate(rim_moved) if rim_moved else np.zeros(0)
+    report.update({"seam_rise_max": float(rise.max(initial=0.0)),
+                   "seam_eased_max": float(rim_moved.max(initial=0.0)),
+                   "seam_eased_share": float(np.mean(rim_moved > gap)) if len(rim_moved) else 0.0,
+                   "seam_edge_over_max": float(edge_over.max(initial=0.0))})
     if old_points:
         new["dense"] = hh.borrowed_weights(new["positions"], np.concatenate(old_points), np.concatenate(old_dense))
         if parts[body_index].get("dense") is None:

@@ -455,3 +455,63 @@ def test_a_hands_close_views_draw_the_hand_alone():
     middle = (32, 32)
     assert whole.rgb[middle][2] > 0.5                                  # the body in front: blue
     assert alone.rgb[middle][0] > 0.6 and alone.rgb[middle][2] < 0.6   # the hand alone: its skin
+
+
+# --- the face seam: a face grafted on as a piece of its own (Hero face) -----------------------------------------------
+
+def plate(x0, x1, y0, y1, z, n=24, hole=None):
+    """A grid of triangles at depth Z facing the camera (+Z), from (X0, Y0) to (X1, Y1), N squares a side; HOLE
+    ((x0, x1, y0, y1)) leaves the squares inside it out, so their outline is an open edge."""
+    xs, ys = np.linspace(x0, x1, n + 1), np.linspace(y0, y1, n + 1)
+    gx, gy = np.meshgrid(xs, ys)
+    p = np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1)
+    i = np.arange(gx.size).reshape(gy.shape)
+    a, b, c, d = i[:-1, :-1], i[:-1, 1:], i[1:, :-1], i[1:, 1:]
+    keep = np.ones(a.shape, bool)
+    if hole is not None:
+        mx, my = (gx[:-1, :-1] + gx[:-1, 1:]) / 2, (gy[:-1, :-1] + gy[1:, :-1]) / 2
+        keep = ~((mx > hole[0]) & (mx < hole[1]) & (my > hole[2]) & (my < hole[3]))
+    f = np.concatenate([np.stack([a, b, d], -1)[keep], np.stack([a, d, c], -1)[keep]])
+    return p, f
+
+
+def faced_figure(face_z: float, face_hole: bool = False) -> fc.Figure:
+    """A body standing to 1.85 (its front at z 0.05 the head's inside), the head's front (z 0.1) a sheet of its own with
+    a window cut out round the face, and the face as a piece of its own at FACE_Z under that window, reaching a little
+    past it (a Hero face); FACE_HOLE leaves a hole in the face where one looks at the head's inside, 5 cm behind."""
+    body = box((-0.2, 0.0, -0.1), (0.2, 1.85, 0.05))
+    front = plate(-0.1, 0.1, 1.55, 1.85, 0.1, hole=(-0.05, 0.05, 1.62, 1.78))
+    face = plate(-0.056, 0.056, 1.612, 1.788, face_z, n=20, hole=(-0.02, 0.0, 1.66, 1.68) if face_hole else None)
+    p, f = join(body, front, face)
+    weights = np.zeros((len(p), 2))
+    weights[:, 1] = p[:, 1] > 1.56
+    weights[:, 0] = 1 - weights[:, 1]
+    return fc.Figure(model_of(p, f), {"Neck": np.array([0.0, 1.55, 0.0]), "Head": np.array([0.0, 1.6, 0.0])},
+                     ["Neck", "Head"], weights)
+
+
+def test_a_face_of_its_own_is_found_and_a_figure_without_one_is_not_checked():
+    figure = faced_figure(0.099)
+    face = fc.face_piece(figure, fc.find_head(figure))
+    middle = figure.model.positions[figure.model.faces[face]].mean(axis=1)
+    assert face.sum() == 2 * 20 * 20 and np.allclose(middle[:, 2], 0.099)
+    p, f = box((-0.2, 0.0, -0.1), (0.2, 1.85, 0.1))                    # head and body one piece, as built
+    plain = fc.Figure(model_of(p, f), figure.joints, figure.names, np.c_[p[:, 1] <= 1.56, p[:, 1] > 1.56] * 1.0)
+    assert fc.face_piece(plain, fc.find_head(plain)) is None
+    assert fc.face_seam(plain, fc.find_head(plain)).status == "info"
+
+
+def test_a_cut_edge_hanging_over_the_face_fails_and_one_lying_on_it_passes():
+    # the Nachtschwinge v19b: the old cheek's cut edge stood up to 2.5 cm in front of its new face, a light line down
+    # the cheek and a gap to see into the head from the side (round 28 of the AssetFurnace Support notes)
+    hanging = fc.face_seam(faced_figure(0.075), fc.find_head(faced_figure(0.075)))
+    assert hanging.status == "fail" and "hangs" in hanging.message
+    lying = fc.face_seam(faced_figure(0.099), fc.find_head(faced_figure(0.099)))
+    assert lying.status == "pass", lying.message
+
+
+def test_a_hole_in_the_face_showing_the_head_behind_it_fails():
+    # skin_sorcerer_c's jaw patches: where the new face fell into the head, the front showed the old head's inside
+    holed = faced_figure(0.099, face_hole=True)
+    result = fc.face_seam(holed, fc.find_head(holed))
+    assert result.status == "fail" and "hole" in result.message

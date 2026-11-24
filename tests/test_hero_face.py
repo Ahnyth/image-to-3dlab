@@ -386,6 +386,19 @@ def test_seam_paint_reads_the_figures_paint_against_the_crops_just_outside_the_s
                              CROP, FRAME)[0]) == 0                         # an unpainted figure: nothing to match
 
 
+def test_seam_paint_reads_a_coarse_figure_at_every_pixel_of_the_band():
+    # the Nachtschwinge's 8k rigged model had few points in the band just outside the seam, and its cheek, 5 L*
+    # lighter than the crop there, still drew a line down the seam (round 28 of the AssetFurnace Support notes)
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    coarse = painted_plane((130, 120, 110), step=0.05)
+    values = hf.window_values(window, coarse["positions"])
+    assert not ((values <= 0) & (values > -hf.RING_PIXELS * window["pixel"])).any()   # no point of it in the band
+    points, offsets = hf.seam_paint([coarse], window, np.full((1024, 1024, 3), 100.0), CROP, FRAME)
+    turn = np.degrees(np.arctan2(points[:, 1], points[:, 0]))
+    assert len(points) > 100 and np.histogram(turn, bins=12, range=(-180, 180))[0].min() > 0   # all round the seam
+    assert np.allclose(offsets, [30, 20, 10])
+
+
 def test_offset_field_meets_the_seam_all_round_and_runs_smoothly_inside():
     window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
     turn = np.linspace(0, 2 * np.pi, 400, endpoint=False)
@@ -639,29 +652,36 @@ def test_graft_face_never_cuts_through_the_head_where_the_new_face_dives_into_it
     assert 0.03 < report["off_cliff_share"] < 0.2                             # the pit and its rim, said
 
 
-def test_graft_face_keeps_the_figures_own_skin_where_the_new_face_is_no_face():
-    # skin_sorcerer_c's lower cheeks (round 28 of the AssetFurnace Support notes): where the build showed no face the
-    # new face falls into a pit; the old cheek was cut away all the same, and the pit's walls showed from the front
-    # as mottled grey, white and maroon patches with ragged edges. There the figure keeps its own skin, and the new
-    # face is set in only where it is reached from the nose
-    v, f = hollow_head()
-    body = {"positions": v, "faces": f}
-    pit, radius = np.array([0.02, -0.01]), 0.006
-    parts, new, report = hf.graft_face([body], disk_window(0.035, width=0.1), diving_face())
+def filled_over(parts, new, pit, radius):
+    """(old faces left over the pit, the new face's points over it, the front depth over it)."""
     kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
-    over_pit = (np.hypot(*(kept[:, :2] - pit).T) < radius - 0.002) & (kept[:, 2] > 0.04)
-    assert over_pit.sum() >= 3                                                # the old cheek over the pit stayed
-    added = new["positions"][new["faces"]].mean(axis=1)
-    assert not ((np.hypot(*(added[:, :2] - pit).T) < radius - 0.002) & (added[:, 2] < 0.03)).any()  # no pit set in
+    old = (np.hypot(*(kept[:, :2] - pit).T) < radius - 0.002) & (kept[:, 2] > 0.03)
+    over = np.hypot(*(new["positions"][:, :2] - pit).T) < radius - 0.002
     front = hf.depth_map(np.concatenate([parts[0]["positions"], new["positions"]]),
                          np.concatenate([parts[0]["faces"], new["faces"] + len(parts[0]["positions"])]),
                          (pit[0] - 0.003, pit[0] + 0.003, pit[1] - 0.003, pit[1] + 0.003), 0.001)[0]
+    return int(old.sum()), new["positions"][over], front
+
+
+def test_graft_face_fills_a_pit_with_the_figures_own_shape_where_the_new_face_is_no_face():
+    # skin_sorcerer_c's lower cheeks (rounds 27 and 28 of the AssetFurnace Support notes): where the build showed no
+    # face the new face falls into a pit; the old cheek was cut away all the same, and the pit's walls showed from the
+    # front as mottled grey, white and maroon patches. Keeping the old cheek there left a crumpled piece of the old jaw
+    # inside the new face (round 28, TODO 207). The new face takes the figure's own shape there instead
+    v, f = hollow_head()
+    body = {"positions": v, "faces": f}
+    pit, radius = np.array([0.02, -0.01]), 0.006
+    window = disk_window(0.035, width=0.1)
+    window["depth"], _ = hf.depth_map(v, f, window["box"], window["pixel"])
+    parts, new, report = hf.graft_face([body], window, diving_face())
+    old, over, front = filled_over(parts, new, pit, radius)
+    assert old == 0                                                           # the old cheek went ...
+    skin = np.sqrt(0.05 ** 2 - (over[:, :2] ** 2).sum(axis=1))
+    assert len(over) and np.abs(over[:, 2] - (skin - hf.TUCK_SHARE * 0.1)).max() < 0.0025   # ... the face took its shape
     assert np.isfinite(front).all() and front.min() > 0.04                   # from the front: skin, no pit
-    assert not ((kept[:, 2] > 0.03) & (np.hypot(kept[:, 0], kept[:, 1]) < 0.03)
-                & (np.hypot(*(kept[:, :2] - pit).T) > radius + 0.008)).any()  # the old face went beyond the pit's cliff band
     assert holes_from_behind(parts + [new]) == 0
     assert 0.03 < report["off_cliff_share"] < 0.2                             # still said
-    assert 0.0 < report["face_left_out_share"] < 0.2                          # and how much was left out
+    assert 0.0 < report["face_filled_share"] < 0.2                            # and how much was filled
 
 
 def plate(depth, half=0.06, pixel=0.002, back=False):
@@ -686,6 +706,198 @@ def test_graft_face_never_cuts_through_a_shallow_head_where_the_new_face_falls_o
     kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
     assert (kept[:, 2] < 0).sum() == (v[f].mean(axis=1)[:, 2] < 0).sum()      # the back plate is whole
     assert holes_from_behind(parts + [new], half=0.05) == 0
+
+
+def test_graft_face_fills_a_pit_well_inside_the_face():
+    # skin_sorcerer_c's jaw patches (round 28 of the AssetFurnace Support notes, TODO 207): its two pits lay inside the
+    # window without touching its edge; the old front was cut away there, the new face's pit lay 3 to 8 cm behind it,
+    # and the front showed the old head's inside as grey, white and maroon patches
+    v, f = hollow_head()
+    body = {"positions": v, "faces": f}
+    pit, radius = np.array([0.008, -0.01]), 0.006
+    face = pitted_face(lambda x, y: np.sqrt(np.clip(0.0525 ** 2 - x ** 2 - y ** 2, 0.0, None)), -0.035, pit=pit)
+    window = disk_window(0.035, width=0.1)
+    window["depth"], _ = hf.depth_map(v, f, window["box"], window["pixel"])
+    assert np.hypot(*pit) + radius + 2 * hf.CLIFF_PIXELS * window["pixel"] < 0.035 - 0.004   # an island, off the edge
+    parts, new, report = hf.graft_face([body], window, face)
+    old, over, front = filled_over(parts, new, pit, radius)
+    skin = np.sqrt(0.05 ** 2 - (over[:, :2] ** 2).sum(axis=1))
+    assert old == 0 and len(over) and np.abs(over[:, 2] - (skin - hf.TUCK_SHARE * 0.1)).max() < 0.0015
+    assert np.isfinite(front).all() and front.min() > 0.04                   # from the front: skin, no pit
+    assert holes_from_behind(parts + [new]) == 0
+    assert 0.0 < report["face_filled_share"] < 0.2
+
+
+def test_seam_surface_drops_a_strand_and_keeps_a_cheek():
+    rows, cols = np.mgrid[0:60, 0:60]
+    dome = 0.05 - ((cols - 30.0) ** 2 + (rows - 30.0) ** 2) * 1e-5      # a cheek
+    own = dome.copy()
+    own[:, 27:30] += 0.012                                               # a strand 3 pixels wide in front of it
+    own[:5] = -np.inf                                                    # nothing there
+    out = hf.seam_surface(own, across=6, least=0.001)
+    assert np.array_equal(out[5:, :24], own[5:, :24])                   # the cheek as it was
+    assert np.allclose(out[10:50, 27:30], dome[10:50, 27:30], atol=5e-4)  # under the strand: the cheek beside it
+    assert np.isneginf(out[:5]).all() and np.isfinite(out[5:]).all()
+    brow = np.broadcast_to(0.03 + 0.0016 * np.arange(60.0)[:, None], (60, 60)).copy()    # a brow sloping up the head
+    slope = brow.copy()
+    slope[:, 27:31] += 0.012                                             # with a strand 4 pixels wide down it
+    assert np.allclose(hf.seam_surface(slope, across=5, least=0.001)[10:50, 27:31], brow[10:50, 27:31],
+                       atol=1e-5)                                        # the brow at its own height, row by row
+    assert np.array_equal(hf.seam_surface(own, across=1), own)          # too narrow to tell: as it was
+
+
+def test_seam_target_carries_the_figure_in_along_its_slope_and_ignores_what_lies_inside():
+    # read inside the seam, the target took what the new face replaces: on skin_sorcerer_c a hood's edge 2 cm in front
+    # of the jaw pulled one point of the face up into a light spike (round 28 of the AssetFurnace Support notes)
+    window = disk_window(0.03, width=0.1)
+    rows, cols = window["field"].shape
+    x = window["box"][0] + (np.arange(cols) + 0.5) * window["pixel"]
+    plane = np.broadcast_to(0.02 + 0.3 * x[None, :], (rows, cols)).copy()   # a cheek sloping up to the right
+    own = plane.copy()
+    own[window["field"] > 0.005] = 0.06                                     # inside: a hood's edge far in front
+    out = hf.seam_target(own, window["field"], reach=10, pixel=window["pixel"])
+    near = (window["field"] > 0) & (window["field"] < 8 * window["pixel"])
+    assert np.allclose(out[near], plane[near], atol=2e-3)                    # along its slope, not up to the hood
+    assert np.array_equal(out[window["field"] <= 0], own[window["field"] <= 0])   # outside: as it is
+    assert np.isneginf(out[window["field"] > 12 * window["pixel"]]).all()    # past the reach: nothing
+
+
+def test_rise_target_keeps_the_figures_front_behind_the_face_and_limits_what_stands_in_front():
+    # the Nachtschwinge v19h: under its chin the figure's front without strands (`seam_surface`) took the old chin for a
+    # strand and dropped to the neck 7 cm behind it, the cap carried in from the seam read the neck too, and the new chin
+    # was pulled back by up to 3.4 cm: its coarse triangles tilted away and drew a dark grey patch (round 28)
+    own = np.array([0.0558, 0.06, 0.047, 0.073, 0.05, -np.inf])    # chin, cheek, strand, thin hood edge, brow, none
+    surface = np.array([0.0268, 0.06, 0.040, 0.045, 0.05, -np.inf])  # without strands (the chin wrongly taken for one)
+    carried = np.array([0.0306, 0.059, 0.041, 0.047, 0.05, -np.inf])  # carried in from the seam
+    new = np.array([0.061, 0.045, 0.040, 0.054, 0.049, 0.03])        # the new face's own depth
+    out = hf.rise_target(own, surface, carried, new, over=0.003)
+    assert out[0] == 0.0558                       # the figure behind the face: its own front, never the neck behind it
+    assert out[1] == pytest.approx(0.06)          # a cheek in front of the face: the face rises all the way to it
+    assert out[2] == pytest.approx(0.040)         # a strand in front: no rise past the surface beside it
+    assert out[3] == pytest.approx(0.045)         # a thin hood's edge in front: the face sinks under it, beside it
+    assert out[4] == pytest.approx(0.05)          # the brow just in front: as it is
+    assert np.isneginf(out[5])                    # no figure there: nothing
+
+
+def strip(y, z, x0=0.0, x1=-0.03, n=31):
+    """A strip of surface beside the seam at height Y and depth Z, x from X0 (the seam) outward to X1: (points, faces);
+    its first two points (x = X0) make its cut end."""
+    x = np.linspace(x0, x1, n)
+    points = np.stack([np.r_[x, x], np.r_[np.full(n, y), np.full(n, y + 0.001)], np.full(2 * n, z)], axis=1)
+    faces = np.concatenate([[[i, i + 1, n + i], [i + 1, n + 1 + i, n + i]] for i in range(n - 1)])
+    return points, faces
+
+
+def test_ease_onto_lays_a_cut_end_standing_over_the_face_down_and_fades_out_over_the_band():
+    # a strip of the figure's surface beside the seam whose cut end stands 0.009 over the new face (the face at 0.0
+    # under it, a gap of 0.001); a second strip whose cut end lies just over the face already; a lone triangle not
+    # joined to any cut end
+    over, over_f = strip(0.0, 0.01)
+    flush, flush_f = strip(0.05, 0.001)
+    lone = np.array([[-0.005, 0.01, 0.02], [-0.006, 0.01, 0.02], [-0.005, 0.011, 0.02]])
+    points, faces = joined((over, over_f), (flush, flush_f), (lone, [[0, 1, 2]]))
+    rim = np.array([[0, 31], [62, 93]])
+    under = np.zeros(len(points))
+    moved, by = hf.ease_onto(points, faces, rim, points[:, 0].copy(), under, band=0.02, gap=0.001)
+    assert moved[0, 2] == pytest.approx(0.001) and moved[31, 2] == pytest.approx(0.001)   # the cut end: just over it
+    assert moved[25, 2] == pytest.approx(0.01) and by[25] == 0.0  # past the band (x -0.025): as it was
+    assert 0.001 < moved[10, 2] < 0.01                              # in between, eased
+    assert np.all(np.diff(moved[:21, 2]) >= -1e-12)                 # rising smoothly outward: no notch
+    assert np.allclose(moved[62:124], flush)                        # a cut end on the face already: stays
+    assert np.allclose(moved[124:], lone)                           # not joined to a cut end: stays
+    assert np.allclose(moved[:, :2], points[:, :2])                 # in depth only
+
+
+def inside_seen(parts, direction, half=0.06, pixel=0.001):
+    """(see-through pixels, pixels showing the hollow head's inside) of PARTS seen from DIRECTION as a game draws them
+    (back faces culled): rays through a gap at the seam meet the inner wall (marked by u = 1 in its uvs) or nothing."""
+    v = np.concatenate([np.asarray(p["positions"], dtype=float) for p in parts])
+    offsets = np.cumsum([0] + [len(p["positions"]) for p in parts])
+    f = np.concatenate([np.asarray(p["faces"]) + o for p, o in zip(parts, offsets)])
+    u = np.concatenate([np.asarray(p["uvs"], dtype=float)[:, 0] if p.get("uvs") is not None and k == 0
+                        else np.zeros(len(p["positions"])) for k, p in enumerate(parts)])
+    d = np.asarray(direction, dtype=float) / np.linalg.norm(direction)
+    right = np.cross([0.0, 1.0, 0.0], d)
+    right /= np.linalg.norm(right)
+    turned = v @ np.stack([right, np.cross(d, right), d], axis=1)
+    box = (-half, half, -half, half)
+    toward = hf.face_normals(turned, f)[:, 2] > 0
+    shown = np.isfinite(hf.depth_map(turned, f, box, pixel)[0])
+    depth, owner = hf.depth_map(turned, f[toward], box, pixel)
+    drawn = np.isfinite(depth)
+    wall = np.zeros(shown.shape, bool)
+    wall[drawn] = u[f[toward][owner[drawn]]].mean(axis=1) > 0.5
+    return int((shown & ~drawn).sum()), int(wall.sum())
+
+
+def deep_face(deeper=0.015, half=0.045, pixel=0.001):
+    """A new face lying DEEPER behind the old head's front all over, as the Nachtschwinge's did beside its cheek: the
+    figure's cut edge stood up to 2.5 cm in front of it at the seam (round 28 of the AssetFurnace Support notes)."""
+    return pitted_face(lambda x, y: np.sqrt(np.clip(0.05 ** 2 - x ** 2 - y ** 2, 0.0, None)) - deeper, 0.0,
+                       pit_radius=0.0, half=half, pixel=pixel)
+
+
+def test_graft_face_meets_the_figure_where_the_face_lies_deeper_and_leaves_no_gap():
+    # where the figure stood further in front of the new face at the seam than the face could rise (0.05 of the head's
+    # width then), its cut edge hung over the face: a light line down the Nachtschwinge's cheek, and from the side and
+    # below a gap into the head. The face rises to the figure's surface at the seam
+    v, f = hollow_head()
+    uvs = np.zeros((len(v), 2))
+    uvs[len(v) // 2:, 0] = 1.0                                       # the inner wall, to tell it in a picture
+    body = {"positions": v, "faces": f, "uvs": uvs}
+    window = disk_window(0.035, width=0.1)
+    parts, new, report = hf.graft_face([body], window, deep_face())
+    gap = hf.TUCK_SHARE * 0.1
+    cut = parts[0]
+    edges = np.sort(np.concatenate([cut["faces"][:, [0, 1]], cut["faces"][:, [1, 2]], cut["faces"][:, [2, 0]]]), axis=1)
+    found, counts = np.unique(edges, axis=0, return_counts=True)
+    rim = np.unique(found[counts == 1])
+    rim = rim[np.abs(hf.window_values(window, cut["positions"][rim])) < 2 * window["pixel"]]
+    face_depth, _ = hf.depth_map(new["positions"], new["faces"], window["box"], window["pixel"] / 2)
+    under = hf.sample(face_depth, window["box"], window["pixel"] / 2, cut["positions"][rim], outside=np.nan)
+    over = cut["positions"][rim, 2] - under
+    assert len(rim) > 50 and np.isfinite(over).mean() > 0.95                 # the face lies under the whole rim
+    assert np.nanmax(over) < 2 * gap                                          # the cut edge: just in front of it
+    assert report["seam_rise_max"] > 0.015 - 2 * gap                          # the face rose to the figure ...
+    assert report["seam_eased_max"] < gap                                     # ... so nothing had to be eased
+    away = hf.window_values(window, cut["positions"]) < -1.5 * window["pixel"]   # past the cut's own new points
+    radius = np.linalg.norm(cut["positions"][away], axis=1)
+    assert np.all((np.abs(radius - 0.05) < 1e-9) | (np.abs(radius - 0.048) < 1e-9))   # the figure: as it was
+    for direction in ((1.0, 0.0, 1.0), (-1.0, 0.0, 1.0), (0.0, -1.0, 1.0), (0.0, 1.0, 1.0), (0.6, -0.6, 0.5),
+                      (2.0, 0.0, 1.0), (0.0, -2.0, 1.0)):
+        through, wall = inside_seen([cut, new], direction)
+        # no gap into the head from any side (the unchanged code: 421 to 593 such pixels a view); what is left is a
+        # sliver about one gap (1 mm) wide along the silhouette where the seam runs right on it, rays grazing the head
+        assert wall <= 10 and through + wall <= 0.25 * 2 * np.pi * 0.035 / 0.001, (direction, through, wall)
+
+
+def test_graft_face_does_not_rise_to_a_strand_and_lays_only_a_low_cut_end_down_onto_the_face():
+    # at the Zauberer's brow a strand stood 0.012 in front of the face at the seam, and raising the face to it made a
+    # ramp across the brow (round 22). The face goes on into the skin beside a strand; a strand standing far over the
+    # face stays as it is (laid down 2.8 cm, the Nachtschwinge's hair locks scratched its cheeks dark, round 28), while
+    # a cut end standing a little over the face eases down onto it
+    head = sphere(0.05)
+    strand = box((-0.003, 0.02, 0.03), (0.003, 0.065, 0.047))   # 6 mm wide, 1 cm in front at the seam at the brow
+    low = box((0.017, 0.015, 0.03), (0.023, 0.065, 0.039))      # 3 mm over the face where it crosses the seam
+    v, f = joined(head, strand, low)
+    body = {"positions": v, "faces": f}
+    window = disk_window(0.035, width=0.1)
+    face = pitted_face(lambda x, y: np.sqrt(np.clip(0.0505 ** 2 - x ** 2 - y ** 2, 0.0, None)), 0.0, pit_radius=0.0)
+    parts, new, report = hf.graft_face([body], window, face)
+    gap = hf.TUCK_SHARE * 0.1
+    skin = np.sqrt(0.05 ** 2 - 0.034 ** 2)                       # the skin at the seam under the strand
+    face_depth, _ = hf.depth_map(new["positions"], new["faces"], window["box"], window["pixel"] / 2)
+    at_seam = hf.sample(face_depth, window["box"], window["pixel"] / 2, np.array([[0.0, 0.034, 0.0]]))[0]
+    assert at_seam < skin + 2 * gap                               # the face did not rise to the strand (0.047)
+    p = parts[0]["positions"]
+    seam = np.abs(hf.window_values(window, p)) < window["pixel"]
+    tall = (np.abs(p[:, 0]) <= 0.0031) & seam & (p[:, 2] > 0.046)
+    assert tall.sum() >= 2                                        # the tall strand's cut end: as it was
+    end = (np.abs(p[:, 0] - 0.02) <= 0.0031) & seam & (p[:, 2] > 0.03)
+    assert end.sum() >= 4                                         # the low strand's cut end ...
+    under = hf.sample(face_depth, window["box"], window["pixel"] / 2, p[end], outside=np.nan)
+    assert np.nanmax(p[end, 2] - under) < 3 * gap                 # ... lies on the face, no edge over it
+    assert 0.0 < report["seam_eased_max"] < hf.STRAND_EASE_SHARE * 0.1
 
 
 def test_reached_takes_the_face_from_the_nose_and_leaves_a_pit_behind_a_cliff():

@@ -258,6 +258,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   armour plates, a coat's trim and a fringe of hair are not. With no band in the picture nothing is written (exit
   code 3).
 ### Fixed
+- **Hero face: a tighter seam between the new face and the figure.** Where the figure stood in front of the new
+  face at the seam (the Nachtschwinge's cheek, up to 2.5 cm), the face could rise only 0.05 of the head's width, and
+  the figure's cut edge hung over it: a light line down the cheek, and from the side and below a gap into the head.
+  The face now rises to meet the figure's surface (up to 0.2 of the head's width; a strand standing off the surface
+  is no target, so no ramp across a brow), is tucked half as deep, and a cut end still standing a little over the
+  face (up to 0.05 of the head's width) eases down onto it; a strand standing further in front stays as it is (laid
+  down, the Nachtschwinge's hair locks drew dark scratches on its cheeks). Where the new face's build showed no face
+  (a pit, as beside skin_sorcerer_c's jaw), the
+  face takes the figure's own shape, painted by the picture, instead of the figure's old jaw being cut away over a
+  pit (the grey, white and maroon patches; keeping the old skin there left a crumpled piece of the old jaw instead).
+  The crop's paint is matched to the figure's at every pixel just outside the seam, not only at the figure's points
+  there (a coarse model's few points left a 5 L* step). face.json reports how far the face rose and the figure was
+  eased (`seam_rise_max`, `seam_eased_max`) and how much of the window was filled (`face_filled_share`, replacing
+  `face_left_out_share`). figure_check gains a face seam check, judged on the face's lower part (its sides and chin,
+  where the seam runs through skin): the figure's cut edge hanging over a grafted face (fails over 12 % of the edges
+  over it; the Nachtschwinge v19b 14.7 %, rebuilt 7 %), holes in the face that show the head behind it, and
+  see-through beside it close up from the sides and below. Not yet closed: a faint line where the old cheek's own
+  facet meets the face (seen from three quarters), and more see-through beside skin_sorcerer_c's face from three
+  quarters after the pits are filled.
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
   "Access is denied", and each planned or failed install kept its `.<id>-install-*` folder; every removal of a cloned

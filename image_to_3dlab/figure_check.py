@@ -12,6 +12,8 @@ skeleton), in its own base colour, and measures each of those faults:
 * neck ring: a hard, level colour step running around the neck's skin;
 * jagged outline: small saw teeth along the head's outline seen from the sides and the back;
 * flakes: tiny separate bits of the model, and small bright specks on the head;
+* face seam: a face grafted on as a piece of its own (Hero face) with the figure's cut edge hanging
+  over it, holes in it showing the head behind, or see-through beside it close up;
 * colour (with a version before): the patches that changed colour (`colour_compare`).
 
 Some of these a number can judge (fingers, the neck ring, colour, holes in motion); others it can
@@ -150,11 +152,12 @@ def _axes(direction):
 
 
 def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 320,
-         only: np.ndarray | None = None) -> View:
+         only: np.ndarray | None = None, cull: bool = True) -> View:
     """FIGURE seen from DIRECTION, the square of HALF model units around CENTRE filling SIZE pixels; with ONLY (a mask
     of its triangles) those alone, the rest of the figure left out.
 
-    Back faces are culled and the nearest face wins, as a game draws it."""
+    Back faces are culled and the nearest face wins, as a game draws it; with CULL false every face is drawn, so a
+    pixel the culled view leaves empty but this one covers is one a game shows through."""
     model = figure.model
     d, right, up = _axes(direction)
     p = model.positions - np.asarray(centre, float)
@@ -164,7 +167,7 @@ def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 
     tri = model.positions[model.faces]
     normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
-    keep = np.flatnonzero((normals @ d > 0) & (True if only is None else np.asarray(only, bool)))
+    keep = np.flatnonzero(((normals @ d > 0) | (not cull)) & (True if only is None else np.asarray(only, bool)))
     face = np.full((size, size), -1, np.int64)
     rgb = np.zeros((size, size, 3))
     normal = np.zeros((size, size, 3))
@@ -520,6 +523,111 @@ def pieces(model: cc.Model) -> tuple:
     area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
     _, piece = np.unique(label[f[:, 0]], return_inverse=True)
     return piece, np.bincount(piece, weights=area)
+
+
+# --- a face grafted on as a piece of its own (Hero face) ---------------------------------------------------------
+
+FACE_SHARE = 0.25          # a piece showing this share of the face's front area or more is a face of its own ...
+FACE_AREA = 1 / 3          # ... unless it holds more than this share of the whole figure's area (the body itself)
+SEAM_OVER = 0.03           # an open edge of the figure this share of the head's size in front of the face hangs over it
+SEAM_OVER_LIMIT = 0.12     # ... and hanging along more than this share of the figure's edges over the face fails: v19b 14.7 %, the fixed rebuild 9.9 %
+SEAM_DEEP = 0.05           # inside the face's outline, what lies this share of the head's size behind the face is a hole
+SEAM_HOLE_LIMIT = 0.005    # ... and holes over more than this share of the face, seen from the front, fail
+SEAM_THROUGH_LIMIT = 60    # see-through pixels beside the face in one close view of a side or from below that fail
+SEAM_VIEWS = ("left side", "right side", "from below", "below left", "below right")
+SEAM_SKIN = 0.6            # the seam is judged on the face's lower part, its sides and chin (skin), not the hairline
+
+
+def face_piece(figure: Figure, head: Head, size: int = 160) -> np.ndarray | None:
+    """Which triangles are a face grafted onto the figure as a piece of its own (`hero_face`): of the pieces but the
+    figure's largest, the one a game shows most from the front in the middle of the face (above the head joint: the
+    cheeks, nose and mouth), when it shows at least FACE_SHARE of it and holds at most FACE_AREA of the figure's area;
+    None on a figure without one. What is shown counts, not what faces the camera: skin_sorcerer_c's hood and the
+    head's inside behind its face outweighed the face by area (round 28 of the AssetFurnace Support notes)."""
+    model = figure.model
+    piece, area = pieces(model)
+    front = draw(figure, "front", FRONT, head.centre, head.half, size)
+    s = head.size
+    point = front.point
+    middle = (front.covered & (np.abs(point[..., 0] - head.centre[0]) < 0.2 * s) & (point[..., 1] > head.chin)
+              & (point[..., 1] < head.chin + 0.55 * s))
+    if not middle.any():
+        return None
+    shown = np.bincount(piece[front.face[middle]], minlength=len(area)).astype(np.float64)
+    total = shown.sum()
+    shown[int(np.argmax(area))] = 0.0
+    best = int(np.argmax(shown))
+    if shown[best] < FACE_SHARE * total or area[best] > FACE_AREA * area.sum():
+        return None
+    return piece == best
+
+
+def face_seam(figure: Figure, head: Head, size: int = 320) -> Result:
+    """A grafted face's seam as a person sees it close up (`face_piece`): the figure's own cut edge hanging in front of
+    the face (a line down the cheek, and a gap to see into the head beside it: the Nachtschwinge v19b, its old cheek up
+    to 2.5 cm in front), holes in the face seen from the front that show what lies behind it (skin_sorcerer_c's grey,
+    white and maroon patches beside the jaw, where its new face fell into the head), and see-through pixels beside the
+    face in the close views of the sides and from below. Each fails past its limit (round 28 of the AssetFurnace
+    Support notes)."""
+    from image_to_3dlab import hero_face as hf
+
+    face = face_piece(figure, head)
+    if face is None:
+        return Result("face seam", "info", "-", "-", "no face of its own (as a Hero face grafts one): not checked")
+    model = figure.model
+    s = head.size
+    points, wf = _welded(model)
+    edges = np.sort(np.concatenate([wf[~face][:, [0, 1]], wf[~face][:, [1, 2]], wf[~face][:, [2, 0]]]), axis=1)
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    found, counts = np.unique(edges, axis=0, return_counts=True)
+    rim = found[counts == 1]
+    own = model.positions[np.unique(model.faces[face])]
+    # the face's sides and chin, where its seam runs through skin: at the hairline it runs through hair, and a strand's
+    # cut end over the face's painted hair reads as a strand (the Nachtschwinge's hair locks, round 28)
+    low = own[:, 1].min() + SEAM_SKIN * np.ptp(own[:, 1])
+    pixel = s / 240
+    box = (own[:, 0].min() - 0.1 * s, own[:, 0].max() + 0.1 * s, own[:, 1].min() - 0.1 * s, own[:, 1].max() + 0.1 * s)
+    face_depth, _ = hf.depth_map(model.positions, model.faces[face], box, pixel)
+    middle = points[rim].mean(axis=1)
+    length = np.linalg.norm(points[rim[:, 0]] - points[rim[:, 1]], axis=1)
+    under = hf.sample(face_depth, box, pixel, middle, outside=-np.inf, nearest=True)
+    over_face = np.isfinite(under) & (middle[:, 1] < low)
+    hang = over_face & (middle[:, 2] - under > SEAM_OVER * s)
+    hanging = float(length[hang].sum() / max(length[over_face].sum(), 1e-12))
+    # holes: inside the face's outline from the front, what a game shows that is no face and lies deep behind it
+    toward = hf.face_normals(model.positions, model.faces)[:, 2] > 0
+    depth, owner = hf.depth_map(model.positions, model.faces[toward], box, pixel)
+    shown_face = (owner >= 0) & face[np.flatnonzero(toward)][np.maximum(owner, 0)]
+    holes = ndimage.binary_fill_holes(shown_face) & ~shown_face
+    around = hf.spread(np.where(shown_face, depth, -np.inf), int(np.ceil(0.5 * s / pixel)))
+    deep = holes & ~(depth > around - SEAM_DEEP * s)
+    hole_share = float(deep.sum() / max(int(shown_face.sum()), 1))
+    # see-through beside the face, close up from the sides and below
+    through, spots = {}, []
+    for name, direction in HEAD_VIEWS:
+        if name not in SEAM_VIEWS:
+            continue
+        culled = draw(figure, name, direction, head.centre, head.half, size)
+        every = draw(figure, name, direction, head.centre, head.half, size, cull=False)
+        mine = culled.covered & face[np.maximum(culled.face, 0)] & (culled.point[..., 1] < low)
+        beside = ndimage.binary_dilation(mine, iterations=max(2, size // 80))
+        gap = every.covered & ~culled.covered & beside
+        through[name] = int(gap.sum())
+        spots += [(name, b) for b, _ in _boxes(gap, 4)]
+    worst = max(through, key=through.get)
+    failed = []
+    if hanging > SEAM_OVER_LIMIT:
+        failed.append(f"the figure's cut edge hangs over the face along {hanging:.0%} of its edges there")
+    if hole_share > SEAM_HOLE_LIMIT:
+        failed.append(f"holes in the face show the head behind it over {hole_share:.1%} of the face")
+    if through[worst] > SEAM_THROUGH_LIMIT:
+        failed.append(f"{through[worst]} see-through pixels beside the face {worst}")
+    text = (f"edge hanging over the face {hanging:.0%} (limit {SEAM_OVER_LIMIT:.0%}), holes in it {hole_share:.2%} "
+            f"(limit {SEAM_HOLE_LIMIT:.1%}), see-through beside it {through[worst]} px {worst} (limit "
+            f"{SEAM_THROUGH_LIMIT})")
+    return Result("face seam", "fail" if failed else "pass", round(hanging * 100, 1),
+                  f"{SEAM_OVER_LIMIT:.0%} hanging, {SEAM_HOLE_LIMIT:.1%} holes, {SEAM_THROUGH_LIMIT} px see-through",
+                  ("; ".join(failed) + "; " if failed else "") + text, spots if failed else [])
 
 
 # --- hands -------------------------------------------------------------------------------------
@@ -923,7 +1031,7 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None, 
     views = head_views(figure, head, size)
     results = [fingers(figure)]
     results += _head_checks(figure, head, views)
-    results += [open_edges(figure), pose_holes(report)]
+    results += [face_seam(figure, head, size), open_edges(figure), pose_holes(report)]
     if before is not None:
         old = read_figure(Path(before))
         old_head = find_head(old)

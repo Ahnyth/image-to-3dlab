@@ -23,12 +23,14 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
   5. graft    the figure cut along the seam: what lies inside it and not clearly behind the new face goes (a strand
               in front of an eye, the eye under it, an inner skin); hat, collar and the hidden rest stay. Where the
               new face falls into the head (its build showed no face there) only the figure's front goes, so the
-              back of the head stays whole, and the log says so. The new face reaches a few pixels past the seam
-              and is tucked just behind the figure's surface there, so the
-              figure's cut edge lies over it (Pixal3D's skin and inner wall are one surface, so neither cut gives a
-              clean rim to stitch). The crop's paint is moved to the figure's own just outside the seam, smoothly
+              back of the head stays whole, and that pit takes the figure's own shape, painted by the picture. The
+              new face rises to meet the figure's surface at the seam (a strand standing off it is no target),
+              reaches a few pixels past the seam and is tucked just behind the figure's surface there, so the
+              figure's cut edge lies over it; a strand's cut end still standing over the face is eased down onto
+              it (Pixal3D's skin and inner wall are one surface, so neither cut gives a clean rim to stitch). The crop's paint is moved to the figure's own just outside the seam, smoothly
               across the face (a figure's paint is often lighter or darker than the picture, and the face's outline
-              showed). A rigged figure keeps its skeleton; the new face takes the old face's skin weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
+              showed; read at every pixel just outside the seam). A rigged figure keeps its skeleton; the new face
+              takes the old face's skin weights. Every --also model (the finer ones a game-ready step bakes paint and bumps from, in the same
               frame) gets the same face.
 
 With --region head (a figure with a hat brim, and best with a high collar) the whole head under the brim is built
@@ -482,13 +484,20 @@ def main(argv: list[str] | None = None) -> int:
         target_path.write_bytes(hh.regraft_glb(data, written))
         run.say(f"graft: {target_path.name}: {report}")
         summary["models"][model.name] = {"result": str(target_path), **report}
+        run.say(f"graft: {model.name}: the seam closed: the face rose up to {report['seam_rise_max']:.4f} to meet "
+                f"the figure, the figure's cut edge was eased back up to {report['seam_eased_max']:.4f}, and "
+                f"{report['face_filled_share']:.0%} of the window took the figure's own shape (pits)")
         if report["seam_raised_short"] > 0.1:
             run.flag(f"{model.name}: along {report['seam_raised_short']:.0%} of the seam the figure stands more than "
                      f"{hf.EASE_SHARE * window['width']:.4f} in front of the new face (up to "
-                     f"{report['seam_gap_max']:.4f}): its cut edge hangs over the face there; look at the seam")
+                     f"{report['seam_gap_max']:.4f}): the face could not rise all the way and the figure was eased back "
+                     "onto it there; look at the seam")
+        if report["seam_eased_max"] > hf.EASED_LIMIT_SHARE * window["width"]:
+            run.flag(f"{model.name}: the figure's own surface beside the face was eased back by up to "
+                     f"{report['seam_eased_max']:.4f} (a strand's cut end laid down onto the face): look at the seam")
         if report["off_cliff_share"] > PIT_LIMIT:
             run.flag(f"{model.name}: {report['off_cliff_share']:.0%} of the new face falls into the head where its "
-                     "build showed no face (a pit; the old head behind it stays): look at the face's sides")
+                     "build showed no face (a pit, filled with the figure's own shape): look at the face's sides")
         write_derived_sidecar(model, target_path, operation="hero_face",
                               source_record=record if model == args.model else None,
                               component_records=[r for r in (face_record, upscaled) if r])
