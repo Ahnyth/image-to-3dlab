@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`game_ready.py` caps the glow at 8 % of the figure (`--glow-max-area`) and can keep it on the head
+  (`--glow-only-on-head`).** A glow colour taken from a small accent (a knight's red eye slit) also matched his dark
+  red cape faintly: the soft part of the colour match was never judged by `--glow-max-width`, so 25.8 % of the figure
+  glowed while the report said 0.6 %. The report now counts what visibly glows (`glow_share`); past the cap the glow
+  is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin lines only, dropped) and the
+  log says what was done. When the eyes share their colour with trims on the body, `--glow-only-on-head` keeps the
+  glow on the head's skin alone. Figures under the cap glow exactly as before.
 - **`make_side_views.py` notices a front picture that already shows the side.** A vehicle drawn side-on has its
   profile as the "front"; asked for its right side, the picture engine drew that profile again, and the four-view
   build took a scissor lift's length for its depth too (a near-square footprint). When the drawn side has the

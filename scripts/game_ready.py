@@ -237,6 +237,13 @@ def _width(text: str) -> int:
     return value
 
 
+def _area(text: str) -> float:
+    value = float(text)
+    if not 0.0 < value <= 1.0:
+        raise argparse.ArgumentTypeError("a share above 0 and up to 1 (1 turns the cap off)")
+    return value
+
+
 def _influences(text: str) -> int:
     value = int(text)
     if not 1 <= value <= 8:
@@ -278,6 +285,13 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--glow-max-width", type=_width, default=0,
                         help="texels at 1024: only accents up to this wide glow, so a light line glows and an "
                              "armour plate of the same colour does not (default 0, no limit)")
+    parser.add_argument("--glow-max-area", type=_area, default=0.08,
+                        help="the share of the figure that may glow (default 0.08); a glow past it, mostly a small "
+                             "accent's colour also found on a cape or on skin, is narrowed step by step and dropped "
+                             "if it stays past it, and the report says so; 1 turns the cap off")
+    parser.add_argument("--glow-only-on-head", action="store_true",
+                        help="glow on the head and what hangs from it only: glowing eyes whose colour the body "
+                             "shares (a red eye slit over red trims), which colour alone cannot tell apart")
     parser.add_argument("--glow-not-on-head", action="store_true",
                         help="no glow on the head and what hangs from it (paint on a face stays paint; "
                              "leave it off for a glowing visor)")
@@ -366,7 +380,9 @@ def _to_settings(ns: argparse.Namespace) -> dict:
     s = dict(FIXED)
     s.update(height=ns.height, atlas=ns.atlas, readability=ns.readability, glow=list(ns.glow),
              glow_strength=ns.glow_strength, glow_grow=ns.glow_width, glow_max_width=ns.glow_max_width,
+             glow_max_area=ns.glow_max_area,
              glow_not_on_head=ns.glow_not_on_head, glow_not_on_hands=ns.glow_not_on_hands,
+             glow_only_on_head=ns.glow_only_on_head,
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness, look=ns.look, specular=LOOKS[ns.look],
              decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
@@ -393,7 +409,10 @@ def settings(argv: list[str]) -> dict:
     """The options alone (no file names), as the dict `blender_game_ready.py` reads."""
     parser = argparse.ArgumentParser(prog="game_ready.py")
     add_options(parser)
-    return _to_settings(parser.parse_args(argv))
+    ns = parser.parse_args(argv)
+    if ns.glow_only_on_head and ns.glow_not_on_head:
+        parser.error("--glow-only-on-head and --glow-not-on-head ask for opposite things")
+    return _to_settings(ns)
 
 
 # --- colour -----------------------------------------------------------------------------------
@@ -589,6 +608,61 @@ def thin_only(mask, max_width: float):
     return mask * (1.0 - dilate(shrunk, r + 1))
 
 
+GLOW_CAP_STEPS = ("only beside a solid accent", "a closer hue", "thin lines only", "dropped")
+GLOW_FAINT_REACH = 2        # cap step 1: a faint match glows only this many texels from a solid one (a line's soft edge)
+GLOW_CLOSE_HUE = {"lo": 0.10, "hi": 0.30, "max_angle": 15.0}  # cap step 2: a stronger, closer match of the hue
+GLOW_THIN = 2               # cap step 3: only accents up to this many texels wide (at 1024) glow
+GLOW_SEEN = 0.1             # a texel whose glow weight passes this counts as glowing (x3 strength: plainly visible)
+
+
+def _hex(colour) -> str:
+    return "#" + "".join(f"{round(x * 255):02x}" for x in colour)
+
+
+def glow_masks(a_s, inside, keep, s: dict, thin_scale: float, steps: list[int]):
+    """One glow mask per `--glow` colour, each narrowed as far as its step on the cap's ladder (0: as asked;
+    see GLOW_CAP_STEPS), and the bright/dark splits for the report."""
+    masks, splits = [], {}
+    for c, step in zip(s["glow"], steps):
+        if step >= len(GLOW_CAP_STEPS):
+            masks.append(np.zeros(inside.shape))
+            continue
+        raw = accent_mask(a_s, c, **(GLOW_CLOSE_HUE if step >= 2 else {})) * inside
+        if step >= 1:
+            # accent_mask is soft: a dark cape near the hue of a red eye matches at 0.3-0.5 all over, too little to
+            # count as an accent and to be judged by thin_only, but it glowed (the black knight, D274 of the
+            # AssetFurnace Support notes)
+            raw = raw * dilate((raw > 0.5).astype(float), GLOW_FAINT_REACH)
+        width = s["glow_max_width"] * thin_scale
+        if step >= 3:
+            width = min(width, GLOW_THIN * thin_scale) if width > 0 else GLOW_THIN * thin_scale
+        # split only what would glow: the thin lines left after the wide parts (a face, a plate) and the head are out
+        m, split = glow_only_bright(thin_only(raw, width) * keep, a_s, inside, s)
+        if split is not None:
+            splits[_hex(c)] = split
+        masks.append(m)
+    return masks, splits
+
+
+def glow_weight(m, grow: int, keep):
+    """(the accent widened by `grow` texels, its soft halo): how strongly each texel glows, 0..1 each."""
+    grown = np.clip(np.maximum(box_blur(dilate(m, grow), 1), m), 0.0, 1.0) * keep
+    halo = box_blur(dilate(m, grow + 2), 2) * 0.20 * keep  # widening never crosses onto the head
+    return grown, halo
+
+
+def glow_share(masks, grow: int, keep, inside) -> float:
+    """The share of the figure's texels that visibly glow, faint parts included: what a player sees, and what
+    ArcherSoul counted on the knight (25 %) where `accent_share` said 1 %."""
+    if not masks or not inside.any():
+        return 0.0
+    weight = np.zeros(inside.shape)
+    for m in masks:
+        grown, halo = glow_weight(m, grow, keep)
+        weight = np.maximum(weight, np.broadcast_to(grown + halo * (1 - grown), inside.shape))
+    return float((weight[inside] > GLOW_SEEN).mean())
+
+
 def compose(alb_lin, lit, cov, s: dict, exclude=None):
     """The atlas colours from the bakes: (albedo sRGB, emission sRGB or None, numbers).
 
@@ -604,21 +678,32 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None):
     body = s.get("body_texels_per_cm")
     thin_scale = body / s["glow_ref_texels_per_cm"] if body else scale
     keep = 1.0 if exclude is None else 1.0 - smoothstep(0.2, 0.5, exclude)
-    masks, splits = [], {}
-    for c in s["glow"]:
-        # split only what would glow: the thin lines left after the wide parts (a face, a plate) and the head are out
-        m, split = glow_only_bright(thin_only(accent_mask(a_s, c) * inside, s["glow_max_width"] * thin_scale) * keep,
-                                    a_s, inside, s)
-        if split is not None:
-            splits["#" + "".join(f"{round(x * 255):02x}" for x in c)] = split
-        masks.append(m)
+    if s.get("glow_only_on_head"):
+        keep = 0.0 if exclude is None else smoothstep(0.2, 0.5, exclude)
+    grow = int(round(s["glow_grow"] * scale))
+    steps = [0] * len(s["glow"])
+    masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps)
+    share = before = glow_share(masks, grow, keep, inside)
+    cap = s.get("glow_max_area", 1.0)
+    while cap < 1.0 and share > cap:  # narrow the colour that lights most, one step at a time
+        live = [i for i, step in enumerate(steps) if step < len(GLOW_CAP_STEPS)]
+        if not live:
+            break
+        worst = max(live, key=lambda i: glow_share([masks[i]], grow, keep, inside))
+        steps[worst] += 1
+        masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps)
+        share = glow_share(masks, grow, keep, inside)
     found = np.max(masks, axis=0) if masks else np.zeros(inside.shape)
     grey = inside & (found < 0.1)
     lum = a_s.mean(-1)
     stats = {"island_share": float(inside.mean()),
              "lightness_before": _percentiles(lum[grey]),
              "accent_share": float((found[inside] > 0.5).mean()) if inside.any() else 0.0,
-             "glow_split": splits}
+             "glow_split": splits, "glow_share": share}
+    if any(steps):
+        stats["glow_cap"] = {"before": before, "after": share, "cap": cap,
+                             "steps": {_hex(c): GLOW_CAP_STEPS[step - 1]
+                                       for c, step in zip(s["glow"], steps) if step}}
     t = auto_readability(a_s, grey) if s["readability"] == "auto" else float(s["readability"])
     stats["readability"] = t
     stats["readability_pivot"] = readability_pivot(a_s, grey, t)
@@ -629,13 +714,11 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None):
         shade = s["shade_lo"] + (s["shade_hi"] - s["shade_lo"]) * np.clip(box_blur(filled[..., 0], 1) / max(ref, 1e-6), 0, 1)
         v = np.clip(v * shade[..., None], 0.0, 1.0)
     emission = None
-    if masks:
+    if masks and share > 0:
         emission = np.zeros_like(v)
-        grow = int(round(s["glow_grow"] * scale))
         for colour, m in zip(s["glow"], masks):
             col = np.asarray(colour, float)
-            grown = np.clip(np.maximum(box_blur(dilate(m, grow), 1), m), 0.0, 1.0) * keep
-            halo = box_blur(dilate(m, grow + 2), 2) * 0.20 * keep  # widening never crosses onto the head
+            grown, halo = glow_weight(m, grow, keep)
             v = v * (1 - grown[..., None]) + col * grown[..., None]
             v = np.clip(v + col * (halo * (1 - grown))[..., None] * 0.35, 0.0, 1.0)
             emission = np.maximum(emission, col * np.clip(grown + halo * (1 - grown), 0.0, 1.0)[..., None])
@@ -1010,7 +1093,10 @@ def hand_bones(parents: dict[str, str | None], unity_names: dict[str, str]) -> l
 
 def glow_off_bones(parents: dict[str, str | None], unity_names: dict[str, str], s: dict) -> list[str]:
     """The bones whose skin keeps no glow: the head's with `--glow-not-on-head`, the hands' with
-    `--glow-not-on-hands` (a figure whose glowing hands read as too big and odd, D980 of ArcherSoul's notes)."""
+    `--glow-not-on-hands` (a figure whose glowing hands read as too big and odd, D980 of ArcherSoul's notes).
+    With `--glow-only-on-head` the head's, and `compose` turns that area round: the glow stays inside it."""
+    if s.get("glow_only_on_head"):  # the head's skin is baked the same way; compose keeps the glow inside it
+        return head_bones(parents, unity_names)
     out = head_bones(parents, unity_names) if s.get("glow_not_on_head") else []
     if s.get("glow_not_on_hands"):
         out += [b for b in hand_bones(parents, unity_names) if b not in out]
@@ -1409,6 +1495,17 @@ def engine_vertices(vertex, normal, uv) -> int:
     return len(np.unique(keys, axis=0))
 
 
+def glow_note(colour: dict) -> str | None:
+    """One line on what glows, in plain words, when the glow cap had to narrow it (None otherwise)."""
+    cap = colour.get("glow_cap")
+    if not cap:
+        return None
+    what = ", ".join(f"{c}: {step}" for c, step in cap["steps"].items())
+    return (f"glow: it lit {cap['before']:.1%} of the figure, past the {cap['cap']:.0%} cap (an accent's colour found "
+            f"on large parts too), so it was narrowed ({what}): {cap['after']:.1%} glows now; --glow-max-area 1 "
+            "keeps it as asked, --glow-only-on-head keeps glowing eyes alone")
+
+
 def problems(report: dict, max_influences: int, height: float) -> list[str]:
     """What a game engine would still trip over, in plain words; empty when there is nothing."""
     out = []
@@ -1583,6 +1680,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
           f"height {report['height']:.2f} m, {len(report['clips'])} move(s)")
     for line in report["problems"] or ["ready: nothing an engine would trip over"]:
         print("  " + line)
+    glow = glow_note(report.get("colour") or {})
+    if glow:
+        print("  " + glow)
     print(f"wrote {args.output} and {out_report.name}")
     return 0
 
