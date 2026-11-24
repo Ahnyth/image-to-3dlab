@@ -709,7 +709,11 @@ def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap
     width. Eyes and a visor slit are compact patches of the glow's own colour, not lines: the width gate took the
     warden's eyes for plates and the soft match lit his cheeks and nape (skin 0.3-0.75 like his eye orange; 19 of
     10,807 glowing texels were eye, round 27 of the AssetFurnace Support notes). Past the cap it narrows as the body."""
-    masks = [(accent_mask(a_s, c, **GLOW_CLOSE_HUE) > 0.5) * inside * head_keep for c in s["glow"]]
+    masks = []
+    for c in s["glow"]:
+        close = accent_mask(a_s, c, **GLOW_CLOSE_HUE) * inside
+        # the soft edge only right at the solid core, so a slit's edge is not a hard staircase (round 27's reviewer)
+        masks.append(close * dilate((close > 0.5).astype(float), GLOW_FAINT_REACH) * head_keep)
     share = glow_share(masks, grow, head_keep, inside)
     if cap < 1.0 and share > cap:
         return narrowed_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
