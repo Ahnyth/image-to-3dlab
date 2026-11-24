@@ -63,6 +63,12 @@ STAGE_HOURS = 4.0           # a stage that runs longer is stopped (a build hung)
 LOCK_MINUTES = 90.0         # how long a GPU step waits for the card
 
 
+def feet_off(game: list[str]) -> list[str]:
+    """Game-ready options that leave the feet as they are (new boots stand on the floor the picture shows; a foot cut
+    measured on the old feet would cut into them)."""
+    return game if hc.option_value(game, "--feet") in (None, "off") else hc.with_option(game, "--feet", "off")
+
+
 def split_args(argv: list[str]) -> tuple[list[str], list[str]]:
     """(the chain's own arguments, game_ready's options after `--`)."""
     if "--" in argv:
@@ -234,7 +240,7 @@ class Chain:
             views = self.views(models)
             if views is None:
                 return hc.Stage(name, "skipped", "no cameras of the figure's Pixal3D run were found to look for a band "
-                                                 "in (give --views)")
+                                                 "in (give --views)"), None
             given["views"], given["boxes"] = views, self.args.box or []
         inputs = [*models.all(), self.args.picture] + ([Path(given["views"]) / "transforms.json"]
                                                        if given.get("views") else [])
@@ -243,7 +249,8 @@ class Chain:
         record = folder / "stage.json"
         if record.is_file():
             kept = json.loads(record.read_text(encoding="utf-8"))
-            if kept.get("fingerprint") == fingerprint and kept.get("result", {}).get("status"):
+            if kept.get("fingerprint") == fingerprint and kept.get("result", {}).get("status") in (
+                    "kept", "dropped", "skipped"):
                 result = kept["result"]
                 outputs_there = all(Path(p).exists() for p in result.get("outputs", []))
                 if outputs_there:
@@ -252,7 +259,7 @@ class Chain:
                                     result.get("seconds", 0.0), result.get("models", {}),
                                     [tuple(p) for p in result.get("pictures", [])])
                     return done, (hc.Models.from_dict(done.models) if done.status == "kept" else None)
-            if kept.get("fingerprint") != fingerprint:
+            elif kept.get("fingerprint") != fingerprint:
                 aside = folder.with_name(folder.name + "_before")
                 shutil.rmtree(aside, ignore_errors=True)
                 folder.rename(aside)
@@ -269,6 +276,8 @@ class Chain:
 
     def run_stage(self, name: str, models: hc.Models, folder: Path, given: dict,
                   game: list[str]) -> tuple[hc.Stage, hc.Models | None]:
+        if name == "boots":                   # new boots stand on the floor already: no foot cut in their pose check
+            game = feet_off(game)
         command = stage_command(name, models, self.args.picture, folder, given)
         log = folder / "stage.log"
         code = self.call(command, log, name, gpu=name in GPU_STAGES)
@@ -448,8 +457,8 @@ def main(argv: list[str] | None = None) -> int:
         run.say(f"{stage_name}: {hc.STATUS_WORDS[result.status]}: {result.why}")
         if after is not None:
             models = after
-            if stage_name == "boots" and hc.option_value(game, "--feet") not in (None, "off"):
-                game = hc.with_option(game, "--feet", "off")
+            if stage_name == "boots" and feet_off(game) != game:
+                game = feet_off(game)
                 run.say("game: --feet off (the new boots stand on the floor the picture shows)")
 
     stage(run, "game", "The game-ready step")

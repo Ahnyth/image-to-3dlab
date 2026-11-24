@@ -160,3 +160,11 @@ def test_the_models_kept_by_a_stage_are_read_back_as_they_were_written():
     models = ch.Models(Path("C:/f/rig.glb"), ch.game_models(GAME))
     again = ch.Models.from_dict(json.loads(json.dumps(models.as_dict())))
     assert again.rig == models.rig and again.finer == models.finer
+
+
+def test_new_boots_keep_their_feet_in_the_game_ready_step():
+    import hero_chain
+
+    assert ch.option_value(hero_chain.feet_off(GAME), "--feet") == "off"
+    plain = ["--height", "1.8"]
+    assert hero_chain.feet_off(plain) == plain
