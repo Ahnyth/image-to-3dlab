@@ -1395,3 +1395,16 @@ def test_the_log_says_when_the_glow_was_narrowed():
                                       "steps": {"#da294c": "only beside a solid accent"}}})
     assert "25.8%" in note and "6.0%" in note and "#da294c: only beside a solid accent" in note
     assert "--glow-max-area 1" in note and "--glow-only-on-head" in note
+
+
+def test_a_glow_only_on_the_head_leaves_the_necks_shared_skin_out():
+    # the warden's neck and collarbone under his mask are weighted to the head in part: with the head's glow there, an
+    # orange patch glowed below the mask (the second reviewer, 2026-11-24); only skin plainly the head's glows
+    alb, lit, cov = _cape_atlas()
+    alb[30, 44:60] = gr.to_linear(np.array((0.855, 0.161, 0.298)))   # the eye's red on the neck too
+    head = np.zeros(cov.shape)
+    head[14:26, 40:64] = 1.0                                          # the head
+    head[28:33, 40:64] = 0.6                                          # the neck, partly the head's
+    s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-only-on-head"])
+    _, emission, _ = gr.compose(alb, lit, cov, s, exclude=head)
+    assert emission[20, 52].max() > 0.5 and emission[30, 52].max() < 0.05

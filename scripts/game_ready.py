@@ -678,8 +678,8 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None):
     body = s.get("body_texels_per_cm")
     thin_scale = body / s["glow_ref_texels_per_cm"] if body else scale
     keep = 1.0 if exclude is None else 1.0 - smoothstep(0.2, 0.5, exclude)
-    if s.get("glow_only_on_head"):
-        keep = 0.0 if exclude is None else smoothstep(0.2, 0.5, exclude)
+    if s.get("glow_only_on_head"):   # only skin plainly the head's: a neck weighted to it in part glowed under a mask
+        keep = 0.0 if exclude is None else smoothstep(0.75, 0.95, exclude)
     grow = int(round(s["glow_grow"] * scale))
     steps = [0] * len(s["glow"])
     masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps)
