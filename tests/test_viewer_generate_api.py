@@ -2361,3 +2361,16 @@ def test_the_rig_upload_reads_the_bone_names_choice_and_refuses_an_unknown_one()
     rig = source[source.index("def _create_animate_rig"):source.index("def _create_animate_play")]
     assert "bone_names_choice(form)" in rig and "bone_names=" in rig
     assert "except ValueError" in rig
+
+
+def test_pixal3d_draws_the_sides_only_with_a_back(tmp_path):
+    # Create's "draw the sides" for a prop (#245 (a)): the 3D step draws them before it builds
+    settings = api._pixal3d_validate_settings({"sides": True})
+    assert settings["sides"] is True
+    assert api._pixal3d_validate_settings({})["sides"] is False
+    settings["back_name"] = "back.png"
+    job = api.Job("0" * 32, tmp_path, tmp_path / "input.png", tmp_path / "model.glb", settings, "pixal3d")
+    assert "--draw-sides" in api._pixal3d_build_args(job)
+    with pytest.raises(ValueError):
+        api._pixal3d_validate_settings({"sides": "yes please"})
+    assert api.sides_problem({"sides": True}) and api.sides_problem({"sides": True, "back_name": "back.png"}) is None

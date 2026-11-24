@@ -19,6 +19,13 @@ side without open space under the body is drawn again with the next seed, up to 
 pictures, and the first one whose legs stand apart is kept (else the one with the most open
 space, named in the output). The prompt stays the same: naming the legs would summon more.
 
+A front picture that already shows its subject from the side (a vehicle drawn side-on) is caught:
+asked for its right side, the engine draws that profile again, and the build would take the
+subject's length for its depth too. When the drawn side has the front's outline
+(`back_view.same_view`), its end is drawn (`back_view.END_PROMPT`) and kept when it differs; when
+the end comes back alike too, the subject looks alike from every side (a round slime) and the side
+stands.
+
 The prompt and the reference rules live in `image_to_3dlab/back_view.py`.
 """
 
@@ -53,10 +60,18 @@ def reference_for(front: Path, destination: Path) -> Path:
 
 
 def command_for(reference: Path, right: Path, seed: int, weights: dict[str, Path], vision: Path | None,
-                engine, binary: Path = image_api.BINARY) -> list[str]:
+                engine, binary: Path = image_api.BINARY, prompt: str = back_view.SIDE_PROMPT) -> list[str]:
     settings = image_api.clean_settings({"seed": seed}, engine=engine)
-    return image_api.build_command(back_view.SIDE_PROMPT, settings, right, weights, binary=binary,
+    return image_api.build_command(prompt, settings, right, weights, binary=binary,
                                    reference=reference, vision=vision, engine=engine)
+
+
+def drawn_as_front(front: Path, picture: Path) -> float | None:
+    """How alike the drawn picture's outline is to the front's (`back_view.same_view`) when it is one view drawn
+    twice (at least SAME_VIEW alike), else None."""
+    with Image.open(front) as a, Image.open(picture) as b:
+        alike = back_view.same_view(a, b)
+    return alike if alike >= back_view.SAME_VIEW else None
 
 
 def draw_side(front: Path, out: Path, args, weights, vision, engine) -> tuple:
@@ -65,15 +80,40 @@ def draw_side(front: Path, out: Path, args, weights, vision, engine) -> tuple:
     reference = reference_for(front, out.with_name(f"{out.stem}__reference.png"))
     tries = max(1, args.tries) if args.four_legged else 1
     best = None   # (measure, problems, seed, picture)
+    prompt = back_view.SIDE_PROMPT
     n = 0
     for n in range(tries):
         seed = args.seed + n
         pic = out if tries == 1 else out.with_name(f"{out.stem}__try{n}{out.suffix}")
-        command = command_for(reference, pic, seed, weights, vision, engine)
+        command = command_for(reference, pic, seed, weights, vision, engine, prompt=prompt)
         result = subprocess.run(command, capture_output=True, text=True, cwd=str(REPO), check=False)
         if result.returncode or not pic.exists():
             print((result.stdout + result.stderr)[-1500:])
             return None
+        # compared with the cut-out on grey, not the front itself: a front's floor and shadow lowered the scissor
+        # lift's likeness from 0.89 to 0.80
+        seen = reference if reference.exists() else front
+        alike = drawn_as_front(seen, pic) if prompt == back_view.SIDE_PROMPT else None
+        if alike is not None:
+            # one view drawn twice: either the front picture shows the subject side-on already (a vehicle), and its
+            # turned view is its end, or the subject looks alike from every side (a round slime, 0.94)
+            end = pic.with_name(f"{pic.stem}__end{pic.suffix}")
+            command = command_for(reference, end, seed + 1, weights, vision, engine, prompt=back_view.END_PROMPT)
+            result = subprocess.run(command, capture_output=True, text=True, cwd=str(REPO), check=False)
+            if result.returncode or not end.exists():
+                print((result.stdout + result.stderr)[-1500:])
+                return None
+            again = drawn_as_front(seen, end)
+            if again is None:
+                print(f"[side-views] {out.name} seed {seed}: the drawn side had the front's outline ({alike:.0%} "
+                      "alike): the front picture shows the subject from its side already, so its end is kept instead",
+                      flush=True)
+                end.replace(pic)
+                prompt = back_view.END_PROMPT
+            else:
+                print(f"[side-views] {out.name} seed {seed}: its end has the front's outline too ({again:.0%} alike): "
+                      "the subject looks alike from every side, so the side as drawn is kept", flush=True)
+                end.unlink()
         if not args.four_legged:
             best = (None, [], seed, pic)
             break
@@ -92,7 +132,7 @@ def draw_side(front: Path, out: Path, args, weights, vision, engine) -> tuple:
     if args.four_legged and found:
         print(f"[side-views] the legs still touch after {tries} pictures; kept seed {seed}: {found[0]}. "
               "Draw the side yourself or try other seeds before building.", flush=True)
-    return measure, found, seed, n + 1
+    return measure, found, seed, n + 1, prompt
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,11 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     drawn = draw_side(args.front, args.right, args, weights, vision, engine)
     if drawn is None:
         return 1
-    measure, found, seed, pictures = drawn
+    measure, found, seed, pictures, prompt = drawn
     seconds = time.time() - started
-    record = image_api.provenance(back_view.SIDE_PROMPT, image_api.clean_settings({"seed": seed}, engine=engine),
+    record = image_api.provenance(prompt, image_api.clean_settings({"seed": seed}, engine=engine),
                                   seconds, args.right, engine=engine)
-    record["reference"] = {"front": str(args.front), "mode": "edit (right side)"}
+    record["reference"] = {"front": str(args.front), "mode": "edit (right side)" if prompt == back_view.SIDE_PROMPT
+                           else "edit (its end: the front showed the subject side-on)"}
     if measure is not None:
         record["legs"] = {"open_under_body": measure["open_under_body"], "problems": found, "pictures_drawn": pictures}
     write_provenance(args.right.with_suffix(".provenance.json"), record)
@@ -144,11 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         drawn = draw_side(mirrored_front, drawn_left, args, weights, vision, engine)
         if drawn is None:
             return 1
-        measure, found, seed, pictures = drawn
+        measure, found, seed, pictures, prompt = drawn
         with Image.open(drawn_left) as picture:
             back_view.mirror_side(picture).save(args.left)
         drawn_left.unlink()
-        record = image_api.provenance(back_view.SIDE_PROMPT, image_api.clean_settings({"seed": seed}, engine=engine),
+        record = image_api.provenance(prompt, image_api.clean_settings({"seed": seed}, engine=engine),
                                       time.time() - started - seconds, args.left, engine=engine)
         record["reference"] = {"front": str(args.front), "mode": "edit (left side), drawn from the mirrored front"}
         if measure is not None:

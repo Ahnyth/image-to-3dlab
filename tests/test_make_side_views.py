@@ -188,3 +188,71 @@ def test_draw_left_draws_the_left_side_from_the_mirrored_front(monkeypatch, tmp_
     # the left picture is the drawing mirrored back: it faces left
     assert tuple(np.asarray(Image.open(left))[0, 0]) == (10, 10, 200)
     assert "drawn from the mirrored front" in left.with_suffix(".provenance.json").read_text()
+
+
+# --- a front picture that already shows the subject's side (2026-11-24) ----------------------------------------------
+
+def _box_png(path: Path, width: int, height: int = 60, size: tuple = (200, 200)) -> None:
+    """A dark box on the light grey ground the prompts ask for: a long one is a vehicle seen side-on."""
+    rgb = np.full((size[1], size[0], 3), 236, dtype=np.uint8)
+    x0, y0 = (size[0] - width) // 2, (size[1] - height) // 2
+    rgb[y0:y0 + height, x0:x0 + width] = (200, 160, 20)
+    Image.fromarray(rgb).save(path)
+
+
+def test_same_view_tells_the_same_outline_from_a_turned_one(tmp_path):
+    long, same, end = tmp_path / "long.png", tmp_path / "same.png", tmp_path / "end.png"
+    _box_png(long, 180)
+    _box_png(same, 176)
+    _box_png(end, 50)
+    alike = msv.back_view.same_view
+    assert alike(Image.open(long), Image.open(same)) >= msv.back_view.SAME_VIEW
+    assert alike(Image.open(long), Image.open(end)) < msv.back_view.SAME_VIEW
+    assert alike(Image.open(long), Image.new("RGB", (40, 40), (236, 236, 236))) == 0.0   # nothing stands out
+
+
+def _end_drawer(monkeypatch, front: Path, end_width: int, calls: list):
+    monkeypatch.setattr(msv.image_api, "pick_engine", lambda *a, **k: msv.image_api.FLUX)
+    monkeypatch.setattr(msv.image_api, "resolve_weights", lambda *a: WEIGHTS)
+    monkeypatch.setattr(msv, "reference_for", lambda f, d: (Image.open(f).save(d), d)[1])
+
+    def fake_run(command, **kw):
+        prompt = command[command.index("-p") + 1]
+        calls.append(prompt)
+        # asked for its side, the engine draws the side-on front again; asked for its end, a box END_WIDTH wide
+        _box_png(Path(command[command.index("-o") + 1]), 178 if prompt == msv.back_view.SIDE_PROMPT else end_width)
+
+        class Done:
+            returncode, stdout, stderr = 0, "", ""
+        return Done()
+
+    monkeypatch.setattr(msv.subprocess, "run", fake_run)
+
+
+def test_a_side_drawn_as_the_front_again_is_drawn_as_the_end_instead(monkeypatch, tmp_path, capsys):
+    # the scissor lift's picture showed it side-on; asked for its right side, klein drew the same view, and the
+    # four-view build took its length for its depth too (a near-square footprint, 2026-11-24)
+    front = tmp_path / "front.png"
+    _box_png(front, 180)
+    calls = []
+    _end_drawer(monkeypatch, front, 50, calls)
+    right, left = tmp_path / "right.png", tmp_path / "left.png"
+    assert msv.main([str(front), str(right), str(left)]) == 0
+    assert calls == [msv.back_view.SIDE_PROMPT, msv.back_view.END_PROMPT]
+    assert msv.back_view.same_view(Image.open(front), Image.open(right)) < msv.back_view.SAME_VIEW
+    record = right.with_suffix(".provenance.json").read_text()
+    assert "end" in record and "front picture shows the subject from its side" in capsys.readouterr().out
+
+
+def test_a_subject_alike_from_every_side_keeps_its_side(monkeypatch, tmp_path, capsys):
+    # a round slime has the same outline from the front, the side and the end (0.94 alike): its side stands
+    front = tmp_path / "front.png"
+    _box_png(front, 180)
+    calls = []
+    _end_drawer(monkeypatch, front, 179, calls)
+    right = tmp_path / "r.png"
+    assert msv.main([str(front), str(right), str(tmp_path / "l.png")]) == 0
+    assert calls == [msv.back_view.SIDE_PROMPT, msv.back_view.END_PROMPT]
+    assert msv.back_view.silhouette(Image.open(right))[0].shape and not list(tmp_path.glob("*__end*"))
+    assert "edit (right side)" in right.with_suffix(".provenance.json").read_text()
+    assert "alike from every side" in capsys.readouterr().out

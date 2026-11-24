@@ -17,6 +17,7 @@ two pictures through cameras exactly half a turn apart.
 
 from __future__ import annotations
 
+import numpy as np
 from PIL import Image
 
 BACK_PROMPT = (
@@ -46,6 +47,24 @@ SIDE_PROMPT = (
     "lighting, plain light grey background."
 )
 
+# A picture that already shows its subject from the side (a vehicle drawn side-on, as Create asks for
+# one) has its profile as the "front": asked for its right side, the engine draws that same profile
+# again, and the four-view build takes the subject's length for its depth too. The scissor lift of
+# 2026-11-24 came out with a near-square footprint that way. Its turned view is then its end.
+END_PROMPT = (
+    "The front view from a turnaround sheet of the same subject as in the reference image, which "
+    "shows it from its side: seen exactly head-on from its front end, its front facing the camera, "
+    "its length running straight away from the camera so that only its width shows, nothing of its "
+    "side visible. Same proportions, same size and same height in the frame. Keep the colours, "
+    "materials and design consistent with the reference. Flat even lighting, plain light grey "
+    "background."
+)
+
+# Two outlines this alike (`same_view`) are one view drawn twice, not a turn.
+SAME_VIEW = 0.85
+SILHOUETTE = 96         # outlines are compared at this many pixels square
+GROUND_STEP = 30        # a pixel this far from the ground's colour (any channel) belongs to the subject
+
 # The backdrop the reference is laid on: light grey, like the backgrounds our prompts ask for.
 GREY = 236
 
@@ -64,3 +83,35 @@ def reference_on_grey(cut_out: Image.Image) -> Image.Image:
     rgba = cut_out.convert("RGBA")
     backdrop = Image.new("RGBA", rgba.size, (GREY, GREY, GREY, 255))
     return Image.alpha_composite(backdrop, rgba).convert("RGB")
+
+
+def silhouette(picture: Image.Image) -> tuple[np.ndarray, float] | None:
+    """The subject's outline in PICTURE, cropped to its box and scaled to SILHOUETTE square, with
+    the box's width over its height; None when nothing stands out. A cut-out's alpha says what the
+    subject is; otherwise what differs from the ground, the border's median colour, by GROUND_STEP."""
+    if picture.mode in ("RGBA", "LA") and np.asarray(picture.getchannel("A")).min() < 128:
+        mask = np.asarray(picture.getchannel("A")) > 127
+    else:
+        rgb = np.asarray(picture.convert("RGB"), dtype=np.int16)
+        border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
+        mask = np.abs(rgb - np.median(border, axis=0)).max(axis=-1) > GROUND_STEP
+    if mask.sum() < 16:
+        return None
+    rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
+    box = mask[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+    square = Image.fromarray(box.astype(np.uint8) * 255).resize((SILHOUETTE, SILHOUETTE), Image.Resampling.NEAREST)
+    return np.asarray(square) > 127, box.shape[1] / box.shape[0]
+
+
+def same_view(a: Image.Image, b: Image.Image) -> float:
+    """How alike two pictures' outlines are, 0 to 1: the overlap of their silhouettes (B as it is or
+    mirrored, whichever fits better) times how alike their boxes' width-to-height ratios are. A side
+    drawn from a front that already showed the side scores near 1; a true turn scores low."""
+    found_a, found_b = silhouette(a), silhouette(b)
+    if found_a is None or found_b is None:
+        return 0.0
+    (mask_a, ratio_a), (mask_b, ratio_b) = found_a, found_b
+
+    def overlap(m):
+        return (mask_a & m).sum() / max((mask_a | m).sum(), 1)
+    return float(max(overlap(mask_b), overlap(mask_b[:, ::-1])) * min(ratio_a, ratio_b) / max(ratio_a, ratio_b))

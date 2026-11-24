@@ -542,7 +542,7 @@ def test_list_assets_rows_say_their_family_and_version(studio):
 def test_options_lists_the_main_and_every_advanced_knob():
     out = ms.options()
     assert set(out["advanced"]) == {"edge_fade", "nudge", "cleanup", "texture_size", "surface_maps", "rig_from", "bone_names", "speed", "arms_away",
-                                    "in_place", "keep_everything", "height_m", "upright"}
+                                    "in_place", "keep_everything", "draw_sides", "height_m", "upright"}
     assert all("what" in spec and "default" in spec and "step" in spec for spec in out["advanced"].values())
     assert {"finish_detail", "pixel_match", "move"} <= set(out["main"])
 
@@ -556,7 +556,8 @@ def test_every_studio_control_has_an_mcp_twin():
             "edgefade": "edge_fade", "nudge": "nudge", "cleanup": "cleanup", "texture": "texture_size",
             "surface": "surface_maps", "rigsource": "rig_from",
             "speed": "speed", "spread": "arms_away", "keep": "keep_everything", "inplace": "in_place",
-            "picengine": "picture_engine", "change": "back_change", "height": "height_m", "upright": "upright", "bonenames": "bone_names"}
+            "picengine": "picture_engine", "change": "back_change", "height": "height_m", "upright": "upright", "bonenames": "bone_names",
+            "sides": "draw_sides"}
     missing = sorted(controls - set(twin))
     assert not missing, f"Studio controls with no MCP twin: {missing}. Add them to ADVANCED (or main) and here."
     known = set(ms.ADVANCED) | set(ms.options()["main"]) | {"description"}

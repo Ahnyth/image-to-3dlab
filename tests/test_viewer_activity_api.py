@@ -657,6 +657,21 @@ def test_a_rig_with_bone_names_sends_the_choice(tmp_path):
     assert b'name="bone_names"' in rig_body and b"unity" in rig_body
 
 
+def test_a_prop_with_drawn_sides_asks_the_3d_step_for_them(tmp_path):
+    runner, jobs = _runner(tmp_path)
+    for name in ("l.png", "l_back.png"):
+        (tmp_path / "images" / "l").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "images" / "l" / name).write_bytes(b"PNG")
+    chain = aa.Chain(title="lift", want="prop", steps=["model"], engine="pixal3d", draw_sides=True,
+                     made={"picture": "images/l/l.png", "back": "images/l/l_back.png"})
+    runner.submit(chain, background=False)
+    body = next(b for m, p, b in jobs.calls if p == "/api/generate")
+    assert b'"sides": true' in body
+    form = {"title": {"value": "lift"}, "steps": {"value": '["model"]'}, "want": {"value": "prop"},
+            "draw_sides": {"value": "1"}}
+    assert aa.chain_from_form(form).draw_sides is True
+
+
 def test_the_plan_form_carries_only_known_rig_settings():
     form = {"title": {"value": "k"}, "steps": {"value": '["rigged"]'},
             "made": {"value": '{"finished": "finish/k/k_8k.glb"}'},

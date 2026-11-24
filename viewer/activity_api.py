@@ -106,6 +106,7 @@ class Chain:
     back_settings: dict[str, Any] = field(default_factory=dict)      # a back redraw: seed, what to change
     model_seed: int | None = None                                    # a fresh 3D try each time; None = engine default
     keep_everything: bool = False                                    # the 3D step keeps its textures, meshes, caches
+    draw_sides: bool = False                                         # a prop's 3D step draws its sides first (4 views)
     finish_settings: dict[str, Any] = field(default_factory=dict)    # detail and Pixel Match (the finish job checks them)
     move_settings: dict[str, Any] = field(default_factory=dict)      # speed, arm_spread, in_place (the animate job checks them)
     rig_settings: dict[str, Any] = field(default_factory=dict)       # bone_names (the rig job checks it)
@@ -405,6 +406,8 @@ class ChainRunner:
             files = {"image": self._picture(chain)}
             if chain.made.get("back") and chain.engine in FRONT_BACK_ENGINES:
                 files["back"] = self._file(chain.made["back"])
+                if chain.draw_sides:   # the depth of a vehicle or machine drawn side-on is drawn, not guessed
+                    settings["sides"] = True
             body, ctype = multipart({"settings": json.dumps(settings)}, files)
             return kind, self._post("/api/generate", body, ctype)
         if step == "finished":
@@ -559,6 +562,7 @@ def chain_from_form(form: dict[str, dict[str, Any]]) -> Chain:
         if isinstance(picture, dict) else {},
         model_seed=int(text("model_seed")) if (text("model_seed") or "").isdigit() else None,
         keep_everything=text("keep_everything") in ("1", "true"),
+        draw_sides=text("draw_sides") in ("1", "true"),
         finish_settings={k: finish[k] for k in FINISH_KEYS if k in finish} if isinstance(finish, dict) else {},
         move_settings={k: move[k] for k in MOVE_KEYS if k in move} if isinstance(move, dict) else {},
         rig_settings={k: rig[k] for k in RIG_KEYS if k in rig} if isinstance(rig, dict) else {},

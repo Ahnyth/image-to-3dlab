@@ -442,25 +442,28 @@ def head_weights(ob, head: list[str]) -> np.ndarray:
     return gr.head_share(W, columns, head or [])
 
 
-def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
-    """Collapse-thin to `decimate_to` triangles; the head's vertices resist by `head_protect`."""
+def decimate_with_head(ob, s: dict, head: list[str], hands: list[str] | None = None) -> dict:
+    """Collapse-thin to `decimate_to` triangles; the head's vertices resist by `head_protect`, with HANDS (and
+    `hand_protect`) the hands' too (`game_ready.protect_weights`)."""
     me = ob.data
     me.calc_loop_triangles()
     before = len(me.loop_triangles)
     ratio = gr.decimate_ratio(before, s["decimate_to"])
     if ratio >= 1.0:
         return {"decimated": [before, before]}
-    share = head_weights(ob, head)
+    hand_share = head_weights(ob, hands) if hands and s.get("hand_protect", 0.0) > 0 else None
+    share, strength = gr.protect_weights(head_weights(ob, head), hand_share, s["head_protect"],
+                                         s.get("hand_protect", 0.0))
     mod = ob.modifiers.new("gr_decimate", "DECIMATE")
     mod.decimate_type = "COLLAPSE"
     mod.ratio = ratio
     mod.use_collapse_triangulate = True
-    if s["head_protect"] > 0 and share.any():
+    if strength > 0 and share.any():
         group = ob.vertex_groups.new(name="gr_head_protect")
         for i in np.nonzero(share)[0]:
             group.add([int(i)], float(share[i]), "REPLACE")
         mod.vertex_group = group.name
-        mod.vertex_group_factor = s["head_protect"]
+        mod.vertex_group_factor = strength
         mod.invert_vertex_group = True   # Blender thins where a group weighs; inverted, the head weighs nothing
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
@@ -472,7 +475,8 @@ def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
         ob.vertex_groups.remove(stale)
     me.calc_loop_triangles()
     after = len(me.loop_triangles)
-    log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g})")
+    log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g}, hand protect "
+        f"{s.get('hand_protect', 0.0):g})")
     return {"decimated": [before, after]}
 
 
@@ -812,7 +816,7 @@ def _delete_faces(ob, faces) -> None:
 
 
 def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | None = None,
-                  picture: str | None = None) -> dict:
+                  picture: str | None = None, hands: list[str] | None = None) -> dict:
     """--drop-hidden: thin to a first target above the budget, drop the hidden inner wall, and aim the next try
     by what the drop left, until the figure lands within `drop_slack` of `decimate_to` (at most `drop_tries`).
     Each try starts again from the cleaned, unthinned mesh: thinning what a drop left would spend triangles on
@@ -829,7 +833,7 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | 
             spent = ob.data
             ob.data = original.copy()
             bpy.data.meshes.remove(spent)
-        thinned = decimate_with_head(ob, dict(s, decimate_to=first), head)["decimated"][1]
+        thinned = decimate_with_head(ob, dict(s, decimate_to=first), head, hands)["decimated"][1]
         last = attempt == s["drop_tries"] - 1
         drop = drop_hidden_wall(ob, arm, s, poses, check, picture,
                                 final=lambda left, last=last: last or gr.drop_settled(left, target, s["drop_slack"]))
@@ -1266,19 +1270,28 @@ def setup_cycles(scene) -> str:
     return device
 
 
-def head_mask_attribute(ob, bones: list[str]) -> str | None:
-    """A point colour attribute holding each vertex's skin weight on the bones that keep no glow (0..1): the head's
-    with --glow-not-on-head, the hands' with --glow-not-on-hands."""
-    if not bones:
+def head_mask_attribute(ob, bones: list[str], head: list[str] | None = None) -> str | None:
+    """A point colour attribute holding each vertex's skin weight (0..1) on the bones that keep no glow in red (the
+    head's with --glow-not-on-head, the hands' with --glow-not-on-hands) and on the head's bones in green (where the
+    glow stays with --glow-where head, or goes by itself with auto when the cap fires)."""
+    if not bones and not head:
         return None
     me = ob.data
-    index = {g.index for g in ob.vertex_groups if g.name in set(bones)}
-    w = np.zeros(len(me.vertices))
-    for v in me.vertices:
-        w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
+
+    def weights(names):
+        index = {g.index for g in ob.vertex_groups if g.name in set(names or [])}
+        w = np.zeros(len(me.vertices))
+        for v in me.vertices:
+            w[v.index] = min(1.0, sum(g.weight for g in v.groups if g.group in index))
+        return w
+
+    off, on_head = weights(bones), weights(head)
+    colours = np.zeros((len(me.vertices), 4), np.float32)
+    colours[:, 0], colours[:, 1], colours[:, 3] = off, on_head, 1.0
     attr = me.color_attributes.new(name="gr_head", type="FLOAT_COLOR", domain="POINT")
-    attr.data.foreach_set("color", np.repeat(w, 4).astype(np.float32))
-    log(f"no-glow mask: {int((w > 0.5).sum())} of {len(w)} vertices on the head or hands asked for")
+    attr.data.foreach_set("color", colours.ravel())
+    log(f"glow masks: {int((off > 0.5).sum())} of {len(off)} vertices keep no glow, {int((on_head > 0.5).sum())} on "
+        "the head")
     return attr.name
 
 
@@ -1342,7 +1355,8 @@ def emit_base_colour(objs, white: bool = False) -> None:
 
 
 def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None,
-               colour_objs: list | None = None, normal_objs: list | None = None) -> tuple[dict, bool]:
+               colour_objs: list | None = None, normal_objs: list | None = None,
+               glow_head: list[str] | None = None) -> tuple[dict, bool]:
     scene = bpy.context.scene
     me = ob.data
     device = setup_cycles(scene)
@@ -1496,9 +1510,9 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     if normal_objs and normal_bake is None:
         normal_bake = bake_normals(normal_objs)
         drop_finer(normal_objs)
-    head_attr = head_mask_attribute(ob, head or [])
+    head_attr = head_mask_attribute(ob, head or [], glow_head or [])
     head_bake = None
-    if head_attr:  # where the head is, from its skin weights, so the glow can stay off a face
+    if head_attr:  # the bones that keep no glow (red) and the head (green), from their skin weights
         for m in mats:
             node = m["nt"].nodes.new("ShaderNodeAttribute")
             node.attribute_name = head_attr
@@ -1558,10 +1572,12 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
     cov = gr.downsample(inside, k)[..., 0]
     alb = gr.downsample(albedo[..., :3] * inside, k) / np.maximum(cov, 1e-6)[..., None]
     lit = gr.downsample(sky[..., :3] * inside, k).mean(-1) / np.maximum(cov, 1e-6)
-    exclude = None
-    if head_bake is not None:
-        exclude = gr.downsample(head_bake[..., :1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
-    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude)
+    exclude = on_head = None
+    if head_bake is not None and head:
+        exclude = gr.downsample(head_bake[..., 0:1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
+    if head_bake is not None and glow_head:
+        on_head = gr.downsample(head_bake[..., 1:2] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
+    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude, head=on_head)
     log("colour:", stats)
     p_alb = work / f"{name}_albedo.png"
     gr.write_png(p_alb, colour)
@@ -1720,9 +1736,9 @@ def main() -> None:
     head = job.get("all_head_bones") or []
     if s.get("decimate_to") and s.get("drop_hidden"):
         report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or [], job.get("check_poses") or [],
-                                    job.get("pose_picture")))
+                                    job.get("pose_picture"), job.get("hand_bones")))
     elif s.get("decimate_to"):
-        report.update(decimate_with_head(ob, s, head))
+        report.update(decimate_with_head(ob, s, head, job.get("hand_bones")))
     colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
     report.update(new_uvs(ob, s, head, colour_objs, arm))
     s["body_texels_per_cm"] = report.get("body_texels_per_cm") or None  # the glow gate's widths in centimetres
@@ -1730,7 +1746,8 @@ def main() -> None:
     if s.get("normal_from"):
         same = colour_objs and Path(s["normal_from"]).resolve() == Path(s["colour_from"]).resolve()
         normal_objs = colour_objs if same else import_colour_model(s["normal_from"], T, feet, smooth_flat=True)
-    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs)
+    report["colour"], glows = bake_atlas(ob, s, work, name, job.get("head_bones"), colour_objs, normal_objs,
+                                        job.get("glow_head_bones"))
     for m in ob.modifiers:
         m.show_viewport = m.show_render = True
     arm.data.pose_position = "POSE"

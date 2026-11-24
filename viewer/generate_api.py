@@ -2232,6 +2232,7 @@ def _hunyuan_xiong_readiness() -> dict[str, Any]:
 
 
 PIXAL3D_DEFAULT_SETTINGS: dict[str, Any] = {
+    "sides": False,   # draw the side pictures first and build from four views (needs a back picture)
     "res": 1024,
     "seed": 42,
     "fov": 0.3490658503988659,
@@ -2280,7 +2281,19 @@ def _pixal3d_validate_settings(raw: Any) -> dict[str, Any]:
             raise ValueError('steps must be "auto" or 12') from exc
     if settings["steps"] not in PIXAL3D_STEP_CHOICES:
         raise ValueError('steps must be "auto" or 12')
+    sides = settings.get("sides", False)
+    if sides in (True, False, "true", "false", 1, 0, "1", "0"):
+        settings["sides"] = sides in (True, "true", 1, "1")
+    else:
+        raise ValueError("sides is true or false")
     return settings
+
+
+def sides_problem(settings: dict[str, Any]) -> str | None:
+    """Why drawn sides cannot be asked for, or None: they shape the model with the back picture, never without."""
+    if settings.get("sides") and not settings.get("back_name"):
+        return "drawing the sides needs a back picture too (front + back)"
+    return None
 
 
 def _pixal3d_build_args(job: Job) -> list[str]:
@@ -2291,7 +2304,8 @@ def _pixal3d_build_args(job: Job) -> list[str]:
         "--seed", str(s["seed"]),
         "--fov", str(s["fov"]),
     ] + ([] if s.get("steps", "auto") == "auto" else ["--steps", str(s["steps"])]) + (
-        ["--back", str(job.directory / s["back_name"])] if s.get("back_name") else [])
+        ["--back", str(job.directory / s["back_name"])] if s.get("back_name") else []) + (
+        ["--draw-sides"] if s.get("sides") and s.get("back_name") else [])
 
 
 def _pixal3d_parse_line(job: Job, line: str) -> None:
@@ -3791,6 +3805,10 @@ class Handler(SimpleHTTPRequestHandler):
                 settings["back_name"] = f"back{back_suffix}"
             else:
                 back_field = None
+            problem = sides_problem(settings) if backend_id == "pixal3d" else None
+            if problem:
+                self._send_json(422, {"error": problem})
+                return
             suffix = Path(str(image_field["filename"])).suffix.lower()
             if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
                 self._send_json(422, {"error": "unsupported image type; use PNG, JPG, WebP, or BMP"})

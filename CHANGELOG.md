@@ -249,6 +249,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cut), the same figure after Hero hands 4 and 4. A thumb whose tip reaches down among the fingers (Hero hands draw it
   long and spread) is told from a sixth finger by standing apart from their row; on the Sorcerer's grafted hands the
   cut there showed five pieces and the hand was failed for a digit too many it did not have.
+- **`game_ready.py --hand-protect`: the hands keep their fingers when the figure is thinned.** Thinned evenly to 14,000
+  triangles, a figure's built five-finger hands kept about 200 triangles each and read as thin flat claws. Like
+  `--head-protect` for the head, the hand and finger bones' skin now resists `--decimate-to` at the strength given
+  (0 to 1, default 0: nothing changes); at 0.6 a figure's hands get about 1.7 times the triangles, the body gives up
+  under 200, and the fingers read as fingers again.
+- **Create can draw a prop's sides ("Draw the sides too").** A vehicle, a machine or furniture drawn from one side
+  had its depth guessed by the 3D step (a scissor lift came out deeper than long). With the new box under Advanced: 3D
+  model (front + back on, a prop), the 3D step first draws the side with the picture engine, or the subject's end when
+  the front shows it side-on (`make_side_views.py`), and builds from four views, the sides shaping only. Also
+  `pixal3d_generate.py --draw-sides`, the studio's `sides` setting and the agents' `draw_sides` choice.
+- **`game_ready.py` caps the glow at 8 % of the figure (`--glow-max-area`) and moves it onto the head by itself
+  when the eyes carry its colour (`--glow-where auto|body|head`).** A glow colour taken from a small accent (a knight's
+  red eye slit) also matched his dark red cape faintly: the soft part of the colour match was never judged by
+  `--glow-max-width`, so 25.8 % of the figure glowed while the report said 0.6 %. The report now counts what visibly
+  glows (`glow_share`). Past the cap, when the colour lies on the head too (eyes, a visor slit), the head's skin alone
+  glows (auto, the default), since colour cannot tell an eye slit from trims of the same red but the skin weights
+  can. On the head the glow takes each colour's solid core of any width: eyes are compact patches of the exact
+  colour, not lines (the width gate took a warden's eyes for plates while the soft match lit his cheeks); otherwise the glow is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin
+  lines only, dropped). The log says what was done; `--glow-where body` keeps the narrowed glow on the body,
+  `--glow-where head` (or `--glow-only-on-head`) asks for the head alone, `--glow-max-area 1` lets large areas glow.
+  Figures under the cap glow exactly as before.
+- **`make_side_views.py` notices a front picture that already shows the side.** A vehicle drawn side-on has its
+  profile as the "front"; asked for its right side, the picture engine drew that profile again, and the four-view
+  build took a scissor lift's length for its depth too (a near-square footprint). When the drawn side has the
+  front's outline, the script draws the subject's end and keeps it where it differs; where the end comes back alike
+  too, the subject looks alike from every side (a round slime) and the side stands. The record says which view.
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).
