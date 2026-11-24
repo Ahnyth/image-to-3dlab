@@ -230,3 +230,101 @@ def test_a_few_kept_texels_do_not_set_the_bands_plain_colour():
     known[stray] = True
     base = rp.band_base(theta, colours, known, among=np.ones(len(theta), dtype=bool))
     assert base[np.abs(theta - 2.0) < 0.02].min() > 90
+
+
+# --- finding the band in the picture --------------------------------------------------------------------------------
+
+
+def _hat_picture(marks: str = "runes", seed: int = 3):
+    """A front view (RGBA, 1400 px tall) of a figure in a pointed hat: a dark violet crown, a plain grey band round it
+    (rows 330-370) and a black brim, a body below. MARKS on the band: "runes" (eleven bright glyphs of varied shape,
+    evenly spaced round the ring, so they crowd toward its ends as a picture shows them), "none", "buckle" (one big
+    square and two small loops), "scattered" (the glyphs at random places)."""
+    rng = np.random.default_rng(seed)
+    image = np.zeros((1400, 900, 4), dtype=np.uint8)
+    rows = np.arange(1400)[:, None]
+    cols = np.arange(900)[None, :]
+    centre = 450
+    crown = (rows >= 120) & (rows < 330) & (np.abs(cols - centre) <= 20 + (rows - 120) * 0.45)
+    band = (rows >= 330) & (rows < 370) & (np.abs(cols - centre) <= 115)
+    brim = (rows >= 370) & (rows < 400) & (np.abs(cols - centre) <= 260)
+    head = (rows >= 400) & (rows < 520) & (np.abs(cols - centre) <= 80)
+    body = (rows >= 520) & (rows < 1380) & (np.abs(cols - centre) <= 190)
+    for part, colour in ((crown, (60, 30, 90)), (band, (140, 140, 150)), (brim, (25, 25, 30)), (head, (225, 180, 150)),
+                         (body, (50, 55, 70))):
+        image[part] = (*colour, 255)
+    shapes = []
+    if marks in ("runes", "scattered"):
+        angles = (np.linspace(-1.2, 1.2, 11) if marks == "runes"
+                  else np.sort(rng.uniform(-1.3, 1.3, 11)))
+        for k, a in enumerate(angles):
+            x = centre + 115 * np.sin(a)
+            w = 10 + 6 * (k % 3)
+            shapes.append((x - w / 2 * np.cos(a), 338, x + w / 2 * np.cos(a), 362))
+    elif marks == "buckle":
+        shapes = [(420, 332, 480, 368), (330, 342, 336, 358), (564, 342, 570, 358)]
+    for x0, y0, x1, y1 in shapes:
+        glyph = (rows >= y0) & (rows < y1) & (cols >= x0) & (cols < x1)
+        if marks != "buckle":       # a glyph is strokes, not a solid block: cut its middle out
+            glyph &= ~((rows >= y0 + 6) & (rows < y1 - 6) & (cols >= x0 + 3) & (cols < x1 - 3))
+        image[glyph] = (90, 240, 250, 255)
+    return image
+
+
+def test_a_band_of_evenly_spaced_runes_is_found_round_its_own_rows():
+    bands = rp.find_bands(_hat_picture("runes"))
+    assert len(bands) == 1
+    x0, y0, x1, y1 = bands[0]["box"]
+    assert abs(y0 - 330) <= 6 and abs(y1 - 370) <= 6
+    assert abs(x0 - 335) <= 8 and abs(x1 - 566) <= 8
+    assert bands[0]["marks"] >= 9
+
+
+def test_a_plain_band_a_buckle_or_scattered_marks_are_no_band():
+    for marks in ("none", "buckle", "scattered"):
+        assert rp.find_bands(_hat_picture(marks)) == [], marks
+
+
+def test_a_row_of_unlike_marks_on_one_colour_is_no_band():
+    # a face: eyes, brows and a mouth in a row on skin that goes on above and below them
+    image = _hat_picture("none")
+    rows, cols = np.arange(1400)[:, None], np.arange(900)[None, :]
+    for k, x in enumerate((392, 420, 450, 480, 508)):
+        colour = ((30, 20, 20), (240, 240, 250), (120, 60, 60), (240, 240, 250), (30, 20, 20))[k]
+        image[(rows >= 440) & (rows < 452) & (np.abs(cols - x) < 7)] = (*colour, 255)
+    assert rp.find_bands(image) == []
+
+
+def test_the_repainted_band_is_where_its_report_says():
+    positions, faces, uvs, texture, view, box = _painted_ring()
+    _, report = rp.paint_ring(texture, positions, uvs, faces, view, box, frame=IDENTITY)
+    assert report["repainted"] > 0 and report["band"][0] < report["band"][1]
+    on = rp.in_ring(positions, report)
+    assert on.mean() > 0.8                                   # the test ring is the band, nearly all of it
+    far = np.array([[0.0, 2.0, 0.5], [0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])   # above it, on its axis, far out
+    assert not rp.in_ring(far, report).any()
+    assert not rp.in_ring(positions, {"repainted": 0}).any()
+
+
+def test_the_script_without_a_box_looks_for_a_band_and_writes_nothing_without_one(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    positions, faces, uvs, texture, _, _ = _painted_ring()
+    mesh = trimesh.Trimesh(positions, faces, process=False)
+    mesh.visual = trimesh.visual.TextureVisuals(uv=uvs * [1, -1] + [0, 1], image=Image.fromarray(texture))
+    model = tmp_path / "ring.glb"
+    model.write_bytes(mesh.export(file_type="glb"))
+    views = tmp_path / "views"
+    views.mkdir()
+    Image.fromarray(_hat_picture("none")).save(views / "view_000.png")
+    (views / "transforms.json").write_text(json.dumps({"camera_angle_x": 0.35, "frames": [
+        {"file_path": "view_000.png", "transform_matrix": np.eye(4).tolist()}]}))
+    out, report = tmp_path / "out.glb", tmp_path / "out.json"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "ring_paint.py"
+    done = subprocess.run([sys.executable, str(script), str(model), str(views), str(out), "--report", str(report)],
+                          capture_output=True, text=True)
+    assert done.returncode == 3, done.stdout + done.stderr
+    assert not out.exists() and json.loads(report.read_text())["found"] == []

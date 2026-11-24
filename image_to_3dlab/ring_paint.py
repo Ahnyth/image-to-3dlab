@@ -20,10 +20,13 @@ Pure numpy + scipy; the GLB helpers change only the one base colour image, every
 from __future__ import annotations
 
 import io
+import itertools
 from dataclasses import dataclass, replace
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
+from scipy.signal import find_peaks
 from scipy.spatial import cKDTree
 
 from image_to_3dlab import photo_paint as pp
@@ -47,6 +50,25 @@ TILT_ROUNDS = 4        # rounds of fitting the band's tilt to the band found rou
 BAND_MARGIN = 0.05     # the band's height, as the picture shows it in front, widened by this share at each edge
 TILT_REACH = 1.0       # faces this many box heights above and below the box are looked at for the band's tilted rest
 MAX_FACE_FLOOR = 256 * 256   # ... but a box this small is never too big (a small picture's faces span much of it)
+
+# Finding a band in the picture (`find_bands`). Measured on the 27 front views of ArcherSoul's figures (2026-11-24): only
+# the Zauberer's rune band passes all of these; a face's eyes and brows, a belt's buckle and loops, armour plates and a
+# coat's trim each fail at least one.
+BAND_WORK_HEIGHT = 1000      # the subject is looked at this many pixels tall
+BAND_MEDIAN = 15             # a pixel's plain colour: the median of this many pixels square round it ...
+BAND_MARK_DE = 18.0          # ... and a mark stands out of it by this much (CIE76 delta E)
+BAND_MARK_HEIGHT = 0.035     # a mark is at most this share of the subject's height tall
+BAND_MARKS = 5               # a band shows at least this many marks in a row ...
+BAND_GAP_CV = 0.35           # ... evenly spaced round the ring (their gaps' spread against their mean) ...
+BAND_SPAN = 0.7              # ... from end to end of the band (this share of its visible arc) ...
+BAND_MASS_RATIO = 2.1        # ... none much bigger than the rest (a buckle, a clasp), the biggest against the median
+BAND_MASS_CV = 0.45          # ... and their sizes alike
+BAND_MARK_SPREAD = 12.0      # the marks share one colour (runes, studs; not eyes and brows)
+BAND_PLAIN_SPREAD = 12.0     # the band between them is one plain colour ...
+BAND_CONTRAST = 12.0         # ... set off from what lies above or below it (a zone of its own, not skin round eyes)
+BAND_CONTAINED = 0.5         # the marks stop at its edges: just above and below them at most this share of their density
+                             # (hair strands go on: 1.15 on the Runeblade's fringe; the Zauberer's runes 0.09)
+BAND_EDGE_DE = 10.0          # the band's box grows up and down over rows this close to its plain colour
 
 
 @dataclass(frozen=True)
@@ -325,6 +347,7 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
         theta, height = ring_coords(points, ring, zero)
         band = ring.outward & (height >= low) & (height <= high)
     report["tilt"] = list(ring.tilt)
+    report["band"] = [float(low), float(high)]       # its height round the tilted middle, for `in_ring`
     in_arc = (theta >= arc[0]) & (theta <= arc[1])
     source = seen & in_arc
     target = band & ~(in_arc & (trust >= trusted))
@@ -339,6 +362,195 @@ def paint_ring(texture: np.ndarray, positions: np.ndarray, uvs: np.ndarray, face
     report.update(arc_degrees=float(np.degrees(arc[1] - arc[0])), arc=[float(np.degrees(a)) for a in arc],
                   repainted=int(target.sum()), gutter=grown)
     return np.clip(np.rint(flat), 0, 255).astype(texture.dtype).reshape(texture.shape), report
+
+
+# --- finding the band in the picture ----------------------------------------------------------------------------------
+
+
+def _lab(rgb: np.ndarray) -> np.ndarray:
+    """sRGB 0..255 to CIE L*a*b* (D65), as `colour_compare.lab`."""
+    from image_to_3dlab.colour_compare import lab
+
+    return lab(np.asarray(rgb, dtype=np.float64) / 255.0)
+
+
+def _median_colour(lab: np.ndarray, where: np.ndarray) -> np.ndarray | None:
+    return np.median(lab[where], axis=0) if where.sum() >= 6 else None
+
+
+def _band_strip(marks: np.ndarray, mask: np.ndarray, lab: np.ndarray, rows: tuple[int, int], run: tuple[int, int],
+                height: float) -> dict | None:
+    """The measures of one candidate strip: ROWS (y0, y1) of the marks' row across the RUN (x0, x1) of the subject.
+    The run is unrolled round its middle (a ring seen from the front: x = middle + radius sin(angle)), so marks evenly
+    spaced round a band are evenly spaced here too."""
+    y0, y1 = rows
+    xa, xb = run
+    width = xb - xa + 1
+    centre, radius = (xa + xb) / 2.0, width / 2.0
+    reach = np.arcsin(0.95)
+    count = max(16, int(2 * reach * radius))
+    x = np.clip(np.round(centre + radius * np.sin(np.linspace(-reach, reach, count))).astype(int), 0, mask.shape[1] - 1)
+    column = marks[y0:y1][:, x].mean(axis=0)
+    smooth = ndimage.gaussian_filter1d(column, sigma=max(0.8, 0.15 * height))
+    if smooth.max() < 0.15:
+        return None
+    peaks, _ = find_peaks(smooth, height=0.35 * smooth.max(), distance=max(2, int(0.35 * height)),
+                          prominence=0.2 * smooth.max())
+    if len(peaks) < BAND_MARKS:
+        return None
+    gaps = np.diff(peaks)
+    ends = np.concatenate([[max(0, peaks[0] - gaps[0] // 2)], (peaks[:-1] + peaks[1:]) // 2,
+                           [min(count, peaks[-1] + gaps[-1] // 2 + 1)]])
+    mass = np.array([column[a:b].sum() for a, b in itertools.pairwise(ends)])
+    colours = []
+    for p in peaks:
+        near = np.unique(x[max(0, p - 2):min(count, p + 3)])
+        mine = marks[y0:y1][:, near]
+        if mine.any():
+            colours.append(np.median(lab[y0:y1][:, near][mine], axis=0))
+    colours = np.asarray(colours)
+    inner = np.zeros(mask.shape[1], dtype=bool)
+    inner[int(xa + 0.15 * width):int(xb - 0.15 * width) + 1] = True
+    plain_here = mask[y0:y1] & ~marks[y0:y1] & inner[None, :]
+    plain = _median_colour(lab[y0:y1], plain_here)
+    if plain is None or not len(colours):
+        return None
+    step = max(2, int(0.6 * (y1 - y0)))
+    contrast = 0.0
+    for a, b in ((y0 - step - 1, y0 - 1), (y1 + 1, y1 + step + 1)):
+        a, b = max(0, a), min(mask.shape[0], b)
+        if b > a:
+            other = _median_colour(lab[a:b], mask[a:b] & inner[None, :])
+            if other is not None:
+                contrast = max(contrast, float(np.linalg.norm(other - plain)))
+    tall = y1 - y0
+    inside = marks[y0:y1][:, inner].mean()
+    beyond = [marks[a:b][:, inner].mean() for a, b in ((max(0, y0 - tall - 2), y0 - 2), (y1 + 2, y1 + tall + 2))
+              if b - a >= 2 and b <= mask.shape[0]]
+    return {"marks": int(len(peaks)), "gap_cv": float(gaps.std() / gaps.mean()),
+            "contained": float(max(beyond, default=0.0) / max(inside, 1e-9)),
+            "span": float((peaks[-1] - peaks[0]) / count),
+            "mass_ratio": float(mass.max() / max(np.median(mass), 1e-9)), "mass_cv": float(mass.std() / mass.mean()),
+            "mark_spread": float(np.median(np.linalg.norm(colours - np.median(colours, axis=0), axis=1))),
+            "plain_spread": float(np.median(np.linalg.norm(lab[y0:y1][plain_here] - plain, axis=1))),
+            "contrast": contrast, "plain": plain}
+
+
+def _is_band(strip: dict) -> bool:
+    return (strip["marks"] >= BAND_MARKS and strip["gap_cv"] <= BAND_GAP_CV and strip["span"] >= BAND_SPAN
+            and strip["mass_ratio"] <= BAND_MASS_RATIO and strip["mass_cv"] <= BAND_MASS_CV
+            and strip["mark_spread"] <= BAND_MARK_SPREAD and strip["plain_spread"] <= BAND_PLAIN_SPREAD
+            and strip["contrast"] >= BAND_CONTRAST and strip["contained"] <= BAND_CONTAINED)
+
+
+def _grow_rows(lab: np.ndarray, mask: np.ndarray, marks: np.ndarray, rows: tuple[int, int], run: tuple[int, int],
+               plain: np.ndarray) -> tuple[int, int]:
+    """The strip's rows grown up and down over rows whose plain colour stays the band's (its top and bottom edges)."""
+    xa, xb = run
+    inner = np.zeros(mask.shape[1], dtype=bool)
+    inner[int(xa + 0.15 * (xb - xa)):int(xb - 0.15 * (xb - xa)) + 1] = True
+    y0, y1 = rows
+    most = max(2, int(1.5 * (y1 - y0)))
+
+    def close(y):
+        here = mask[y] & ~marks[y] & inner
+        colour = _median_colour(lab[y], here)
+        return colour is not None and float(np.linalg.norm(colour - plain)) <= BAND_EDGE_DE
+
+    top = y0
+    while top > max(0, y0 - most) and close(top - 1):
+        top -= 1
+    bottom = y1
+    while bottom < min(mask.shape[0], y1 + most) and close(bottom):
+        bottom += 1
+    return top, bottom
+
+
+def in_ring(points: np.ndarray, report: dict, grow: float = 0.25, wall: float = 0.35) -> np.ndarray:
+    """Which POINTS lie on the band a `paint_ring` REPORT repainted: within its height round the tilted middle (grown
+    by GROW of that height at each edge) and within WALL of its radius from its axis. False for all without a band."""
+    p = np.asarray(points, dtype=np.float64)
+    if "band" not in report or not report.get("repainted"):
+        return np.zeros(len(p), dtype=bool)
+    cx, cz = report["middle"]
+    low, high = report["band"]
+    margin = grow * (high - low)
+    theta = angles(p, cx, cz)
+    middle = report["tilt"][0] + report["tilt"][1] * np.cos(theta) + report["tilt"][2] * np.sin(theta)
+    height = p[:, 1] - middle
+    radial = np.hypot(p[:, 0] - cx, p[:, 2] - cz)
+    return ((height >= low - margin) & (height <= high + margin)
+            & (np.abs(radial - report["radius"]) <= wall * report["radius"]))
+
+
+def find_bands(image: np.ndarray, alpha: np.ndarray | None = None) -> list[dict]:
+    """The bands in a front picture (RGBA, the subject cut out) whose pattern repeats along them: a hat band's runes, a
+    belt's studs, a sleeve's hem. Each: {"box": (x0, y0, x1, y1) in the picture's pixels, the band from its left end to
+    its right and its top edge to its bottom edge, ready for `paint_glb`; "marks", "gap_cv", ...: what was measured}.
+    An empty list when nothing in the picture is such a band.
+
+    A band is a level row of marks (each standing out of its neighbourhood's plain colour) that are evenly spaced round
+    the ring, alike in size and colour, over most of the band's visible width, on one plain colour that differs from
+    what lies above or below it. A single buckle, eyes and brows on a face, plates of armour or a coat's trim are not:
+    their marks differ in size or colour, or sit on the colour round them."""
+    picture = np.asarray(image)
+    alpha = picture[..., 3] if alpha is None else np.asarray(alpha)
+    ys, xs = np.nonzero(alpha > 127)
+    if not len(ys):
+        return []
+    top, bottom, left, right = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    scale = BAND_WORK_HEIGHT / (bottom - top)
+    crop = Image.fromarray(np.dstack([picture[..., :3], alpha]).astype(np.uint8)).crop((left, top, right, bottom))
+    small = np.asarray(crop.resize((max(1, round(crop.width * scale)), BAND_WORK_HEIGHT), Image.LANCZOS))
+    mask = small[..., 3] > 127
+    lab = _lab(small[..., :3])
+    plain = np.stack([ndimage.median_filter(lab[..., c], size=BAND_MEDIAN) for c in range(3)], axis=-1)
+    marks = ndimage.binary_erosion(mask, iterations=3) & (np.linalg.norm(lab - plain, axis=-1) > BAND_MARK_DE)
+    labels, _ = ndimage.label(marks)
+    blobs = []
+    for sl in ndimage.find_objects(labels):
+        tall, wide = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
+        if 3 <= tall <= BAND_MARK_HEIGHT * BAND_WORK_HEIGHT and wide <= 3 * tall:
+            blobs.append(((sl[0].start + sl[0].stop) / 2.0, tall))
+    blobs.sort()
+    middles = np.array([b[0] for b in blobs])
+    found, tried = [], set()
+    for middle, tall in blobs:
+        row = np.abs(middles - middle) <= max(0.5 * tall, 2)
+        if row.sum() < BAND_MARKS:
+            continue
+        height = float(np.median([blobs[i][1] for i in np.flatnonzero(row)]))
+        rows = (int(middle - 0.6 * height), int(np.ceil(middle + 0.6 * height)) + 1)
+        runs, count = ndimage.label(mask[int(round(middle))])
+        for k in range(1, count + 1):
+            cols = np.flatnonzero(runs == k)
+            run = (int(cols[0]), int(cols[-1]))
+            if run[1] - run[0] + 1 < 6 * height or (rows, run) in tried:
+                continue
+            tried.add((rows, run))
+            strip = _band_strip(marks, mask, lab, rows, run, height)
+            if strip is None or not _is_band(strip):
+                continue
+            grown = _grow_rows(lab, mask, marks, rows, run, strip["plain"])
+
+            def overlap(f, run=run, grown=grown):
+                across = min(f["run"][1], run[1]) - max(f["run"][0], run[0])
+                return (grown[0] <= f["rows"][1] and f["rows"][0] <= grown[1]
+                        and across >= 0.7 * min(f["run"][1] - f["run"][0], run[1] - run[0]))
+
+            same = next((f for f in found if overlap(f)), None)
+            if same is not None:            # the same band found from another of its marks (a row lower, say)
+                same["rows"] = (min(same["rows"][0], grown[0]), max(same["rows"][1], grown[1]))
+                same["run"] = (min(same["run"][0], run[0]), max(same["run"][1], run[1]))
+                continue
+            found.append({"rows": grown, "run": run, **{k: v for k, v in strip.items() if k != "plain"}})
+    bands = []
+    for f in found:
+        (y0, y1), (xa, xb) = f.pop("rows"), f.pop("run")
+        box = (left + xa / scale, top + y0 / scale, left + (xb + 1) / scale, top + y1 / scale)
+        bands.append({"box": tuple(round(float(v), 1) for v in box),
+                      **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in f.items()}})
+    return bands
 
 
 # --- GLB ------------------------------------------------------------------------------------------------------------

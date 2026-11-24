@@ -163,17 +163,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collar's shadow; eased from the old one, the new neck stood under a wizard's chin as a pale ring with a hard top edge.
   The new neck under the stitch counts as neck too: where the picture shows the collar's dark there, it turns into the
   skin a little shaded, easing in with how dark it is, so neither a black blotch nor a ragged edge stands under the jaw.
+
+  The band never starts from a collar's dark: where the picture shows a shirt under the stitch beside the throat, the
+  band starts from the skin a little shaded, easing in with how dark the shirt is, so neither a black blotch nor a
+  ragged edge stands under the jaw; under the stitch the shirt stays.
 - **Ring paint: a band's pattern goes on all round it** (`scripts/ring_paint.py`). Pixel Match copies the picture only
   onto surfaces that face it, so a hat band, a belt or a bracelet kept sharp marks in front and the generator's blur on
   its sides and back (the Zauberer's hat band: runes in front, blue smears at the sides). Given the band's box in the
   front picture, the arc the picture sees is repeated round the rest of the ring, cut between two marks and laid at the
   same height on the band, tilt included; only the marks travel (the band's plain colour is a slow trend round it, so
   the picture's painted light leaves no seam at the joins), what another picture sees keeps its paint, and only the
-  ring's outer wall changes.
-
-  The band never starts from a collar's dark: where the picture shows a shirt under the stitch beside the throat, the
-  band starts from the skin a little shaded, easing in with how dark the shirt is, so neither a black blotch nor a
-  ragged edge stands under the jaw; under the stitch the shirt stays.
+  ring's outer wall changes. Without `--box` the band is found in the front picture itself: a level row of marks
+  evenly spaced round the ring, alike in size and colour, over most of the band's visible width, on one plain colour
+  set off from what lies above or below it, the marks stopping at its edges. Of ArcherSoul's 28 figures only the
+  Zauberer's rune band is one; eyes and brows, a buckle with its loops, armour plates, a coat's trim and a fringe of
+  hair are not. With no band in the picture nothing is written (exit code 3).
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
