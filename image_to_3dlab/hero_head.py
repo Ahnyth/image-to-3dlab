@@ -85,7 +85,8 @@ HAT_RING_SHARE = 0.15   # the hat's colour is read on its brim's underside withi
                         # opening ...
 HAT_PAINT_SHARE = 0.15  # ... and the figure's paint in it on the head is not taken within this share of it under the cut
 BAND_DARK = 30          # on the new neck the figure's own paint this much darker (L*) than its skin is the collar's dark:
-BAND_SHADE = 0.85       # it takes the skin's colour this much shaded
+BAND_SHADE = 0.85       # it takes the skin's colour this much shaded ...
+BAND_SOFT = 15          # ... and from this much darker on it eases toward it, so no ragged edge stands where the two meet
 MEMBRANE_RINGS = 4      # an outline the cut leaves at the hat's opening is spanned by a film with this many rings inside
 MEMBRANE_LEAST = 8      # ... when it has at least this many points (a smaller one by a fan)
 FRAME_SHARE = 0.75      # the picture's pixels are square this far from the axis (the face's front)
@@ -1968,9 +1969,14 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         out = np.stack([fill_nearest(np.nan_to_num(out[..., k]), known) for k in range(3)], axis=-1)
     if crop is not None and skin is not None:
         # beside the jaw and behind it the figure's own neck lies in its collar's dark, and taken onto the new neck, now
-        # reaching up to the jaw's edge, it stood under the Zauberer's ears as a black mark (2026-11-23)
-        dark = band & (lab(out)[..., 0] < lab(skin)[0] - BAND_DARK)
-        out[dark] = np.asarray(skin, dtype=np.float64) * BAND_SHADE
+        # reaching up to the jaw's edge, it stood under the Zauberer's ears as a black mark (2026-11-23). A neck reaching
+        # down into a collar is neck under the stitch too, and the band eases from the paint there: where the picture
+        # showed the collar's dark, it stood under his jaw as a black ragged blotch (v19l, 2026-11-24). Ragged, because
+        # a texel just under the line was taken and its neighbour just over it kept: the shaded skin eases in instead
+        neck = band | (points[..., 1] < zone["bottom"] - 0.5 * zone.get("pixel", 0.0))
+        below = lab(skin)[0] - lab(out)[..., 0]
+        lift = (np.clip((below - BAND_SOFT) / (BAND_DARK - BAND_SOFT), 0, 1) * neck)[..., None]
+        out = (1 - lift) * out + lift * np.asarray(skin, dtype=np.float64) * BAND_SHADE
     # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
     # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
     rows, cols = band.shape
