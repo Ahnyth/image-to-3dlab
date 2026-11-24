@@ -145,8 +145,10 @@ FIXED = {
                                       # scaled to match, so a line keeps its width in centimetres however much of the
                                       # atlas the face takes. 2.15-2.2 keeps all 39 glow hues of the 22 glowing
                                       # ArcherSoul figures as they were (2.05 and 2.25 flip one each; D232)
-    "glow_auto_head_solid": 0.002,    # --glow-where auto: the glow goes onto the head alone when the cap fires and at
-                                      # least this share of the head's own texels is a solid match of its colour
+    "glow_auto_head_solid": 0.001,    # --glow-where auto: the glow goes onto the head alone when the cap fires and at
+                                      # least this share of the head's own texels is the colour's solid core (the
+                                      # warden's eyes 0.0025, the knight's visor slit 0.018; a few stray texels on a
+                                      # 40,000-texel head stay under 0.0003)
     "face_half_width": 0.034,  # --head-zone face (the default): the faces on the head bones that face the front
     "face_below": 0.02,        # (normal toward -Y at least `face_facing`), lie within this share of the height of
     "face_above": 0.06,        # the head bone sideways and from this far below its joint to this far above it: the
@@ -702,6 +704,19 @@ def narrowed_glow(a_s, inside, keep, s: dict, thin_scale: float, grow: int, cap:
     return {"masks": masks, "splits": splits, "steps": steps, "share": share, "before": before, "first": first}
 
 
+def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap: float) -> dict:
+    """The glow on the head alone, as `narrowed_glow` gives it: each colour's solid core in the closer hue, of any
+    width. Eyes and a visor slit are compact patches of the glow's own colour, not lines: the width gate took the
+    warden's eyes for plates and the soft match lit his cheeks and nape (skin 0.3-0.75 like his eye orange; 19 of
+    10,807 glowing texels were eye, round 27 of the AssetFurnace Support notes). Past the cap it narrows as the body."""
+    masks = [(accent_mask(a_s, c, **GLOW_CLOSE_HUE) > 0.5) * inside * head_keep for c in s["glow"]]
+    share = glow_share(masks, grow, head_keep, inside)
+    if cap < 1.0 and share > cap:
+        return narrowed_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+    return {"masks": masks, "splits": {}, "steps": [0] * len(s["glow"]), "share": share, "before": share,
+            "first": masks}
+
+
 def head_solid(masks, head_keep, inside) -> float:
     """The share of the head's own texels that hold a solid match of a glow colour: eyes or a visor slit give a few
     per cent, a head with nothing of the colour 0."""
@@ -734,12 +749,15 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None, head=None):
     keep = (0.0 if head_keep is None else head_keep) if where == "head" else off_keep
     grow = int(round(s["glow_grow"] * scale))
     cap = s.get("glow_max_area", 1.0)
-    glow = narrowed_glow(a_s, inside, keep, s, thin_scale, grow, cap)
+    if where == "head" and head_keep is not None:
+        glow = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+    else:
+        glow = narrowed_glow(a_s, inside, keep, s, thin_scale, grow, cap)
     auto = None
     if where == "auto" and glow["before"] > cap and head_keep is not None and s["glow"]:
         # the colour lit more than the cap: if it lies on the head too (eyes, a visor), the head alone glows; colour
         # cannot tell a red eye slit from the same red on the trims, the skin weights can (the black knight, D276)
-        on_head = narrowed_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+        on_head = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
         solid = head_solid(on_head["first"], head_keep, inside)
         if solid >= s["glow_auto_head_solid"] and on_head["share"] > 0:
             auto = {"before": glow["before"], "body": glow["share"], "head": on_head["share"], "cap": cap,
@@ -1556,6 +1574,11 @@ def engine_vertices(vertex, normal, uv) -> int:
     return len(np.unique(keys, axis=0))
 
 
+def _share(x: float) -> str:
+    """A share as a percentage, two places under 1 % (an eye slit's 0.04 % read as 0.0 %, as if nothing glowed)."""
+    return f"{x:.1%}" if x >= 0.01 else f"{x:.2%}"
+
+
 def glow_note(colour: dict) -> str | None:
     """One line on what glows, in plain words, when the glow cap moved it onto the head or narrowed it (None
     otherwise)."""
@@ -1563,14 +1586,14 @@ def glow_note(colour: dict) -> str | None:
     if auto:
         return (f"glow: it lit {auto['before']:.1%} of the figure, past the {auto['cap']:.0%} cap (an accent's colour "
                 f"found on large parts too), and the colour lies on the head (eyes, a visor), so it glows on the head "
-                f"only: {auto['head']:.1%} glows now; --glow-where body keeps it on the body narrowed "
-                f"({auto['body']:.1%}), --glow-max-area 1 keeps it all")
+                f"only: {_share(auto['head'])} glows now; --glow-where body keeps it on the body narrowed "
+                f"({_share(auto['body'])}), --glow-max-area 1 keeps it all")
     cap = colour.get("glow_cap")
     if not cap:
         return None
     what = ", ".join(f"{c}: {step}" for c, step in cap["steps"].items())
     return (f"glow: it lit {cap['before']:.1%} of the figure, past the {cap['cap']:.0%} cap (an accent's colour found "
-            f"on large parts too), so it was narrowed ({what}): {cap['after']:.1%} glows now; --glow-max-area 1 "
+            f"on large parts too), so it was narrowed ({what}): {_share(cap['after'])} glows now; --glow-max-area 1 "
             "keeps it as asked, --glow-where head keeps glowing eyes alone")
 
 

@@ -1494,9 +1494,32 @@ def test_large_areas_may_glow_when_the_cap_is_off():
     assert "glow_auto" not in stats and emission[30, 20].max() > 0.1   # the cape glows, as asked
 
 
+def _warden_head(n=64):
+    """The warden of ArcherSoul's #636: two eye blobs of his eye orange #f2a551 (wider than --glow-max-width 4) on a
+    head whose skin (130, 101, 90) matches that orange faintly (0.35), in thin strips between helmet and collar."""
+    alb = np.zeros((n, n, 3))
+    alb[:] = gr.to_linear(np.array((0.30, 0.30, 0.32)))             # the helmet
+    for row in range(30, 60, 4):
+        alb[row:row + 2, 2:62] = gr.to_linear(np.array((130, 101, 90)) / 255)   # strips of skin
+    alb[10:18, 10:18] = alb[10:18, 30:38] = gr.to_linear(np.array((242, 165, 81)) / 255)   # the eyes
+    head = np.ones((n, n))
+    return alb, np.full((n, n), 0.5), np.ones((n, n)), head
+
+
+def test_on_the_head_the_eyes_glow_whole_and_skin_of_a_near_colour_does_not():
+    # on the warden the head-only glow lit his cheeks and nape (skin 0.3-0.75 like the orange) while the width gate
+    # took his eyes for plates: 19 of 10,807 glowing texels were eye (round 27)
+    alb, lit, cov, head = _warden_head()
+    s = gr.settings(["--no-shade", "--glow", "#f2a551", "--glow-width", "0", "--glow-max-width", "4",
+                     "--glow-where", "head"])
+    _, emission, _ = gr.compose(alb, lit, cov, s, head=head)
+    assert emission[14, 14].max() > 0.5 and emission[14, 34].max() > 0.5     # both eyes, centre included
+    assert emission[38, 30].max() < 0.05 and emission[50, 10].max() < 0.05   # no skin
+
+
 def test_the_log_says_when_the_glow_went_onto_the_head():
-    note = gr.glow_note({"glow_auto": {"before": 0.2576, "body": 0.0602, "head": 0.0041, "cap": 0.08}})
-    assert "25.8%" in note and "0.4%" in note and "head" in note
+    note = gr.glow_note({"glow_auto": {"before": 0.2576, "body": 0.0602, "head": 0.00044, "cap": 0.08}})
+    assert "25.8%" in note and "0.04%" in note and "6.0%" in note and "head" in note   # the knight's slit, not 0.0 %
     assert "--glow-where body" in note and "--glow-max-area 1" in note
 
 

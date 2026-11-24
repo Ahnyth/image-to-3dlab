@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--glow-max-width`, so 25.8 % of the figure glowed while the report said 0.6 %. The report now counts what visibly
   glows (`glow_share`). Past the cap, when the colour lies on the head too (eyes, a visor slit), the head's skin alone
   glows (auto, the default), since colour cannot tell an eye slit from trims of the same red but the skin weights
-  can; otherwise the glow is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin
+  can. On the head the glow takes each colour's solid core of any width: eyes are compact patches of the exact
+  colour, not lines (the width gate took a warden's eyes for plates while the soft match lit his cheeks); otherwise the glow is narrowed step by step (faint matches only beside a solid accent, a closer hue, thin
   lines only, dropped). The log says what was done; `--glow-where body` keeps the narrowed glow on the body,
   `--glow-where head` (or `--glow-only-on-head`) asks for the head alone, `--glow-max-area 1` lets large areas glow.
   Figures under the cap glow exactly as before.
