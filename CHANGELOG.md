@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Hero head tucks away what the old head hid and the new one leaves free.** The Zauberer's collar had an inner
+  edge 3.4-4.0 cm from his neck's axis that sat inside his old, wider jaw; beside the slimmer new head it stood free
+  in front of the new jaw as a dark wedge. Points of the figure between the new head's surface and where the old
+  head's outermost surface was (not where a collar stood outermost) now move just inside the new head, each at its
+  own height and angle; the cut's outlines stay where they are. The report gives `freed_points_tucked`.
 - **The Hero chain counts see-through holes in each shape stage's own models, before the game step.** A stage's hole
   showed only in the game figure ten minutes later (skin_sorcerer_c's face stage: 223 pixels one sees through from
   behind in its shape model, 145 in its rigged one). `figure_check.see_through` counts, from the front, back, left and
