@@ -120,7 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--top auto` finds that row itself, where the boot's colour ends up both shins from the ankle to the knee, a strap
   on the shaft not moving it, and stops with exit code 3 when the picture shows shoes, bare legs, one colour down to
   the foot or two legs that disagree; on ArcherSoul's figures it put the Zauberer's top at row 1062 of his front view
-  where it had been read by hand at about 1060), cuts the leg straight across under its rim's lowest point, closes the
+  where it had been read by hand at about 1060; a build deeper than long is a pair, one boot behind the other, and the
+  next build is tried), cuts the leg straight across under its rim's lowest point, closes the
   cut and tucks the old leg inside it up to its
   top (the old boot's wider top showed over the new rim as a ledge); the boot takes the old leg's weights point by
   point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,

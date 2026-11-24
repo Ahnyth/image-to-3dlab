@@ -79,6 +79,8 @@ BOOT_LIGHT_WEIGHT = 0.5      # light and shade count half against hue (the same 
 BOOT_CONTRAST = 2.0          # the boot and what is above it differ at least this much (delta E, light at half weight)
 BOOT_LOW = 0.2               # a top less than this share of the shin above the ankle is a shoe's, not a boot's
 BOOT_AGREE = 0.05            # both legs' tops lie within this share of the shin of each other
+BOOT_DEPTH = 0.9             # a boot built from its side view is at most this deep (toward the camera) for its length:
+                             # the Sorcerer's first boot was a pair, one behind the other (deep 1.6 times its length)
 
 
 # --- The figure's front camera ----------------------------------------------------------------------------------------
@@ -649,6 +651,15 @@ def boot_top(image: np.ndarray, legs: dict) -> dict:
         return found
     found["top"] = float(np.mean(tops))
     return found
+
+
+def single_boot(points: np.ndarray, most: float = BOOT_DEPTH) -> tuple[bool, float]:
+    """(whether a build of a boot drawn from its outer side is one boot, its depth against its length): in the build's
+    own frame the drawing's toe points along x and the camera looks along z, so one boot is longer than deep, and
+    Pixal3D's guess of a pair, one boot behind the other, is deeper than long."""
+    p = np.asarray(points, dtype=np.float64)
+    ratio = float(np.ptp(p[:, 2]) / max(float(np.ptp(p[:, 0])), 1e-12))
+    return ratio <= most, round(ratio, 3)
 
 
 def foot_heading(points: np.ndarray) -> np.ndarray:

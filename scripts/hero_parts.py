@@ -256,10 +256,10 @@ def draw_parts(run: Run, name: str, up: Path, folder: Path, args, engine, prompt
     return kept
 
 
-def build_part(run: Run, drawings: list[Path], folder: Path, seeds) -> Path | None:
+def build_part(run: Run, drawings: list[Path], folder: Path, seeds, boot: bool = False) -> Path | None:
     """The first Pixal3D build of a kept drawing that is one piece once its crumbs are gone and whose surface touches
-    itself in few places (`hero_parts.edge_faults`, at most FAULT_SHARE of its edges); else the one-piece build that
-    touches itself least, with a note."""
+    itself in few places (`hero_parts.edge_faults`, at most FAULT_SHARE of its edges), and with BOOT one boot, not a
+    pair (`hero_parts.single_boot`); else the one-piece build that touches itself least, with a note."""
     from image_to_3dlab import hero_hands as hh
     from image_to_3dlab import hero_parts as hp
 
@@ -274,12 +274,15 @@ def build_part(run: Run, drawings: list[Path], folder: Path, seeds) -> Path | No
                     continue
             part, crumbs = hp.drop_crumbs(hh.read_part(raw.read_bytes())[2])
             count, faults = hp.pieces(part), hp.edge_faults(part)
-            ok = count == 1 and faults["share"] <= FAULT_SHARE
+            single, depth = hp.single_boot(part["positions"]) if boot else (True, None)
+            ok = count == 1 and faults["share"] <= FAULT_SHARE and single
             run.say(f"build: {raw.name} {count} piece(s), {crumbs} crumb(s), {faults['shared_by_more']} edges where "
-                    f"it touches itself ({faults['share']:.2%})" + (" - kept" if ok else ""))
+                    f"it touches itself ({faults['share']:.2%})"
+                    + (f", {depth} times as deep as long" + ("" if single else " (a pair, not one boot)") if boot
+                       else "") + (" - kept" if ok else ""))
             if ok:
                 return raw
-            if count == 1 and (best is None or faults["share"] < best[1]):
+            if count == 1 and single and (best is None or faults["share"] < best[1]):
                 best = (raw, faults["share"])
     if best is not None:
         run.flag(f"every build touches itself in many places; {best[0].name} least ({best[1]:.2%} of its edges): it "
@@ -574,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise SystemExit(f"[hero] none of {args.tries} drawings of {label} shows it whole: try more "
                                      "(--tries), describe it (--look), or give one (--drawing)")
             stage(run, "build", f"Building {label} on its own (the long step)")
-            raw = build_part(run, drawings, folder, args.seeds)
+            raw = build_part(run, drawings, folder, args.seeds, boot=args.boots)
             if raw is None:
                 raise SystemExit(f"[hero] no build of {label} is one piece: try more seeds (--seeds) or drawings")
         stage(run, "clean", f"Cleaning up {label}")

@@ -478,3 +478,10 @@ def test_shoes_bare_legs_one_colour_or_legs_that_disagree_are_no_boots():
     for found in (shoes, bare, plain, apart):
         assert found["top"] is None and found["why"]
     assert "shoes" in shoes["why"] and "skin" in bare["why"] and "disagree" in apart["why"]
+
+
+def test_a_boot_built_as_a_pair_one_behind_the_other_is_no_boot():
+    one = box((0.0, 0.0, 0.0), (0.5, 0.8, 0.25), subdivide=1)["positions"]          # toe along x, deep along z
+    pair = np.concatenate([one, one + [0.0, 0.0, 0.55]])                             # a second one behind it
+    assert hp.single_boot(one)[0] and not hp.single_boot(pair)[0]
+    assert hp.single_boot(pair)[1] == pytest.approx(1.6, abs=0.01)
