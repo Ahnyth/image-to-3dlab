@@ -168,6 +168,205 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
   "Access is denied", and each planned or failed install kept its `.<id>-install-*` folder; every removal of a cloned
   folder now clears the read-only flag first, as `addon remove` already did.
+- `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
+  Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
+  on their own (#237).
+- `scripts/game_ready.py` makes a rigged character ready for a game engine in one go: a cleaned
+  mesh, one material with one texture atlas (the normal map's detail baked into the colour), the
+  real height with the feet on the floor, engine bone names, at most 4 bones per vertex, every
+  move kept. Optional: brighter for small on-screen figures (or `auto`, as much as the figure
+  takes), glowing accents in a chosen colour (thin lines only, if asked), fingers folded into the
+  hands. A report says what an engine would still trip over.
+- `game_ready.py` keeps faces: a figure Finished at 8,000 triangles loses its nose, chin and eye
+  sockets, because a face is a small share of the surface. Rig a finer Finish (40,000) and let
+  `--decimate-to 8000 --head-protect 1` thin it here: the body gives up the triangles, the head
+  keeps them. `--colour-from` paints the result from a finer model of the same figure, such as
+  the raw model after Pixel Match (`photo_paint.py`), whose face keeps the picture's eyes;
+  `--head-texel` gives the head more of the texture: by default (`auto`) as much as the colour
+  source holds on the head at the texture size the game loads, from 1 to 4 times its share
+  (`--game-texture 1024` for a game that shrinks every map to 1024; the atlas size otherwise), so
+  a face never takes texels from the body that its picture cannot fill; a fixed `--head-texel 2`
+  or `1` (no extra share) as before. Only the face grows (`--head-zone face`, the default: the
+  head's front from the chin to the brows, between the temples), so a ponytail reaching the waist
+  or a tall hat keeps the body's texels; a figure whose ponytail took 76 % of the map had the
+  thin lines on its back plate melt into one blob. `--head-zone head` grows the whole head.
+  `--mesh-from` does it without rigging again: it takes the finer Finish as the mesh and carries
+  the skin weights over from the figure already rigged at 8k (a rig on a finer mesh sometimes
+  misses the legs or the spine).
+- `game_ready.py --look clean` takes the grey veil off a figure: by default every surface mirrors
+  about 4 % of a bright room, and on a dark coat under a studio light that lifted the darkest
+  tones from 7 to 29 (of 255) and halved the colour (measured against the picture it was painted
+  from). `clean` mirrors a fifth of that (`KHR_materials_specular`), so dark cloth stays dark and
+  colours stay full in engines and viewers that light with a bright environment; `stylized`, the
+  default, is the material as before.
+- `game_ready.py --normal-from <raw model>` gives a close-up version of a figure (a menu, a hero
+  stage) a normal map baked from the fine raw model, so the engine lights its nose, lips and folds
+  on the coarse mesh. Costs a second texture of the atlas's size.
+- `game_ready.py` shades a character softly by default: only edges steeper than 62 degrees stay
+  hard. Before, every UV seam above 25 degrees was hard too, and on a figure thinned to a few
+  thousand triangles that showed each triangle of the face ("made by hand"). Soft edges cost
+  nothing (the seams split the vertices either way); `--hard-seams` brings the old shading back.
+- `game_ready.py --drop-hidden` spends the triangle budget on what can be seen: a generated figure carries
+  a hidden inner wall inside its body, about half its triangles after the thinning. After the thinning
+  it drops the triangles no ray from outside reaches and that face a sealed hollow, keeping any that a
+  stride, a crouch, a straddle, arms up or a twist shows; the thinning aims higher first and adjusts per
+  figure, so it still lands on `--decimate-to`. On a 14,000-triangle knight 63 % of the triangles are
+  seen instead of 44 %.
+- `game_ready.py --transfer-cage` / `--transfer-reach` let `--colour-from` and `--normal-from`
+  reach deeper: where thinning sank spiky hair more than the default 12 mm into the finer model,
+  the rays started inside it and painted skin-coloured patches into the hair; 30 mm / 60 mm
+  cleared them on the faces tested.
+- `game_ready.py` stops on a broken rig: when the auto-rig found no bone for a slot Unity's
+  Humanoid needs (spine, shins, ...), it says which and writes nothing, since such a figure bends
+  wrongly in every move; `--allow-missing-bones` bakes it anyway. In one game's records, 20 of 190
+  rig tries lacked the spine or the spine and both shins. Missing optional bones (neck, chests,
+  toes) stay a note in the report.
+- `scripts/prop_ready.py` makes a finished prop or vehicle ready for a game engine: the front to
+  +Z, its real size from one measure, the pivot at the bottom centre, LODs baked from LOD0 as
+  `finish_props.py` bakes them (and compressed like Finish's), and a box or convex-hull collider.
+  A record says the size, the LODs and what looks wrong. With `--parts` a vehicle keeps its wheels
+  and doors as parts on their pivots and the record says how each moves (a wheel turns, a plug
+  door steps out and slides, as the model says); each LOD thins small parts more and gives every
+  part a floor by its size, so a long car's 24 small parts no longer starve its body.
+- `scripts/pixal3d_generate.py --right --left`: build from four pictures (front, right side, back,
+  left side) instead of two, so the sides come from your pictures too and Finish paints them.
+- `scripts/make_side_views.py` draws those side pictures for you: the studio's own picture engine
+  draws the right side from the front picture, and the left one is its mirror, so both agree on
+  how long the subject is. Animals built from front and back alone often come out too short or
+  with a second pair of ears or legs; from four views they come out right.
+- `pixal3d_generate.py --sides-shape-only`: the side pictures shape the model, but Finish paints
+  only from the front and the back. A side drawn by `make_side_views.py` never puts an eye or a
+  nose exactly where the front has them, and painting from it gave an animal a second pair of
+  eyes; real side photos and a vehicle's sides (doors, lettering) still paint without it.
+- `make_side_views.py --four-legged` checks that the legs stand apart in the drawn side. Where the
+  front and the hind legs touch in a picture, the generator fuses them into one lump; such a side
+  is drawn again with the next seed (up to `--tries`, default 4), and the first one with open
+  space under the body is kept. A puppy drawn with its legs bunched (6 % of its height open under
+  the body, where clean builds had 21-36 %) built fused legs; the check
+  (`image_to_3dlab/leg_check.py`) also measures front and back views.
+- `make_side_views.py --draw-left` draws the left side too instead of mirroring the right one (it
+  draws the right side of the mirrored front and mirrors that back). A mirror puts a part that sits
+  on one side only, such as a tail curled to the right, on both sides, and the build then grows it
+  twice: a puppy's thin tail came out as a Y on four seeds.
+- `scripts/fx_markers.py` marks where an effect was taken out of a picture. A flame or a glow built
+  as geometry looks like a sheet of paper from the side; take it out of the front picture with the
+  studio's picture editor, build from that, and this lines the two pictures up, finds where the
+  effect sat and writes an empty node there (`fx_flame_1`, with its size), where a game attaches
+  its own moving effect. The mesh and textures stay as they are. With `--side` (the right side view
+  with and without the effect) each node sits at the depth the side shows, so a mane of flames on the
+  back of the neck is marked there and not on the face.
+- `scripts/colour_compare.py` says where two models of the same figure differ in colour: both
+  drawn from eight sides in their base colour as a game shows them, every patch that changed
+  named (which side, how big, darker or lighter, where on the figure), a marked picture with
+  `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
+  dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
+  four only lost dark specks their old bake had). `--ignore-glow` leaves out where the second
+  model glows on purpose, for a game model against its source.
+- `game_ready.py` checks its own result by colour: the finished figure against the model its colour
+  came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
+  out. A patch that differs is a bake fault: it is named in the report and its problems, and marked
+  in `<output>.colour.png`. The readability curve the figure got (`--readability`) is put onto the
+  source first, so a figure lightened on purpose is no fault (without it 5 of 21 figures were
+  flagged for their faces and plates). On a knight it named the dark patch a folded atlas had baked
+  onto the cape's back (three views), and nothing on the fixed build or on 21 rebuilt figures.
+  `--no-colour-check` skips it.
+- `game_ready.py --drop-hidden` checks its drop in motion and repairs it: the figure before and after
+  the drop is posed in a run, a dodge, a fall and a reach (other moves than the drop's own veto) and
+  looked at from twelve sides by rays; where a ray first meets a dropped face and, without it, nothing
+  close behind, the figure would show a hole, and that face is put back. The report says how many
+  pixels of holes were found, how many faces went back and what is left; the worst view is marked in
+  `<output>.pose.png` (`--no-pose-check` skips it). A separate check of this kind found the holes a
+  looser drop rule had opened that the colour check could not see; on a knight in white fur it found
+  50 small hole pixels in 27 of 48 views and put 35 faces back, leaving none, for about 30 s more.
+- `game_ready.py --feet-from <Finish run>` fixes a sole the generator made up below the pictures'
+  feet: the outline check finds the parts below the outline that start on the floor; one reaching
+  4 % of the height or more (a second, larger shoe glued under the real one) is cut off, the cut
+  closed with a flat sole and the inner wall's second cap left out; a lower one (a heel too high)
+  is pressed flat to 2.5 cm, which keeps the shoe's length. The bones go with it, the figure stands
+  on its new soles at its height, the colour model and the colour check get the same feet, and the
+  report says what was done (`--feet cut|squash|off` decides by hand). Five figures fixed by hand in
+  Blender set the numbers (cut at 6-7 %, pressed at 3.5 %).
+- `game_ready.py` finds the Finish run for the feet by itself: without `--feet-from` it reads the
+  rigged model's provenance record and takes the Finish run it came from, so a figure rigged in the
+  studio needs no folder named (`--feet off` leaves the feet alone). On ten figures it found the
+  run given by hand eight times, once an earlier Finish of the same model, and once it caught that
+  the hand had named another try.
+- `game_ready.py --feet auto` checks its cut: where the made-up shoe was longer than the real boot,
+  a cut leaves flat blades of it lying in front of the toe. After the cut it looks straight up from
+  each new sole near the feet; a sole with another surface a few millimetres above it is such a
+  blade, and when they reach well past the boot those blades are cleared and the toe is closed,
+  so the boot keeps its own length, and the report says so. On four figures with platform shoes
+  two cuts were clean and two left blades. A blade is thinner than 0.35 % of the height (6.5 mm on a
+  1.85 m figure): a real toe left by the cut is 1-1.5 cm thick and thins only at its rim, so it stays
+  (a first rule at 1.5 % took a gunslinger's whole toe for a blade).
+- `game_ready.py --glow-not-on-hands` keeps the glow off the hands and fingers (glowing hands read
+  as too big at a game's camera), as `--glow-not-on-head` does for the head.
+- **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
+
+### Fixed
+- `prop_ready.py --collider hull` builds the hull on Blender 5.2 again: a vertex that was both inside
+  the hull and unused was handed to the delete twice, and Blender 5.2 refused (every tree of a prop
+  sheet failed to place).
+- `game_ready.py --colour-from` never takes paint from the back of a surface. Its rays start
+  `--transfer-cage` outside the figure and look inward, and round a neck standing in a high collar
+  they started behind the collar's inside: the first surface they met faced the other way, so a
+  wizard's neck wore the collar's dark as a zigzag under the chin and tufts at the collar's edges
+  (4 % of his atlas met a surface facing away, most under a hat's brim and round the neck). Each
+  texel now takes the longest of three cages (the whole, 35 % and 10 % of it) whose ray met a
+  surface facing it, both normals baked in the figure's own space; a texel no cage reaches that way
+  keeps its own paint (0.2 % on that figure), and the normal map stays flat where the full cage met
+  a surface facing away. The report counts it (`colour_transfer_guard`).
+- `game_ready.py --colour-from` takes no paint from another layer standing off the surface. A collar
+  flap 8-11 mm off a wizard's jaw, facing the same way, lay inside the full cage, so the long rays met
+  it first and drew dark strokes along the jaw. A texel whose full-cage paint lies far from the
+  model's own paint there, where a shorter cage's lies close to it, now takes the shorter cage; a
+  hair spike the thinning sank keeps the long ray's paint, since its own paint is hair too. The
+  report counts it (`colour_transfer_guard.other_layer`).
+- `game_ready.py --drop-hidden` never opens an edge a camera sees. Where two surfaces cross (hair going up
+  into a hat's brim), each lost its part inside the other, and the thinned mesh's wide triangles left two
+  jagged rims with slits between them that showed the hat's inside from below: ten such edges on a wizard's
+  game figure, holes in a viewer that hides back faces. Before the drop, every edge it would open is asked
+  with rays from its middle; where one reaches the outside, the face on it stays, and the edges that opens
+  are asked again. The report counts them (`kept_for_seen_rims`).
+- `game_ready.py --normal-from` shades a dense model that came without vertex normals smooth before
+  baking from it: a glTF without normals is flat by the spec, so a refiner's million small triangles
+  put their facets into the normal map as noise (skin read as dirty on a knight).
+- `game_ready.py --glow` no longer glows on paint in the glow's own hue: a figure with dark crimson
+  plates and a few bright red lines glowed, and was painted over in the glow colour, on every thin
+  plate edge, a blotchy bright red. When most of a glow hue's thin lines are clearly darker than
+  its brightest ones, only the bright group glows now (the report's `glow_split` says so); a hue
+  that is mostly bright lines is left as it was.
+- `game_ready.py --glow-max-width` judges a line's width in centimetres, not in texels: a face
+  grown into the atlas packed a figure's body twice as dense, its light blue jacket lines grew too
+  wide to count as lines, and the check above flipped and lit the whole jacket. The width now
+  follows the body's own texel density (the report's `body_texels_per_cm`), so the same figure
+  gives the same glow however the atlas is packed; on 22 glowing figures every glow colour keeps
+  the decision it had.
+- `game_ready.py`'s atlas paints no texel twice: Smart UV Project at its wide angle folded some
+  islands onto themselves, and the bake wrote hidden faces from inside over seen ones (a dark,
+  faceted patch on a cape's back, after a finer thinning). Only the faces that overlap are now
+  unwrapped again, at the same texels per square metre as the rest, so the compact islands stay;
+  on that figure 1.3 % of the texels were painted twice before and none after, at 5.0 texels per
+  cm (4.85 in the last build). The report says how many faces still overlap.
+- `game_ready.py --drop-hidden` also drops the inner wall that pokes out past the outer surface
+  after the thinning. Such a piece lies a millimetre or two over the surface and faces it: a game
+  never draws it (its back faces the camera), but the sky-light bake took it for a roof and baked
+  small dark triangles into the surface under it (a cape's hem, the legs). It is found by rays: seen
+  from behind, its front facing another face's front close by, and its front seen from no direction
+  at all, in the A-pose and in every pose the hidden wall is checked in; then it goes with the hidden
+  wall. (A looser first version, which let a face go when it was seen only flatter than 66 degrees,
+  opened holes at the edge of a figure's hair and at the joints of six of 21 figures.) The report
+  counts it per try (`poking_out`, `poking_kept_for_poses`).
+- `game_ready.py`'s sky-light bake looks through a piece lying over the surface and facing it, with the
+  sky behind it: a game culling back faces never draws such a piece from outside, so the light reaches
+  the surface under it. Pieces a camera sees at a grazing angle stay in the mesh (dropping them opened
+  holes) and kept baking flat grey triangles into a knight's white fur; now only the shadow and bounce
+  rays pass through them (163 of 13,912 faces there), their own texels are baked as before, and the
+  grey patches are gone but for one or two small ones.
+- `game_ready.py`'s report measures the atlas honestly: texels per centimetre of surface, the share
+  of the atlas covered and the share painted twice, instead of a summed UV area, which counted a
+  folded island twice (a knight's atlas looked 68 % used while 1.2 % of its texels were painted
+  twice).
 
 ## [0.6.0] - 2026-11-18
 

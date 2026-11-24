@@ -56,6 +56,8 @@ game-ready LODs), start with [the prop sheet guide](../docs/prop-sheets.md).
 | `hero_parts.py` | Set a small part of a figure in again, built on its own at full detail: a holstered pistol, a pouch, or both boots. |
 | `upscale_esrgan.py` | Upscale a picture 4x with Real-ESRGAN, then resize it to a square of SIZE pixels. |
 | `make_back_view.py` | Draw the back of a subject from its front picture, for a front + back 3D build. |
+| `make_side_views.py` | Draw a subject's right and left side from its front picture, for a four-view 3D build. |
+| `fx_markers.py` | Mark where an effect was taken out of a picture, as empty nodes in the model built from it. |
 | `trellis_space_generate.py` | Full image -> GLB generation through the CLEAN `trellis-space-mac` port on Apple Silicon. |
 | `trellis_cuda_generate.py` | Full image -> GLB generation through Microsoft's own TRELLIS.2 on an NVIDIA card. |
 | `trellis_rocm_generate.py` | Full image -> GLB generation through Microsoft's own TRELLIS.2 on an AMD card. |
@@ -134,6 +136,8 @@ Numbers and renders to decide whether a change helped. Read `docs/` before trust
 | Script | What it does |
 |---|---|
 | `compare_to_source.py` | Put a generated asset next to the image it was generated from. |
+| `colour_compare.py` | Say where two versions of one figure differ in colour, such as a game model and its source. |
+| `outline_check.py` | Say which parts of a model stick out past the pictures it was made from. |
 | `mark_asset.py` | Record a human verdict on a generated asset, so winners stay findable. |
 | `ribbon_metric.py` | Measure how torn a generated mesh is, and gate post-processing on it. |
 | `tear_provenance.py` | Ask of every large tear: could the input view see it?. |
@@ -216,6 +220,11 @@ tuning checklist. Manual fitting and visual weight/deformation review remain req
 | `kimodo_retarget.py` | Play a Kimodo text-to-motion clip on a SkinTokens-rigged humanoid and export an animated GLB, with feet grounded, repeating clips loopable and looping moves in place. |
 | `rig_check.py` | Say whether a rigged GLB fits the preset moves (a humanoid), read without Blender. |
 | `name_bones.py` | Give a rigged humanoid GLB's bones an engine's names (Unity Humanoid), without Blender. |
+| `unity_humanoid_names.py` | Rename a rigged humanoid GLB's bones to Unity Humanoid or Mixamo names, without Blender. |
+| `game_ready.py` | Make a rigged character game-ready: one clean mesh, one texture, real size, engine bone names. |
+| `blender_game_ready.py` | The Blender half of `game_ready.py`: rescale, clean, new UVs, one baked atlas, weights, export. |
+| `prop_ready.py` | Make a finished prop game-ready: front to +Z, real size, pivot on the floor, LODs and a collider. |
+| `blender_prop_ready.py` | The Blender half of `prop_ready.py`: turn, scale and ground a prop, export LOD0, and the hull. |
 | `attack_pose.py` | Pose curves for a quadruped slam attack, as pure functions. |
 | `rigify_walk_pose.py` | Pose curves for a quadruped trot on a Rigify-generated rig, as pure functions. |
 | `blender_walk_cycle.py` | Author a looping quadruped gait cycle on the rigged fox in the live Blender scene. |
