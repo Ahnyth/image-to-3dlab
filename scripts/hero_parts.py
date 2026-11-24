@@ -513,6 +513,13 @@ def main(argv: list[str] | None = None) -> int:
         plans = {side: hp.leg_plan(every, all_bones, joint_index[legs[side]["shin"]],
                                    [joint_index[b] for b in [legs[side]["foot"], *legs[side]["below"]]],
                                    heads[legs[side]["shin"]], heads[legs[side]["foot"]]) for side in hh.SIDES}
+        if views_dir is not None:        # a sole Pixal3D made up below the drawn feet is no floor for a new boot
+            for side, plan in plans.items():
+                floor = hp.picture_floor(view, plan["foot"], plan["floor"], mesh_scale, SOLE_LIMIT_PX)
+                if floor > plan["floor"]:
+                    run.say(f"measure: {side} leg: the old sole lies below the picture's feet (made up); the new boot "
+                            f"stands {floor - plan['floor']:.4f} higher, on the drawn feet")
+                    plan["floor"] = floor
         top_view = None                  # where the boots end, in the view's pixels
         if args.top == "auto":
             pixels = {}

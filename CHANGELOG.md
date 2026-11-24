@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Hero chain judges each stage on its game figure, and new boots keep their feet.** Each stage that changes the
+  shape is compared on the game figure with the one before it, in its own region: the head's jagged outline, flakes and
+  jaw strokes (`figure_check.against`), the feet reaching ahead of the ankles (`figure_check.feet`, also in the
+  figure check). New boots stand on the picture's feet (`hero_parts.picture_floor`), not on a sole the generator made
+  up below them: stood on it, they lost their feet to game-ready's foot cut and were left as straight shafts.
 - **The Hero chain** (`scripts/hero_chain.py`): a rigged figure and its front picture to a finished game figure in one
   command, with no numbers given by hand. Hero hands, Hero head (the whole head under a hat's brim, or the face alone
   without one), the boots (where they end read in the picture; no boots, no stage), the band's runes carried round it

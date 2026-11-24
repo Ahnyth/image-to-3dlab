@@ -732,6 +732,111 @@ WORSE = 1.5                # a hint this much bigger than in the version before 
 MARGIN = {"dark strokes under the jaw": 0.5, "jagged outline": 0.2, "loose flakes": 1}   # ... and by this much
 
 
+def _worse(name: str, now, was) -> bool:
+    return (isinstance(now, (int, float)) and isinstance(was, (int, float))
+            and now > was * WORSE and now > was + MARGIN[name])
+
+
+def against(results: list, was_all: dict) -> list:
+    """The LOOKS among RESULTS judged against the version before alone (WAS_ALL: name -> its Result): "fail" when
+    clearly worse, else "pass", whatever they say on their own. A Hero chain stage is dropped on these: a hint the
+    figure had before the stage (spiky hair read as a jagged outline) is not the stage's fault."""
+    out = []
+    for r in results:
+        was = was_all.get(r.name)
+        if r.name not in LOOKS or was is None:
+            continue
+        bad = _worse(r.name, r.value, was.value)
+        out.append(Result(r.name, "fail" if bad else "pass", r.value, r.limit,
+                          r.message + (f"; worse than the version before ({was.value})" if bad
+                                       else f"; the version before had {was.value}"), list(r.spots)))
+    return out
+
+
+# --- feet: a boot set as a straight shaft has lost its foot ----------------------------------------
+TOE_DROP = 0.02            # a toe reaching this share of the height less far ahead of the ankle than before ...
+TOE_LEAST = 0.02           # ... and now less than this ahead of it is a lost foot (the chain's boots: 0.039 -> -0.005)
+FOOT_BAND = 0.03           # the foot: the lowest this share of the height
+ANKLE_BAND = (0.08, 0.12)  # the ankle: this slice of the height
+
+
+def _samples(model: cc.Model, n: int = 40000) -> np.ndarray:
+    """N points spread over the surface by area (a fixed seed): a box's eight corners say nothing about a slice."""
+    p, f = np.asarray(model.positions, float), np.asarray(model.faces)
+    tri = p[f]
+    area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    if area.sum() <= 0:
+        return p
+    rng = np.random.default_rng(0)
+    pick = rng.choice(len(f), n, p=area / area.sum())
+    u, v = rng.random(n), rng.random(n)
+    flip = u + v > 1
+    u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+    t = tri[pick]
+    return t[:, 0] + u[:, None] * (t[:, 1] - t[:, 0]) + v[:, None] * (t[:, 2] - t[:, 0])
+
+
+def toes(figure: Figure) -> dict:
+    """{"left"/"right": how far the foot reaches ahead (+Z) of its ankle's front, as a share of the height}."""
+    p = _samples(figure.model)
+    y = p[:, 1]
+    lo, h = float(y.min()), float(np.ptp(y))
+    if h <= 0:
+        return {}
+    centre = float(np.median(p[y < lo + 0.10 * h, 0]))
+    out = {}
+    for side, mine in (("left", p[:, 0] > centre), ("right", p[:, 0] <= centre)):   # glTF: the figure's left is +X
+        q = p[mine]
+        foot = q[q[:, 1] < lo + FOOT_BAND * h]
+        ankle = q[(q[:, 1] > lo + ANKLE_BAND[0] * h) & (q[:, 1] < lo + ANKLE_BAND[1] * h)]
+        if len(foot) >= 10 and len(ankle) >= 10:
+            out[side] = round(float((np.percentile(foot[:, 2], 98) - np.percentile(ankle[:, 2], 98)) / h), 4)
+    return out
+
+
+def feet(figure: Figure) -> Result:
+    found = toes(figure)
+    if not found:
+        return Result("feet forward", "info", "-", "-", "no feet found near the floor")
+    least = min(found.values())
+    return Result("feet forward", "info", least, f"a lost foot: below {TOE_LEAST} when it had more",
+                  "the toes reach " + ", ".join(f"{side} {v:.3f}" for side, v in found.items()) + " of the height ahead "
+                  "of the ankle (a robe to the floor or a stilt: about 0; boots and shoes on 31 game figures 0.035-0.11)")
+
+
+def feet_against(before: Figure, figure: Figure) -> Result:
+    """Fails when a foot reaches clearly less far ahead than in the version before and hardly ahead at all: a boot
+    stood on a sole made up below the drawn feet, whose foot the game-ready step then cut off (2026-11-24)."""
+    now, was = toes(figure), toes(before)
+    r = feet(figure)
+    lost = [side for side in now if side in was and now[side] < was[side] - TOE_DROP and now[side] < TOE_LEAST]
+    r.status = "fail" if lost else "pass"
+    r.message += (f"; the {' and '.join(lost)} foot lost its toe (before: "
+                  + ", ".join(f"{s} {was[s]:.3f}" for s in lost) + ")" if lost
+                  else "; before: " + ", ".join(f"{s} {v:.3f}" for s, v in was.items()))
+    return r
+
+
+STAGE_LOOKS = {"head": "head", "boots": "feet"}   # what a Hero chain stage's game figure is judged on: its own region
+
+
+def stage_against(stage: str, before_path, path, size: int = 320) -> list:
+    """A Hero chain STAGE's game figure at PATH against the one before the stage, on the stage's own region alone: the
+    head's LOOKS that got clearly worse (`against`), or the feet (`feet_against`); each "pass" or "fail". Looks
+    elsewhere are left out: two game-ready runs of the same head drew 2.06 and 0.0 dark strokes under the jaw, so a
+    boots stage judged on the jaw was dropped by chance (skin_sorcerer_c, 2026-11-24)."""
+    region = STAGE_LOOKS.get(stage)
+    if region is None:
+        return []
+    figure, old = read_figure(Path(path)), read_figure(Path(before_path))
+    if region == "feet":
+        return [feet_against(old, figure)]
+    head, old_head = find_head(figure), find_head(old)
+    now = _head_checks(figure, head, head_views(figure, head, size))
+    was = {r.name: r for r in _head_checks(old, old_head, head_views(old, old_head, size))}
+    return against(now, was)
+
+
 @dataclass
 class Checked:
     path: Path
@@ -761,17 +866,20 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None, 
         old = read_figure(Path(before))
         old_head = find_head(old)
         was_all = {r.name: r for r in _head_checks(old, old_head, head_views(old, old_head, size))}
+        results.append(feet_against(old, figure))
         for r in results:
             was = was_all.get(r.name)
             if r.name not in LOOKS or was is None or not isinstance(r.value, (int, float)) \
                     or not isinstance(was.value, (int, float)):
                 continue
-            if r.value > was.value * WORSE and r.value > was.value + MARGIN[r.name]:
+            if _worse(r.name, r.value, was.value):
                 r.status = "fail"
                 r.message += f"; worse than the version before ({was.value})"
             else:
                 r.message += f"; the version before had {was.value}"
         results.append(colour_against(old, figure, colour_picture, same_look))
+    else:
+        results.append(feet(figure))
     return Checked(path, results, {"head": views, "whole": whole_views(figure, size),
                                    "hands": hand_views(figure)})
 

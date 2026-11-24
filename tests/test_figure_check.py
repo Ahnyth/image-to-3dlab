@@ -335,3 +335,41 @@ def test_a_long_thumb_reaching_among_the_fingers_is_no_sixth_finger():
     five = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0], [40.0, 0.0]])
     assert fc.digits_in_cut(five) == 5                                        # evenly spaced: a digit too many
     assert fc.digits_in_cut(np.r_[five[:4], [[70.0, 5.0]]]) == 4               # one set apart: the thumb's tip
+
+
+# --- feet: a boot set as a straight shaft has lost its foot (the Hero chain's boots, 2026-11-24) ------------------
+
+def legs_figure(toe: float) -> fc.Figure:
+    """Two shins 0.9 tall standing apart, each on a foot reaching TOE ahead of the shin's front (0: a stilt)."""
+    parts = []
+    for x in (-0.15, 0.05):
+        parts.append(box((x, 0.05, -0.05), (x + 0.1, 0.9, 0.05)))              # the shin
+        parts.append(box((x, 0.0, -0.06), (x + 0.1, 0.05, 0.05 + toe)))       # the foot
+    parts.append(box((-0.2, 0.9, -0.1), (0.2, 1.8, 0.1)))                     # the body above
+    p, f = join(*parts)
+    return fc.Figure(model_of(p, f), {}, [], None)
+
+
+def test_a_foot_forward_is_measured_from_the_ankle():
+    good, stilt = fc.feet(legs_figure(0.10)), fc.feet(legs_figure(0.0))
+    assert good.status == stilt.status == "info"
+    assert good.value == pytest.approx(0.10 / 1.8, abs=0.006)
+    assert abs(stilt.value) < 0.006
+
+
+def test_feet_that_lost_their_toes_fail_against_the_version_before():
+    before, after = legs_figure(0.10), legs_figure(0.0)
+    assert fc.feet_against(before, after).status == "fail"
+    assert fc.feet_against(before, legs_figure(0.09)).status == "pass"    # a little shorter is no lost foot
+    assert fc.feet_against(after, after).status == "pass"                # a figure in a robe stays as it was
+
+
+def test_a_stage_fails_only_on_what_got_clearly_worse():
+    now = [fc.Result("jagged outline", "fail", 2.4, "-", "12 notches"), fc.Result("loose flakes", "look", 1, "-", ""),
+           fc.Result("fingers", "fail", 3, "-", "")]
+    was = {"jagged outline": fc.Result("jagged outline", "look", 0.4, "-", ""),
+           "loose flakes": fc.Result("loose flakes", "look", 1, "-", "")}
+    out = {r.name: r for r in fc.against(now, was)}
+    assert out["jagged outline"].status == "fail" and "worse than the version before (0.4)" in out["jagged outline"].message
+    assert out["loose flakes"].status == "pass"
+    assert "fingers" not in out                                          # not a look the stage is judged by

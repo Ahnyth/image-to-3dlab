@@ -202,3 +202,44 @@ def test_the_game_step_runs_again_when_a_stage_rewrote_its_models(tmp_path, monk
     chain.games = {}
     chain.game_run(models, "boots", ["--height", "2.2"])
     assert len(calls) == 2
+
+
+def test_a_game_figure_made_for_the_same_models_is_taken_under_another_name(tmp_path):
+    # the hands stage's figure is the head stage's figure before: made once, also across runs of the script
+    import hero_chain
+
+    rig = tmp_path / "rig.glb"
+    rig.write_bytes(b"rig")
+    models = ch.Models(rig, {})
+    calls = []
+
+    def fake_call(command, log, what, gpu=False):
+        calls.append(what)
+        glb = Path(command[3])
+        glb.write_bytes(b"figure")
+        glb.with_suffix(".report.json").write_text("{}")
+        return 0
+
+    chain = hero_chain.Chain.__new__(hero_chain.Chain)
+    chain.out, chain.games, chain.call = tmp_path, {}, fake_call
+    first, _ = chain.game_run(models, "hands", ["--height", "2.2"])
+    chain.games = {}                                          # a new run of the script
+    again, _ = chain.game_run(models, "before_head", ["--height", "2.2"])
+    assert len(calls) == 1 and again == first
+
+
+def test_a_stage_whose_game_figure_lost_its_feet_is_dropped(tmp_path, monkeypatch):
+    # skin_sorcerer_c's boots stood on a made-up sole and game_ready cut their feet off: colour and holes passed,
+    # only the game figure showed it (2026-11-24)
+    import hero_chain
+
+    before, after = ch.Models(tmp_path / "a.glb", {}), ch.Models(tmp_path / "b.glb", {})
+    chain = hero_chain.Chain.__new__(hero_chain.Chain)
+    chain.game_run = lambda models, tag, game: (tmp_path / f"{tag}.glb", {"pose_check": {"hole_px_left": 0}})
+    lost = fc.Result("feet forward", "fail", -0.009, "-", "the left and right foot lost its toe")
+    monkeypatch.setattr(fc, "stage_against", lambda stage, old, new: [lost] if stage == "boots" else [])
+    stage = ch.Stage("boots", "kept", "")
+    checks = chain.game_checks("boots", before, after, stage, [])
+    assert (False, "the game figure: the left and right foot lost its toe") in checks
+    assert stage.measured["game figure: feet forward"] == -0.009
+    assert chain.game_checks("band", before, after, ch.Stage("band", "kept", ""), []) == []

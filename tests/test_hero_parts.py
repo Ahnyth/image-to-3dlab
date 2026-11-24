@@ -364,6 +364,23 @@ def test_a_sole_below_the_pictures_feet_is_measured_in_its_pixels():
     assert hp.sole_below_feet(view, boot) == pytest.approx(lowest - 1000.0)
 
 
+def test_a_made_up_sole_under_the_old_foot_lowers_no_new_boot():
+    # Pixal3D made up a sole below skin_sorcerer_c's drawn feet; the new boot stood on it, 71 px too low, and game_ready
+    # cut everything below the picture's feet off: the boot's foot, so a straight shaft was left (2026-11-24)
+    view = gauge_view()
+    image = np.zeros_like(view.image)
+    image[200:1000, 500:900, 3] = 255                            # the picture's subject ends at row 1000
+    view = pp.View(image, view.cam_to_world, view.fov_x)
+    foot = box((-0.05, -0.30, 0.0), (0.05, -0.10, 0.1), subdivide=1)["positions"]
+    below = hp.sole_below_feet(view, foot)
+    assert below > 20                                             # the old foot's sole: made up below the feet
+    floor = hp.picture_floor(view, foot, float(foot[:, 1].min()))
+    raised = foot + [0.0, floor - foot[:, 1].min(), 0.0]
+    assert abs(hp.sole_below_feet(view, raised)) < 1.0            # a boot on this floor stands on the drawn feet
+    high = foot + [0.0, 0.5, 0.0]                                 # a sole above the picture's feet stays as it is
+    assert hp.picture_floor(view, high, float(high[:, 1].min())) == pytest.approx(float(high[:, 1].min()))
+
+
 def test_a_boot_takes_the_old_legs_weights_point_by_point():
     figure, bone = lower_leg()
     plan = hp.leg_plan(figure["positions"], bone, shin=1, foot=[2], knee=np.array([-0.07, -0.2, 0.0]),

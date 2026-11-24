@@ -875,6 +875,31 @@ def sole_below_feet(view: pp.View, points: np.ndarray, mesh_scale: float = 1.0, 
     return float(y[sole].max() - max(bottoms)) if bottoms else float("nan")
 
 
+def picture_floor(view: pp.View, foot: np.ndarray, floor: float, mesh_scale: float = 1.0,
+                  limit_px: float = 3.0) -> float:
+    """The floor a new boot stands on: FLOOR (the old foot's lowest point) when the picture's feet are there, else the
+    height of the picture's feet under the old FOOT. Pixal3D may make up a sole below the drawn feet (skin_sorcerer_c's
+    lay 71 px lower); a boot stood on it reached below the feet, and the game-ready step's foot rule then cut off
+    everything below the picture's feet: the boot's foot, so a straight shaft was left (2026-11-24). LIMIT_PX is how far
+    below the feet a sole may lie before it counts as made up."""
+    p = np.asarray(foot, dtype=np.float64)
+    below = sole_below_feet(view, p, mesh_scale)
+    if not np.isfinite(below) or below <= limit_px:
+        return float(floor)
+    low = p[p[:, 1] <= p[:, 1].min() + 0.01 * float(np.ptp(p[:, 1]))]
+    step = 0.01 * max(float(np.ptp(p[:, 1])), 1e-6)
+    _, y0, _ = view_pixels(view, low, mesh_scale)
+    _, y1, _ = view_pixels(view, low + [0.0, step, 0.0], mesh_scale)
+    per_px = step / max(float(np.mean(y0 - y1)), 1e-9)       # model units a pixel up the picture
+    lift = 0.0
+    for _ in range(4):        # the sole's lowest pixel comes from its nearest point: a few steps settle perspective
+        lift += below * per_px
+        below = sole_below_feet(view, p + [0.0, lift, 0.0], mesh_scale)
+        if not np.isfinite(below) or abs(below) < 0.5:
+            break
+    return float(floor) + lift
+
+
 def boot_weights(points: np.ndarray, part: dict, bone: np.ndarray, plan: dict) -> np.ndarray:
     """A new boot's skin weights, point by point: those of the nearest point of the old leg below the knee (the old
     boot and the trousers above it), so the toe moves with the toes' bone, the heel with the foot's and the shaft with

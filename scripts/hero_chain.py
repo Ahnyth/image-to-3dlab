@@ -20,15 +20,17 @@ after `--`, and every stage changes them too):
             picture the figure was painted from and its runes are carried round it; no such band, no stage (`--box`
             gives it by hand).
   5. game   game_ready.py with the options given, on the last models kept, then figure_check.py on the result.
-            The figure's own foot option stays: Hero parts stands new boots on the figure's floor, and where the
-            generator made up a sole below the pictures' feet (the Sorcerer's, 76 px) the foot cut, measured on the
-            pictures, takes it off the new boots as it did off the old feet.
+            The figure's own foot option stays: Hero parts stands new boots on the picture's feet, not on a sole the
+            generator made up below them (the Sorcerer's lay 71 px lower: boots stood on it lost their feet to the foot
+            cut, which takes off everything below the pictures' feet), so the cut leaves the new boots whole.
 
 Every stage checks itself and is dropped when its check fails, the chain going on with the models from before it:
 the colour of the model the game figure takes its paint from must stay as it was outside where the stage changed the
 figure (`colour_compare`, a patch elsewhere is paint that bled or a part that moved), and a stage that changes the
 shape (hands, head, boots) must open no hole in motion that was not there before (game_ready's pose check, run on the
-stage's models). A stage whose own run fails is dropped the same way.
+stage's models), and its game figure must be no worse than the one before it in the stage's own region (the head's
+jagged outline, flakes and jaw strokes; the feet reaching ahead of the ankles: `figure_check.stage_against`). A stage
+whose own run fails is dropped the same way.
 
 Writes, in --out: a folder per stage (its tool's run folder, its log, stage.json), game/ (the game-ready runs the
 checks made), <name>.glb (the finished figure, with its game-ready report) and report/ (index.html and report.json: what
@@ -202,6 +204,12 @@ class Chain:
             return self.games[key]
         folder = self.out / "game"
         folder.mkdir(exist_ok=True)
+        for stamp in folder.glob("*.key.json"):   # made before under another name: the hands' figure is the head's before
+            made = stamp.with_name(stamp.name[:-len(".key.json")] + ".glb")
+            if (made.exists() and made.with_suffix(".report.json").exists()
+                    and stamp.read_text(encoding="utf-8") == key):
+                self.games[key] = (made, json.loads(made.with_suffix(".report.json").read_text(encoding="utf-8")))
+                return self.games[key]
         glb = folder / f"{tag}.glb"
         report_path = glb.with_suffix(".report.json")
         stamp = glb.with_suffix(".key.json")
@@ -416,7 +424,30 @@ class Chain:
             ok, why = hc.pose_verdict(report, before_report)
         stage.measured["holes in motion"] = (report or {}).get("pose_check", {}).get("hole_px_left")
         checks.append((ok, why))
+        if ok is not False:
+            checks += self.game_checks(name, before, after, stage, game)
         return checks
+
+    def game_checks(self, name: str, before: hc.Models, after: hc.Models, stage: hc.Stage,
+                    game: list[str]) -> list[tuple]:
+        """The stage judged where its fault shows: on the game figure, against the game figure before the stage, in
+        the stage's own region (`figure_check.stage_against`). The stage checks above compare the paint source, so
+        they passed skin_sorcerer_c's head stage, whose game figure had dark shards in the back hair, and its boots,
+        whose feet game_ready cut off (2026-11-24)."""
+        from image_to_3dlab import figure_check as fc
+
+        if name not in fc.STAGE_LOOKS:
+            return []
+        glb, _ = self.game_run(after, name, game)
+        old, _ = self.game_run(before, f"before_{name}", game)
+        if glb is None or old is None:
+            return [(None, "the game figure before or after the stage was not made: not compared")]
+        out = []
+        for r in fc.stage_against(name, old, glb):
+            stage.measured[f"game figure: {r.name}"] = r.value
+            out.append((r.status != "fail", f"the game figure: {r.message}" if r.status == "fail"
+                        else f"the game figure's {r.name} no worse than before"))
+        return out
 
 
 def main(argv: list[str] | None = None) -> int:
