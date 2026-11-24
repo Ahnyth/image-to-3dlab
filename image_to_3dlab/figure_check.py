@@ -786,8 +786,9 @@ def sheet(views: dict, spots: list, columns: int = 5) -> Image.Image:
     return out
 
 
-def write_report(checked: list, out, title: str = "Figure check") -> Path:
-    """An HTML page (and report.json) for one or more checked figures, side by side."""
+def write_report(checked: list, out, title: str = "Figure check", preface: str = "", extra: dict | None = None) -> Path:
+    """An HTML page (and report.json) for one or more checked figures, side by side. PREFACE (HTML) goes above the
+    figures' table (the Hero chain's stages); EXTRA joins report.json under "extra"."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     names = [c.path.stem for c in checked]
@@ -831,8 +832,10 @@ def write_report(checked: list, out, title: str = "Figure check") -> Path:
             "display:block;margin:4px 0 14px}small{color:#aab}</style><h1>" + html.escape(title) + "</h1>"
             "<p>passed and FAILED are verdicts; <b style='color:#e0951a'>look here</b> points at a spot a measure "
             "cannot judge alone (circled in red); info is for the record. Hover a cell for its words.</p>"
-            + "".join(table) + "".join(parts))
+            + preface + "".join(table) + "".join(parts))
     (out / "index.html").write_text(page, encoding="utf-8")
     report = {c.path.stem: {"failed": c.failed, "results": [r.as_dict() for r in c.results]} for c in checked}
+    if extra is not None:
+        report["extra"] = extra
     (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return out / "index.html"

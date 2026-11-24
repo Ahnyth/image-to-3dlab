@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Hero chain** (`scripts/hero_chain.py`): a rigged figure and its front picture to a finished game figure in one
+  command, with no numbers given by hand. Hero hands, Hero head (the whole head under a hat's brim, or the face alone
+  without one), the boots (where they end read in the picture; no boots, no stage), the band's runes carried round it
+  (the band found in the picture; no band, no stage) and the game-ready step run in order on the rigged model and the
+  finer models the game-ready step bakes from (read from its options after `--`). Every stage checks itself and is
+  dropped when its check fails, the chain going on with the models from before it: the hands must count five digits
+  on both sides, the colour the game figure takes its paint from must stay as it was outside where the stage changed
+  the figure, and a stage that changes the shape must open no hole in motion that was not there before (a game-ready
+  run on its models). One page (`report/index.html`, and `chain.json`) says what each stage did and measured and why
+  it was kept, dropped or skipped, above the finished figure's own check (`figure_check.py`, against `--before` when
+  given). A rerun keeps each stage whose inputs did not change; `--gpu-lock` folders let two runs share one card.
 - **Hero hands** (`scripts/hero_hands.py`): a rigged figure's mitten hands replaced by hands with real fingers. Each
   hand is cut from the picture, upscaled, redrawn flat by the picture editor (fingers apart, seen from the back of the
   hand) and built on its own, so it fills Pixal3D's whole box; drawings and builds are kept only when their outline

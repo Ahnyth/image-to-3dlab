@@ -54,6 +54,7 @@ game-ready LODs), start with [the prop sheet guide](../docs/prop-sheets.md).
 | `hero_hands.py` | Give a rigged figure hands with real fingers: each hand built on its own and grafted on at the wrist. |
 | `hero_face.py` | Give a figure a sharper face, or its whole head under a hat brim: built again on its own and set in above its collar. |
 | `hero_parts.py` | Set a small part of a figure in again, built on its own at full detail: a holstered pistol, a pouch, or both boots. |
+| `hero_chain.py` | Turn a rigged figure and its front picture into a finished game figure, every Hero stage checking itself. |
 | `upscale_esrgan.py` | Upscale a picture 4x with Real-ESRGAN, then resize it to a square of SIZE pixels. |
 | `make_back_view.py` | Draw the back of a subject from its front picture, for a front + back 3D build. |
 | `make_side_views.py` | Draw a subject's right and left side from its front picture, for a four-view 3D build. |
