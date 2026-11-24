@@ -149,8 +149,10 @@ def _axes(direction):
     return d, right, np.cross(right, -d)
 
 
-def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 320) -> View:
-    """FIGURE seen from DIRECTION, the square of HALF model units around CENTRE filling SIZE pixels.
+def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 320,
+         only: np.ndarray | None = None) -> View:
+    """FIGURE seen from DIRECTION, the square of HALF model units around CENTRE filling SIZE pixels; with ONLY (a mask
+    of its triangles) those alone, the rest of the figure left out.
 
     Back faces are culled and the nearest face wins, as a game draws it."""
     model = figure.model
@@ -162,7 +164,7 @@ def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 
     tri = model.positions[model.faces]
     normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
-    keep = np.flatnonzero(normals @ d > 0)
+    keep = np.flatnonzero((normals @ d > 0) & (True if only is None else np.asarray(only, bool)))
     face = np.full((size, size), -1, np.int64)
     rgb = np.zeros((size, size, 3))
     normal = np.zeros((size, size, 3))
@@ -684,12 +686,15 @@ def hand_views(figure: Figure, size: int = 240) -> dict:
         found = hand(figure, side)
         if found is None:
             continue
-        _, wrist, axis, length = found
+        owned, wrist, axis, length = found
         centre = wrist + 0.5 * length * axis
         outward = np.array([1.0 if side == "Left" else -1.0, 0.0, 0.0])
+        # the hand's own triangles alone: from inside the body stood in front of the palm (the other hand's back showed)
+        # and from the tips the sleeve and the cape (the second reviewer of round 28 of the AssetFurnace Support notes)
+        alone = owned[figure.model.faces].any(axis=1)
         for label, d in (("outside", outward), ("inside", -outward), ("front", FRONT), ("tips", -axis)):
             name = f"{side.lower()} hand {label}"
-            out[name] = draw(figure, name, d, centre, 0.75 * length, size)
+            out[name] = draw(figure, name, d, centre, 0.75 * length, size, only=alone)
     return out
 
 

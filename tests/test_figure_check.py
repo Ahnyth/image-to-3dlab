@@ -436,3 +436,22 @@ def test_the_head_is_drawn_twice_as_large_for_the_eye():
     close = fc.close_head_views(figure, head, 64)
     assert close and all(view.rgb.shape[:2] == (128, 128) for view in close.values())
     assert set(close) == set(fc.head_views(figure, head, 64))
+
+
+def test_a_hands_close_views_draw_the_hand_alone():
+    # the second reviewer of round 28: "inside" looked through the body and showed the other hand's back, and "tips"
+    # only the cape and the bracer; the palm was never shown. A hand's views draw its own triangles only
+    hand_p, hand_f = box((0.5, 0.8, -0.05), (0.6, 0.9, 0.05))
+    body_p, body_f = box((0.0, 0.6, -0.2), (0.3, 1.2, 0.2))          # between the hand and a camera at -x
+    points, faces = join((hand_p, hand_f), (body_p, body_f))
+    model = model_of(points, faces)
+    model.textures = [np.full((4, 4, 3), (200, 160, 140), np.uint8), np.full((4, 4, 3), (20, 20, 200), np.uint8)]
+    model.part = np.r_[np.zeros(len(hand_f), np.int64), np.ones(len(body_f), np.int64)]
+    figure = fc.Figure(model, joints={}, names=[], weights=None)
+    inside = np.array([-1.0, 0.0, 0.0])                                # the camera on the body's side of the hand
+    whole = fc.draw(figure, "inside", inside, (0.55, 0.85, 0.0), 0.2, 64)
+    alone = fc.draw(figure, "inside", inside, (0.55, 0.85, 0.0), 0.2, 64,
+                    only=np.r_[np.ones(len(hand_f), bool), np.zeros(len(body_f), bool)])
+    middle = (32, 32)
+    assert whole.rgb[middle][2] > 0.5                                  # the body in front: blue
+    assert alone.rgb[middle][0] > 0.6 and alone.rgb[middle][2] < 0.6   # the hand alone: its skin

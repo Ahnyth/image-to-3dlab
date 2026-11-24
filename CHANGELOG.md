@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a shape stage (hands, head, boots) that adds more than 20 such pixels on one side of its rigged or shape model is
   dropped before its game step. figure_check's report also draws the head twice as large beside the measured views
   (three light specks under a brim showed only on an enlarged picture).
+- **figure_check's hand views draw the hand alone.** From inside, the body stood in front of the palm (the view
+  showed the other hand's back), and from the tips the sleeve and the cape; the palm and the fingertips were never
+  shown. Each hand's views now draw its own triangles only.
 - **A new face no finer than the head it replaces.** The rule Hero parts take (`hero_parts.matched_faces`: no finer
   than 1.5 times the model round it) holds for the face too: skin_sorcerer_c's face had 4,705 triangles where the head
   it replaced had about 2,026, the game step's head protect kept them and thinned the body about 30 % harder. The face
