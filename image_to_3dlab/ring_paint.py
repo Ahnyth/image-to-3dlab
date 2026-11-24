@@ -68,7 +68,13 @@ BAND_PLAIN_SPREAD = 12.0     # the band between them is one plain colour ...
 BAND_CONTRAST = 12.0         # ... set off from what lies above or below it (a zone of its own, not skin round eyes)
 BAND_CONTAINED = 0.5         # the marks stop at its edges: just above and below them at most this share of their density
                              # (hair strands go on: 1.15 on the Runeblade's fringe; the Zauberer's runes 0.09)
-BAND_EDGE_DE = 10.0          # the band's box grows up and down over rows this close to its plain colour
+BAND_EDGE_DE = 10.0          # the band's box grows up and down over rows this close to its plain colour ...
+BAND_GROW = 0.3              # ... and then this share of its height more each way: a brim in front of a hat band hides
+                             # its lower edge, which the sides show (the Zauberer's box found at its visible rows left a
+                             # blue smear under the runes at both sides; the box read by hand reached into the brim)
+BAND_SIDE = 0.06             # and this share of its width out past each end: `paint_ring` takes only the faces whose
+                             # middle the picture shows inside the box, and the band's faces at its very sides lie on
+                             # its outline (the found box left the sides' smear; the hand's box was 13 px wider there)
 
 
 @dataclass(frozen=True)
@@ -547,7 +553,10 @@ def find_bands(image: np.ndarray, alpha: np.ndarray | None = None) -> list[dict]
     bands = []
     for f in found:
         (y0, y1), (xa, xb) = f.pop("rows"), f.pop("run")
-        box = (left + xa / scale, top + y0 / scale, left + (xb + 1) / scale, top + y1 / scale)
+        grow, side = BAND_GROW * (y1 - y0), BAND_SIDE * (xb + 1 - xa)
+        y0, y1 = max(0.0, y0 - grow), min(float(mask.shape[0]), y1 + grow)
+        box = (max(0.0, left + (xa - side) / scale), top + y0 / scale,
+               min(float(picture.shape[1]), left + (xb + 1 + side) / scale), top + y1 / scale)
         bands.append({"box": tuple(round(float(v), 1) for v in box),
                       **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in f.items()}})
     return bands

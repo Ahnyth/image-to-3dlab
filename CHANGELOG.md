@@ -192,9 +192,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the picture's painted light leaves no seam at the joins), what another picture sees keeps its paint, and only the
   ring's outer wall changes. Without `--box` the band is found in the front picture itself: a level row of marks
   evenly spaced round the ring, alike in size and colour, over most of the band's visible width, on one plain colour
-  set off from what lies above or below it, the marks stopping at its edges. Of ArcherSoul's 28 figures only the
-  Zauberer's rune band is one; eyes and brows, a buckle with its loops, armour plates, a coat's trim and a fringe of
-  hair are not. With no band in the picture nothing is written (exit code 3).
+  set off from what lies above or below it, the marks stopping at its edges; its box reaches a little past the band's
+  visible rows and ends (a brim hides a hat band's lower edge, and the band's faces at its very sides lie on its
+  outline). Of ArcherSoul's 28 figures only the Zauberer's rune band is one, and his band repainted from the found box
+  matches the one from the box read by hand in every view round the hat; eyes and brows, a buckle with its loops,
+  armour plates, a coat's trim and a fringe of hair are not. With no band in the picture nothing is written (exit
+  code 3).
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with

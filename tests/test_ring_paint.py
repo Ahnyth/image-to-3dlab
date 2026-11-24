@@ -275,8 +275,10 @@ def test_a_band_of_evenly_spaced_runes_is_found_round_its_own_rows():
     bands = rp.find_bands(_hat_picture("runes"))
     assert len(bands) == 1
     x0, y0, x1, y1 = bands[0]["box"]
-    assert abs(y0 - 330) <= 6 and abs(y1 - 370) <= 6
-    assert abs(x0 - 335) <= 8 and abs(x1 - 566) <= 8
+    grow = rp.BAND_GROW * 40         # the box reaches past the band's visible rows (a brim hides its lower edge)
+    assert abs(y0 - (330 - grow)) <= 6 and abs(y1 - (370 + grow)) <= 6
+    side = rp.BAND_SIDE * 231          # and past its ends (its faces at the very sides lie on its outline)
+    assert abs(x0 - (335 - side)) <= 8 and abs(x1 - (566 + side)) <= 8
     assert bands[0]["marks"] >= 9
 
 
