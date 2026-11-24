@@ -3,7 +3,7 @@
 
     .venv/bin/python scripts/hero_parts.py rigged.glb front.png --box X0 Y0 X1 Y1 [--box X0 Y0 X1 Y1 --mirror]
         [--name pistol] [--look "black pistol in a black holster with teal runes"] [--hard] [--also finer.glb ...]
-    .venv/bin/python scripts/hero_parts.py rigged.glb front.png --boots [--top Y] [--left mirror|own] [--look "..."] ...
+    .venv/bin/python scripts/hero_parts.py rigged.glb front.png --boots [--top Y|auto] [--left mirror|own] [--look "..."] ...
 
 A part that is a few dozen pixels of a full-body picture gets few of Pixal3D's voxels: the Revolverheld's holstered
 pistol came out as a flat slab with the pistol's outline, the Zauberer's boots as smooth tubes with their straps only
@@ -27,8 +27,9 @@ hands do this for hands; this does it for any part on the body (--box) and for b
   6. place    a part on the body fills its box by height, its back settled on the body behind the slab Pixal3D made of
               it; a second --box with --mirror takes the first part mirrored (a pair of holsters). A boot stands on the
               figure's floor with its sole flat, turned as the old foot was, as tall as the picture shows it (--top:
-              where its shaft ends in the picture) or else as long as the old foot (--left mirror: the right boot
-              mirrored; own: drawn and built from its own crop).
+              where its shaft ends in the picture; --top auto finds it there, where the boot's colour ends up the shin
+              of both legs, and with no boots in the picture stops with exit code 3) or else as long as the old foot
+              (--left mirror: the right boot mirrored; own: drawn and built from its own crop).
   7. graft    inside a part's outline the figure loses what lies in front of the part's back (the slab, a strap across
               it) and keeps what lies behind (the thigh); a leg is cut straight across just under the new boot's top and
               the old boot below goes. Every outline the cut leaves is closed, so no edge stays open. A part on the body
@@ -92,6 +93,14 @@ BOOT_PROMPT = (
     "ground, the toe pointing to the {toe} of the picture. {look} Nothing else in the picture. Flat even lighting, "
     "plain light grey background.")
 DEFAULT_LOOK = "The same shapes, details and colours as in the reference."
+
+
+NO_BOOTS = 3                  # the exit code of --boots --top auto when the picture shows no boots
+
+
+def _top(value: str):
+    """--top: a row of the front picture, or auto."""
+    return value if value == "auto" else float(value)
 
 
 def fresh(run: Run, name: str) -> None:
@@ -386,9 +395,11 @@ def main(argv: list[str] | None = None) -> int:
     what.add_argument("--boots", action="store_true", help="both boots, set in at the shins")
     parser.add_argument("--mirror", action="store_true",
                         help="with two --box: the second takes the first part mirrored (a pair of holsters)")
-    parser.add_argument("--top", type=float, default=None, metavar="Y",
-                        help="with --boots: where the boots' shafts end in the front picture, its pixels from the top "
-                             "(the drawing's own proportions decide without it, from the old foot's length)")
+    parser.add_argument("--top", type=_top, default=None, metavar="Y",
+                        help="with --boots: where the boots' shafts end in the front picture, its pixels from the top, "
+                             "or auto: found there, where the boot's colour ends up the shin (exit code 3 when the "
+                             "picture shows no boots); the drawing's own proportions decide without it, from the old "
+                             "foot's length")
     parser.add_argument("--left", choices=("mirror", "own"), default="mirror",
                         help="with --boots: mirror: the left boot is the right one mirrored; own: drawn and built "
                              "from its own crop")
@@ -496,25 +507,44 @@ def main(argv: list[str] | None = None) -> int:
         if set(legs) != set(hh.SIDES):
             raise SystemExit(f"[hero] the rig shows {sorted(legs) or 'no'} leg(s) with a foot; both are needed")
         all_bones = np.concatenate(figure_bones)
+        plans = {side: hp.leg_plan(every, all_bones, joint_index[legs[side]["shin"]],
+                                   [joint_index[b] for b in [legs[side]["foot"], *legs[side]["below"]]],
+                                   heads[legs[side]["shin"]], heads[legs[side]["foot"]]) for side in hh.SIDES}
+        top_view = None                  # where the boots end, in the view's pixels
+        if args.top == "auto":
+            pixels = {}
+            for side, plan in plans.items():
+                x, y, _ = hp.view_pixels(view, np.array([plan["knee"], plan["ankle"]]), mesh_scale)
+                pixels[side] = ((float(x[0]), float(y[0])), (float(x[1]), float(y[1])))
+            boot_top = hp.boot_top(view.image, pixels)
+            if boot_top["top"] is None:
+                run.say(f"measure: no boots in the picture: {boot_top['why']}")
+                (out / f"{name}.json").write_text(json.dumps({"model": str(args.model), "picture": str(args.picture),
+                                                              "name": name, "skipped": boot_top["why"],
+                                                              "boot_top": boot_top}, indent=1), encoding="utf-8")
+                return NO_BOOTS
+            top_view = boot_top["top"]
+            run.say(f"measure: the boots end at row {top_view:.1f} of the figure's front view ("
+                    + ", ".join(f"{side} {s['top']:.0f}, colour step {s['contrast']:.1f}"
+                                for side, s in boot_top["sides"].items()) + ")")
+        elif args.top is not None:
+            top_view = args.top * stage_map[0] + stage_map[1][1]
         for side in hh.SIDES:
-            leg = legs[side]
-            plan = hp.leg_plan(every, all_bones, joint_index[leg["shin"]],
-                               [joint_index[b] for b in [leg["foot"], *leg["below"]]], heads[leg["shin"]],
-                               heads[leg["foot"]])
+            plan = plans[side]
             near = (np.isin(all_bones, plan["bones"]) & (every[:, 1] < plan["knee"][1])
                     & (hp._across(every, plan["knee"], plan["ankle"]) < plan["reach"]))
             x, y, _ = hp.view_pixels(view, every[near], mesh_scale)
             source = "right" if args.left == "mirror" else side
             targets.append({"name": f"{side}_boot", "source": source, "mirror": side != source, "leg": plan,
                             "box": (float(x.min()), float(y.min()), float(x.max()), float(y.max())), "side": side})
-            if args.top is not None:     # the picture's top of the shaft, carried to the shin's front
+            if top_view is not None:     # the picture's top of the shaft, carried to the shin's front
                 box = targets[-1]["box"]
-                top = hp.unproject(view, [(box[0] + box[2]) / 2], [args.top * stage_map[0] + stage_map[1][1]],
-                                   plan["knee"][2] + plan["radius"], mesh_scale)[0, 1]
+                top = hp.unproject(view, [(box[0] + box[2]) / 2], [top_view], plan["knee"][2] + plan["radius"],
+                                   mesh_scale)[0, 1]
                 targets[-1]["boot_height"] = float(top - plan["floor"])
             run.say(f"measure: {side} leg: floor {plan['floor']:.4f}, knee {np.round(plan['knee'], 4).tolist()}, "
                     f"ankle {np.round(plan['ankle'], 4).tolist()}, reach {plan['reach']:.4f}"
-                    + (f", boot {targets[-1]['boot_height']:.4f} tall" if args.top is not None else ""))
+                    + (f", boot {targets[-1]['boot_height']:.4f} tall" if top_view is not None else ""))
 
     # 2.-5. crop, draw, build, clean
     sources = sorted({t["source"] for t in targets}, key=str)
@@ -736,6 +766,8 @@ def main(argv: list[str] | None = None) -> int:
     fresh(run, "check")
     summary = {"model": str(args.model), "picture": str(args.picture), "result": str(result), "name": name,
                "views": None if views_dir is None else str(views_dir), "hard": args.hard, "parts": {}}
+    if args.boots and args.top == "auto":
+        summary["boot_top"] = boot_top
     for t in targets:
         part = t["placed_clean"]
         lo, hi = part["positions"].min(axis=0), part["positions"].max(axis=0)

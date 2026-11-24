@@ -439,3 +439,42 @@ def test_a_surface_that_touches_itself_is_counted():
     touching = merged(single, box((1, 1, 0), (2, 2, 1), subdivide=1))
     faults = hp.edge_faults(touching)
     assert faults["shared_by_more"] > 0 and faults["share"] > 0.0
+
+
+# --- the boot's top, found in the picture -------------------------------------------------------------------------
+
+
+def legs_picture(top=(900, 900), boot=(25, 25, 28), trousers=(95, 60, 50), strap=True, background=False):
+    """A front view (RGBA) of two legs from the hips (y 500) to the soles (y 1100), knees at 800 and ankles at 1040:
+    trousers above each TOP, boots below it (a grey strap round the shaft at 960-975), each foot wider than its shaft.
+    Returns (picture, {side: (knee (x, y), ankle (x, y))}) as `boot_top` takes them; the figure's right leg is on the
+    picture's left."""
+    image = np.zeros((1200, 600, 4), dtype=np.uint8)
+    legs = {}
+    for side, middle, line in (("right", 200, top[0]), ("left", 400, top[1])):
+        image[500:1100, middle - 30:middle + 30] = (*trousers, 255)
+        image[line:1100, middle - 32:middle + 32] = (*boot, 255)
+        image[1040:1100, middle - 40:middle + 50] = (*boot, 255)
+        if strap:
+            image[960:975, middle - 32:middle + 32] = (130, 130, 135, 255)
+        legs[side] = ((float(middle), 800.0), (float(middle), 1040.0))
+    if background:
+        image[..., 3] = 255
+    return image, legs
+
+
+def test_the_boots_top_is_where_its_colour_ends_up_the_shin():
+    image, legs = legs_picture()
+    found = hp.boot_top(image, legs)
+    assert found["top"] == pytest.approx(900, abs=4), found
+    assert set(found["sides"]) == {"right", "left"}
+
+
+def test_shoes_bare_legs_one_colour_or_legs_that_disagree_are_no_boots():
+    shoes = hp.boot_top(*legs_picture(top=(1030, 1030), strap=False))
+    bare = hp.boot_top(*legs_picture(boot=(225, 180, 150), strap=False))
+    plain = hp.boot_top(*legs_picture(boot=(95, 60, 50), strap=False))
+    apart = hp.boot_top(*legs_picture(top=(860, 960)))
+    for found in (shoes, bare, plain, apart):
+        assert found["top"] is None and found["why"]
+    assert "shoes" in shoes["why"] and "skin" in bare["why"] and "disagree" in apart["why"]

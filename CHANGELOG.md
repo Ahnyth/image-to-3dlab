@@ -103,8 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slab that reached past it) and keeps what lies behind (the thigh); every face the outline crosses is split, so no
   crack opens, and every outline the cut leaves is closed; the part moves rigidly with the bones the slab followed.
   `--boots` finds the legs from the rig, draws each boot from its outer side, stands it on the figure's floor with
-  its sole laid flat and turned as the old foot was, as tall as the picture shows it (`--top`: where its shaft ends),
-  cuts the leg straight across under its rim's lowest point, closes the cut and tucks the old leg inside it up to its
+  its sole laid flat and turned as the old foot was, as tall as the picture shows it (`--top`: where its shaft ends;
+  `--top auto` finds that row itself, where the boot's colour ends up both shins from the ankle to the knee, a strap
+  on the shaft not moving it, and stops with exit code 3 when the picture shows shoes, bare legs, one colour down to
+  the foot or two legs that disagree; on ArcherSoul's figures it put the Zauberer's top at row 1062 of his front view
+  where it had been read by hand at about 1060), cuts the leg straight across under its rim's lowest point, closes the
+  cut and tucks the old leg inside it up to its
   top (the old boot's wider top showed over the new rim as a ledge); the boot takes the old leg's weights point by
   point, so it bends at the ankle. Each part is painted by the figure's own picture where that sees it,
   through the camera the figure was built with (found through its licence record) and past the coat in front of it,

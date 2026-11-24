@@ -68,6 +68,17 @@ PLANE_GROW_ROUNDS = 8        # ... ring by ring, at most this many rings
 PLANE_AREA_SHARE = 0.004     # a plane covers at least this share of the part's surface
 PLANE_FLAT_SHARE = 0.006     # and its points lie this close to it (95 per cent of them, a share of the part's size)
 SMOOTH_ROUNDS = 3            # face normals are smoothed over this many rings of neighbours first (a build's facets)
+# The boot's top in the picture (`boot_top`), along each shin from the ankle up to the knee. Measured on the front views
+# of ArcherSoul's 28 figures (2026-11-24): both legs agreed within this share on 18 of them, and the line sat on the
+# boot's top (the Zauberer's 1061-1063 view pixels where his top was read by hand at 1052 in the picture, ~1060 there).
+BOOT_ZONE = (0.30, 0.08)     # the boot's own colour: the shaft from this share of the shin above the ankle to this one
+KNEE_ZONE = (0.10, 0.12)     # what the boot ends under: from this share of the shin above the knee to this one below it
+FOOT_ZONE = (0.03, 0.20)     # the foot: from this share of the shin under the ankle to this one
+BOOT_STRIP = 0.18            # a row's colour: the leg's pixels within this share of the shin round the leg's axis
+BOOT_LIGHT_WEIGHT = 0.5      # light and shade count half against hue (the same black leather lit and in shadow)
+BOOT_CONTRAST = 2.0          # the boot and what is above it differ at least this much (delta E, light at half weight)
+BOOT_LOW = 0.2               # a top less than this share of the shin above the ankle is a shoe's, not a boot's
+BOOT_AGREE = 0.05            # both legs' tops lie within this share of the shin of each other
 
 
 # --- The figure's front camera ----------------------------------------------------------------------------------------
@@ -529,6 +540,115 @@ def leg_plan(positions: np.ndarray, bone: np.ndarray, shin: int, foot: list[int]
     reach = max(LEG_REACH * radius, FOOT_REACH * float(_across(foot_points, knee, ankle).max()))
     return {"floor": float(foot_points[:, 1].min()), "foot": foot_points, "knee": knee, "ankle": ankle,
             "reach": reach, "radius": radius, "bones": [int(shin), *map(int, foot)]}
+
+
+def _material(a, b) -> np.ndarray:
+    """How far two CIE L*a*b* colours lie apart as materials: hue in full, light and shade at BOOT_LIGHT_WEIGHT."""
+    d = np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)
+    return np.sqrt((BOOT_LIGHT_WEIGHT * d[..., 0]) ** 2 + d[..., 1] ** 2 + d[..., 2] ** 2)
+
+
+def _skin_like(colour) -> bool:
+    """A light, warm colour: bare skin, not a boot (black, brown or grey leather is darker or greyer)."""
+    lightness, a, b = (float(v) for v in colour)
+    return lightness > 50 and 8 < a < 35 and 8 < b < 40
+
+
+def leg_rows(image: np.ndarray, knee, ankle, reach: float = BOOT_STRIP) -> tuple[np.ndarray, np.ndarray]:
+    """(rows, their colour in CIE L*a*b*) along a leg in a picture (RGBA, the subject cut out) from above the KNEE (x, y)
+    to below the ANKLE: per row the median of the leg's own pixels (the run of the outline holding the leg's axis)
+    within REACH of the shin's length round the axis; NaN where the axis leaves the outline."""
+    from image_to_3dlab.colour_compare import lab
+
+    picture = np.asarray(image)
+    mask = picture[..., 3] > 127
+    (kx, ky), (ax, ay) = knee, ankle
+    length = max(ay - ky, 1e-6)
+    rows = np.arange(max(0, int(ky - KNEE_ZONE[0] * length) - 1),
+                     min(mask.shape[0], int(ay + FOOT_ZONE[1] * length) + 2))
+    colours = np.full((len(rows), 3), np.nan)
+    half = max(2, int(reach * length))
+    for i, y in enumerate(rows):
+        x = int(round(kx + (y - ky) / length * (ax - kx)))
+        if not (0 <= x < mask.shape[1]) or not mask[y, x]:
+            continue
+        line = mask[y]
+        left = x - np.argmin(line[x::-1]) + 1 if not line[:x + 1].all() else 0
+        right = x + np.argmin(line[x:]) - 1 if not line[x:].all() else mask.shape[1] - 1
+        cols = np.arange(max(left, x - half), min(right, x + half) + 1)
+        colours[i] = np.median(lab(picture[y, cols, :3].astype(np.float64) / 255.0), axis=0)
+    return rows, colours
+
+
+def _one_leg(rows: np.ndarray, colours: np.ndarray, knee_y: float, ankle_y: float) -> dict:
+    """One leg's boot: its colour, what is above it, its foot, and where along the shin the two meet (two segments, the
+    boot below and the rest above, placed where the most rows agree)."""
+    length = ankle_y - knee_y
+    known = ~np.isnan(colours[:, 0])
+
+    def zone(a, b):
+        where = known & (rows >= a) & (rows <= b)
+        return np.median(colours[where], axis=0) if where.sum() >= 3 else None
+
+    boot = zone(ankle_y - BOOT_ZONE[0] * length, ankle_y - BOOT_ZONE[1] * length)
+    upper = zone(knee_y - KNEE_ZONE[0] * length, knee_y + KNEE_ZONE[1] * length)
+    foot = zone(ankle_y + FOOT_ZONE[0] * length, ankle_y + FOOT_ZONE[1] * length)
+    if boot is None or upper is None:
+        return {"top": None, "why": "the leg is not in the picture's outline"}
+    out = {"boot": np.round(boot, 1).tolist(), "upper": np.round(upper, 1).tolist(),
+           "contrast": round(float(_material(boot, upper)), 2), "top": None}
+    if foot is not None:
+        out["foot"] = np.round(foot, 1).tolist()
+    if out["contrast"] < BOOT_CONTRAST:
+        if foot is not None and float(_material(foot, boot)) >= BOOT_CONTRAST:
+            out["why"] = "shoes, not boots: the leg's colour goes on down to the ankle and only the foot differs"
+        else:
+            out["why"] = "one colour from the knee down to the foot: no top to tell"
+        return out
+    if _skin_like(boot):
+        out["why"] = "bare legs: the shin above the ankle is skin"
+        return out
+    span = known & (rows >= knee_y - KNEE_ZONE[0] * length) & (rows <= ankle_y - BOOT_ZONE[1] * length)
+    ys = rows[span]
+    like = _material(colours[span], boot) - _material(colours[span], upper)
+    like = ndimage.median_filter(like, size=max(3, int(0.05 * length) | 1)) < 0       # rows like the boot
+    above = np.concatenate([[0], np.cumsum(~like)])                 # rows above a split that are not boot ...
+    below = np.concatenate([[0], np.cumsum(like[::-1])])[::-1]      # ... and rows below it that are
+    agree = above[1:] + below[1:]
+    split = int(np.argmax(agree[:-1])) + 1 if len(ys) > 1 else 0
+    out.update(top=float(ys[split]), agree=round(float(agree[split - 1] / len(ys)), 3),
+               top_share=round(float((ankle_y - ys[split]) / length), 3))
+    if out["top_share"] < BOOT_LOW:
+        out.update(top=None, why="shoes, not boots: the colour changes just above the ankle")
+    return out
+
+
+def boot_top(image: np.ndarray, legs: dict) -> dict:
+    """Where the boots end up the shins in a front picture (RGBA, the subject cut out): {"top": the row in its pixels,
+    or None; "why": in words when None; "sides": what each leg showed}. LEGS: {side: (knee (x, y), ankle (x, y))}, the
+    rig's joints in the picture.
+
+    Along each shin, from the ankle up to the knee, each row's colour is the leg's own (its outline round the axis). The
+    boot's colour is the shaft's just above the ankle, the rest's the leg's at the knee; the top is where the rows turn
+    from the one to the other (a strap or a buckle on the shaft is a short stretch and does not move it). No boots: the
+    two colours are alike (one colour down to the foot, or shoes whose colour starts at the ankle), the shaft is skin,
+    or the two legs disagree."""
+    sides = {}
+    for side, (knee, ankle) in legs.items():
+        rows, colours = leg_rows(image, knee, ankle)
+        sides[side] = _one_leg(rows, colours, float(knee[1]), float(ankle[1]))
+    tops = [s["top"] for s in sides.values()]
+    found = {"top": None, "sides": sides}
+    if not tops or any(t is None for t in tops):
+        found["why"] = "; ".join(f"{side}: {s['why']}" for side, s in sides.items() if s.get("top") is None)
+        return found
+    length = float(np.mean([ankle[1] - knee[1] for knee, ankle in legs.values()]))
+    if max(tops) - min(tops) > BOOT_AGREE * length:
+        found["why"] = (f"the legs disagree where their boots end ({', '.join(f'{t:.0f}' for t in tops)} px, more than "
+                        f"{BOOT_AGREE:.0%} of the shin apart)")
+        return found
+    found["top"] = float(np.mean(tops))
+    return found
 
 
 def foot_heading(points: np.ndarray) -> np.ndarray:
