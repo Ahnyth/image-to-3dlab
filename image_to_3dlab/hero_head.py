@@ -1967,16 +1967,6 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
     known = np.isfinite(out[..., 0])
     if not known.all() and known.any():
         out = np.stack([fill_nearest(np.nan_to_num(out[..., k]), known) for k in range(3)], axis=-1)
-    if crop is not None and skin is not None:
-        # beside the jaw and behind it the figure's own neck lies in its collar's dark, and taken onto the new neck, now
-        # reaching up to the jaw's edge, it stood under the Zauberer's ears as a black mark (2026-11-23). A neck reaching
-        # down into a collar is neck under the stitch too, and the band eases from the paint there: where the picture
-        # showed the collar's dark, it stood under his jaw as a black ragged blotch (v19l, 2026-11-24). Ragged, because
-        # a texel just under the line was taken and its neighbour just over it kept: the shaded skin eases in instead
-        neck = band | (points[..., 1] < zone["bottom"] - 0.5 * zone.get("pixel", 0.0))
-        below = lab(skin)[0] - lab(out)[..., 0]
-        lift = (np.clip((below - BAND_SOFT) / (BAND_DARK - BAND_SOFT), 0, 1) * neck)[..., None]
-        out = (1 - lift) * out + lift * np.asarray(skin, dtype=np.float64) * BAND_SHADE
     # the neck eases from the figure's own paint at the stitch to the head's just over it (a chin's skin), so seen
     # from below the chin's underside is skin, not a block of the figure's shaded throat (the Zauberer, 2026-11-22)
     rows, cols = band.shape
@@ -1993,6 +1983,17 @@ def figure_paint(picture: np.ndarray, points: np.ndarray, part: dict, zone: dict
         # from that paint up, not from the figure's old neck, which lies in the collar's shadow. Eased from the old
         # neck, the new one stood under the Zauberer's chin as a pale ring with a hard top edge (2026-11-23)
         start = np.where(deep[None, :, None], out[under, np.arange(cols)][None, :, :], out)
+    if crop is not None and skin is not None:
+        # the band starts from skin, never from a collar's dark: beside the jaw and behind it the figure's own neck lies
+        # in its collar's shadow, and taken onto the new neck, now reaching up to the jaw's edge, it stood under the
+        # Zauberer's ears as a black mark (2026-11-23); a neck reaching down into a collar starts its band from the paint
+        # under the stitch, where the picture shows his shirt beside the throat, and the band eased up from that dark
+        # stood under his jaw as a black ragged blotch (v19l, 2026-11-24). The shaded skin eases in with how dark the
+        # start is (a hard line took a texel just under it and kept its neighbour, ragged); under the stitch the
+        # picture's paint stays: there the shirt is right (made skin, it stood as a pale bib, v19m)
+        below = lab(skin)[0] - lab(start)[..., 0]
+        lift = (np.clip((below - BAND_SOFT) / (BAND_DARK - BAND_SOFT), 0, 1) * band)[..., None]
+        start = (1 - lift) * start + lift * np.asarray(skin, dtype=np.float64) * BAND_SHADE
     out = np.where(band[..., None], (1 - ease) * start + ease * out[top, np.arange(cols)][None, :, :], out)
     return np.clip(out, 0, 255), offset
 

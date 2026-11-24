@@ -591,7 +591,10 @@ def test_figure_paint_takes_no_collar_dark_into_a_deep_necks_band():
     beside = band & aside
     assert beside.any() and out[beside].sum(axis=-1).min() > 0.7 * sum(skin)   # skin, a little shaded, not black
     under = aside & (points[..., 1] < zone["bottom"] - zone["pixel"])
-    assert under.any() and out[under].sum(axis=-1).min() > 0.7 * sum(skin)    # under the stitch too: still neck
+    assert under.any() and np.median(out[under].sum(axis=-1)) < 0.5 * sum(skin)   # under the stitch the shirt stays
+    cols = np.arange(points.shape[1])
+    step = np.abs(np.diff(out[:, cols[aside.any(axis=0)]].sum(axis=-1), axis=0))[band[1:, aside.any(axis=0)]]
+    assert step.max() < 0.25 * sum(skin)                        # and the band eases smoothly, no ragged jump in it
 
 
 # --- the hairline under the brim (2026-11-23) -------------------------------------------------------------------------
