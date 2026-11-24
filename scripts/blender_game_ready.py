@@ -442,25 +442,28 @@ def head_weights(ob, head: list[str]) -> np.ndarray:
     return gr.head_share(W, columns, head or [])
 
 
-def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
-    """Collapse-thin to `decimate_to` triangles; the head's vertices resist by `head_protect`."""
+def decimate_with_head(ob, s: dict, head: list[str], hands: list[str] | None = None) -> dict:
+    """Collapse-thin to `decimate_to` triangles; the head's vertices resist by `head_protect`, with HANDS (and
+    `hand_protect`) the hands' too (`game_ready.protect_weights`)."""
     me = ob.data
     me.calc_loop_triangles()
     before = len(me.loop_triangles)
     ratio = gr.decimate_ratio(before, s["decimate_to"])
     if ratio >= 1.0:
         return {"decimated": [before, before]}
-    share = head_weights(ob, head)
+    hand_share = head_weights(ob, hands) if hands and s.get("hand_protect", 0.0) > 0 else None
+    share, strength = gr.protect_weights(head_weights(ob, head), hand_share, s["head_protect"],
+                                         s.get("hand_protect", 0.0))
     mod = ob.modifiers.new("gr_decimate", "DECIMATE")
     mod.decimate_type = "COLLAPSE"
     mod.ratio = ratio
     mod.use_collapse_triangulate = True
-    if s["head_protect"] > 0 and share.any():
+    if strength > 0 and share.any():
         group = ob.vertex_groups.new(name="gr_head_protect")
         for i in np.nonzero(share)[0]:
             group.add([int(i)], float(share[i]), "REPLACE")
         mod.vertex_group = group.name
-        mod.vertex_group_factor = s["head_protect"]
+        mod.vertex_group_factor = strength
         mod.invert_vertex_group = True   # Blender thins where a group weighs; inverted, the head weighs nothing
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
@@ -472,7 +475,8 @@ def decimate_with_head(ob, s: dict, head: list[str]) -> dict:
         ob.vertex_groups.remove(stale)
     me.calc_loop_triangles()
     after = len(me.loop_triangles)
-    log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g})")
+    log(f"thinned {before} -> {after} triangles (head protect {s['head_protect']:g}, hand protect "
+        f"{s.get('hand_protect', 0.0):g})")
     return {"decimated": [before, after]}
 
 
@@ -812,7 +816,7 @@ def _delete_faces(ob, faces) -> None:
 
 
 def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | None = None,
-                  picture: str | None = None) -> dict:
+                  picture: str | None = None, hands: list[str] | None = None) -> dict:
     """--drop-hidden: thin to a first target above the budget, drop the hidden inner wall, and aim the next try
     by what the drop left, until the figure lands within `drop_slack` of `decimate_to` (at most `drop_tries`).
     Each try starts again from the cleaned, unthinned mesh: thinning what a drop left would spend triangles on
@@ -829,7 +833,7 @@ def thin_and_drop(ob, arm, s: dict, head: list[str], poses: list, check: list | 
             spent = ob.data
             ob.data = original.copy()
             bpy.data.meshes.remove(spent)
-        thinned = decimate_with_head(ob, dict(s, decimate_to=first), head)["decimated"][1]
+        thinned = decimate_with_head(ob, dict(s, decimate_to=first), head, hands)["decimated"][1]
         last = attempt == s["drop_tries"] - 1
         drop = drop_hidden_wall(ob, arm, s, poses, check, picture,
                                 final=lambda left, last=last: last or gr.drop_settled(left, target, s["drop_slack"]))
@@ -1732,9 +1736,9 @@ def main() -> None:
     head = job.get("all_head_bones") or []
     if s.get("decimate_to") and s.get("drop_hidden"):
         report.update(thin_and_drop(ob, arm, s, head, job.get("veto_poses") or [], job.get("check_poses") or [],
-                                    job.get("pose_picture")))
+                                    job.get("pose_picture"), job.get("hand_bones")))
     elif s.get("decimate_to"):
-        report.update(decimate_with_head(ob, s, head))
+        report.update(decimate_with_head(ob, s, head, job.get("hand_bones")))
     colour_objs = import_colour_model(s["colour_from"], T, feet) if s.get("colour_from") else None
     report.update(new_uvs(ob, s, head, colour_objs, arm))
     s["body_texels_per_cm"] = report.get("body_texels_per_cm") or None  # the glow gate's widths in centimetres

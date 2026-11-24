@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`game_ready.py --hand-protect`: the hands keep their fingers when the figure is thinned.** Thinned evenly to 14,000
+  triangles, a figure's built five-finger hands kept about 200 triangles each and read as thin flat claws. Like
+  `--head-protect` for the head, the hand and finger bones' skin now resists `--decimate-to` at the strength given
+  (0 to 1, default 0: nothing changes); at 0.6 a figure's hands get about 1.7 times the triangles, the body gives up
+  under 200, and the fingers read as fingers again.
 - **Create can draw a prop's sides ("Draw the sides too").** A vehicle, a machine or furniture drawn from one side
   had its depth guessed by the 3D step (a scissor lift came out deeper than long). With the new box under Advanced: 3D
   model (front + back on, a prop), the 3D step first draws the side with the picture engine, or the subject's end when

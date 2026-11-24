@@ -1542,3 +1542,36 @@ def test_a_glow_only_on_the_head_leaves_the_necks_shared_skin_out():
     s = gr.settings(["--no-shade", "--glow", "#da294c", "--glow-width", "0", "--glow-only-on-head"])
     _, emission, _ = gr.compose(alb, lit, cov, s, head=head)
     assert emission[20, 52].max() > 0.5 and emission[30, 52].max() < 0.05
+
+
+# --- the hands resist the thinning like the head (TODO 200 of the AssetFurnace Support notes) -------------------------
+
+def test_hand_protect_is_a_setting_off_by_default():
+    assert gr.settings([])["hand_protect"] == 0.0
+    assert gr.settings(["--hand-protect", "0.6"])["hand_protect"] == 0.6
+    with pytest.raises(SystemExit):
+        gr.settings(["--hand-protect", "1.5"])
+
+
+def test_protect_weights_keep_the_head_alone_exactly_as_before_without_hand_protect():
+    head = np.array([0.0, 0.5, 1.0, 0.0])
+    hands = np.array([0.0, 0.0, 0.0, 1.0])
+    weights, factor = gr.protect_weights(head, hands, 0.8, 0.0)
+    assert np.array_equal(weights, head) and factor == 0.8           # the head's weights and strength as they were
+
+
+def test_protect_weights_add_the_hands_at_their_own_strength():
+    # the Hero chain's five-finger hands kept about 200 triangles each at 14,000 and read as flat claws (round 26)
+    head = np.array([0.0, 0.5, 1.0, 0.0, 0.0])
+    hands = np.array([0.0, 0.0, 0.0, 1.0, 0.5])
+    weights, factor = gr.protect_weights(head, hands, 1.0, 0.6)
+    assert factor == 1.0 and np.allclose(weights, [0.0, 0.5, 1.0, 0.6, 0.3])
+
+
+def test_the_hand_bones_go_to_the_bake_only_with_hand_protect():
+    parents, heads, _roles = _humanoid()
+    unity = _unity(dict(parents), dict(heads))
+    assert gr.protect_hand_bones(dict(parents), unity, gr.settings(["--decimate-to", "8000"])) == []
+    found = gr.protect_hand_bones(dict(parents), unity, gr.settings(["--decimate-to", "8000", "--hand-protect", "0.5"]))
+    assert set(found) == set(gr.hand_bones(dict(parents), unity))
+    assert gr.protect_hand_bones(dict(parents), unity, gr.settings(["--hand-protect", "0.5"])) == []   # nothing thinned

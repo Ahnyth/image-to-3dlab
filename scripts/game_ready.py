@@ -326,6 +326,10 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--head-protect", type=_fraction, default=0.0,
                         help="0 to 1: how strongly the head resists --decimate-to (1 = the body gives up the "
                              "triangles, the face keeps its nose, chin and eyes; default 0)")
+    parser.add_argument("--hand-protect", type=_fraction, default=0.0,
+                        help="0 to 1: how strongly the hands and fingers resist --decimate-to as --head-protect does "
+                             "the head (five built fingers kept about 200 triangles a hand at 14,000 and read as flat "
+                             "claws; default 0)")
     parser.add_argument("--head-texel", type=_texel, default="auto",
                         help="auto (default): per figure, the head's share of the atlas grown as far as its colour "
                              "source holds on the head at --game-texture, from 1 to 4; or a fixed 1 to 4 (2 = a face "
@@ -395,7 +399,8 @@ def _to_settings(ns: argparse.Namespace) -> dict:
              glow_where=glow_where(ns), glow_only_on_head=glow_where(ns) == "head",
              shade=not ns.no_shade, fingers=ns.fingers, style=ns.style, max_influences=ns.max_influences,
              smooth_iters=max(0, ns.smooth), roughness=ns.roughness, look=ns.look, specular=LOOKS[ns.look],
-             decimate_to=ns.decimate_to, head_protect=ns.head_protect, head_texel=ns.head_texel,
+             decimate_to=ns.decimate_to, head_protect=ns.head_protect, hand_protect=ns.hand_protect,
+             head_texel=ns.head_texel,
              head_zone=ns.head_zone, game_texture=ns.game_texture,
              colour_from=str(ns.colour_from) if ns.colour_from else None,
              mesh_from=str(ns.mesh_from) if ns.mesh_from else None,
@@ -1276,6 +1281,22 @@ def head_share(W, columns: list[str], head: list[str]):
     return np.minimum(np.asarray(W, float)[:, pick].sum(1), 1.0)
 
 
+def protect_weights(head, hands, head_protect: float, hand_protect: float):
+    """(the weights of the group that resists the thinning, its strength): the head's share at `head_protect`, as before,
+    or with `hand_protect` the head's and the hands' shares each at its own strength (and the group at full strength)."""
+    head = np.asarray(head, float)
+    if hand_protect <= 0 or hands is None or not np.asarray(hands).any():
+        return head, head_protect
+    return np.maximum(head * head_protect, np.asarray(hands, float) * hand_protect), 1.0
+
+
+def protect_hand_bones(parents: dict[str, str | None], unity_names: dict[str, str], s: dict) -> list[str]:
+    """The hand bones whose skin resists the thinning (`--hand-protect`), none when nothing is thinned or asked."""
+    if not s.get("decimate_to") or s.get("hand_protect", 0.0) <= 0:
+        return []
+    return hand_bones(parents, unity_names)
+
+
 def head_islands(island, share, at_least: float = 0.5) -> set[int]:
     """The UV islands whose loops lie mostly on the head (mean head share at or above `at_least`)."""
     island = np.asarray(island)
@@ -1736,6 +1757,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         report_path = Path(tmp) / "report.json"
         job.write_text(json.dumps({"source": str(args.source.resolve()), "output": str(raw), "report": str(report_path),
                                    "work": tmp, "name": args.output.stem, "hips": hips, "merge": plan, "head_bones": heads_off, "glow_head_bones": glow_head,
+                                   "hand_bones": protect_hand_bones(parents, unity, s),
                                    "all_head_bones": head_bones(parents, unity), "veto_poses": veto_poses(unity),
                                    "check_poses": check_poses(unity) if s["pose_check"] else [],
                                    "pose_picture": str(args.output.with_suffix(".pose.png").resolve()),
