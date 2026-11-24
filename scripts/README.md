@@ -269,6 +269,7 @@ Numbers about the project itself, not about any asset.
 | `patch_skintokens_portable.py` | Let SkinTokens (the auto-rigger) run on an Apple Silicon Mac, and on NVIDIA without flash-attn. |
 | `patch_hunyuan_rocm.py` | Make Tencent's Hunyuan3D-2.1 survive on an AMD card, without touching what NVIDIA runs. |
 | `photo_paint.py` | Paint a finished model with the real pixels of its source photos, where they can see. |
+| `ring_paint.py` | Repeat a band's seen arc round the band (a hat band's runes, a belt's studs), where no picture sees it. |
 | `patch_trellis_no_bria.py` | Disable TRELLIS' configured background model for license-controlled runs. |
 | `patch_trellis_cuda_no_bria.py` | Stop the NVIDIA TRELLIS.2 checkout loading BRIA RMBG-2.0, before it ever downloads it. |
 | `patch_trellis_rocm.py` | Make TRELLIS.2 run on an AMD card: an attention backend, and a build that compiles. |

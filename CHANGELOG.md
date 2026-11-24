@@ -163,6 +163,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collar's shadow; eased from the old one, the new neck stood under a wizard's chin as a pale ring with a hard top edge.
   The new neck under the stitch counts as neck too: where the picture shows the collar's dark there, it turns into the
   skin a little shaded, easing in with how dark it is, so neither a black blotch nor a ragged edge stands under the jaw.
+- **Ring paint: a band's pattern goes on all round it** (`scripts/ring_paint.py`). Pixel Match copies the picture only
+  onto surfaces that face it, so a hat band, a belt or a bracelet kept sharp marks in front and the generator's blur on
+  its sides and back (the Zauberer's hat band: runes in front, blue smears at the sides). Given the band's box in the
+  front picture, the arc the picture sees is repeated round the rest of the ring, cut between two marks and laid at the
+  same height on the band, tilt included; only the marks travel (the band's plain colour is a slow trend round it, so
+  the picture's painted light leaves no seam at the joins), what another picture sees keeps its paint, and only the
+  ring's outer wall changes.
+
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
