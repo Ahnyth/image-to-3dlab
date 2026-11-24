@@ -236,3 +236,85 @@ def test_a_colour_change_is_a_spot_to_look_at_unless_the_look_should_stay(tmp_pa
     assert fc.colour_against(old, new).status == "look"
     assert fc.colour_against(old, new, same_look=True).status == "fail"
     assert fc.colour_against(old, old, same_look=True).status == "pass"
+
+
+# --- a raw rig: hands found by the skeleton's shape, not by name ---------------------------------------------------
+
+
+def rigged_glb(points, faces, parents: dict, heads: dict, owner: np.ndarray) -> bytes:
+    """A GLB with one mesh skinned to a joint tree (PARENTS: name -> parent name, HEADS: name -> world position), each
+    vertex weighted fully to the joint OWNER names (an index into HEADS' order), as a raw Rig output is: bones
+    named bone_0 ... in no telling order."""
+    names = list(heads)
+    binary, views, accessors = b"", [], []
+
+    def add(data: bytes) -> int:
+        nonlocal binary
+        binary += b"\0" * (-len(binary) % 4)
+        views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+        binary += data
+        return len(views) - 1
+
+    n = len(points)
+    joints = np.zeros((n, 4), np.uint8)
+    joints[:, 0] = owner
+    for data, kind, count, typ in (
+            (points.astype(np.float32).tobytes(), 5126, n, "VEC3"),
+            (np.full((n, 2), 0.5, np.float32).tobytes(), 5126, n, "VEC2"),
+            (faces.astype(np.uint32).tobytes(), 5125, faces.size, "SCALAR"),
+            (joints.tobytes(), 5121, n, "VEC4"),
+            (np.tile(np.array([255, 0, 0, 0], np.uint8), (n, 1)).tobytes(), 5121, n, "VEC4")):
+        accessor = {"bufferView": add(data), "componentType": kind, "count": count, "type": typ}
+        if typ == "VEC3":
+            accessor["min"], accessor["max"] = points.min(0).tolist(), points.max(0).tolist()
+        if kind == 5121 and accessors and accessors[-1]["componentType"] == 5121:
+            accessor["normalized"] = True
+        accessors.append(accessor)
+    buf = io.BytesIO()
+    from PIL import Image
+    Image.fromarray(np.full((4, 4, 3), (200, 160, 140), np.uint8)).save(buf, "PNG")
+    image = add(buf.getvalue())
+    index = {name: i + 1 for i, name in enumerate(names)}
+    nodes = [{"mesh": 0, "skin": 0}]
+    for name in names:
+        parent = parents[name]
+        local = np.asarray(heads[name], float) - (np.asarray(heads[parent], float) if parent else 0.0)
+        node = {"name": name, "translation": local.tolist()}
+        kids = [index[c] for c, p in parents.items() if p == name]
+        if kids:
+            node["children"] = kids
+        nodes.append(node)
+    roots = [0] + [index[name] for name in names if parents[name] is None]
+    doc = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": roots}],
+           "nodes": nodes, "skins": [{"joints": [index[name] for name in names]}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1, "JOINTS_0": 3,
+                                                      "WEIGHTS_0": 4}, "indices": 2, "material": 0}]}],
+           "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+           "textures": [{"source": 0}], "images": [{"bufferView": image, "mimeType": "image/png"}],
+           "accessors": accessors, "bufferViews": views, "buffers": [{"byteLength": len(binary)}]}
+    text = json.dumps(doc).encode()
+    text += b" " * (-len(text) % 4)
+    binary += b"\0" * (-len(binary) % 4)
+    chunks = struct.pack("<I4s", len(text), b"JSON") + text + struct.pack("<I4s", len(binary), b"BIN\0") + binary
+    return struct.pack("<4sII", b"glTF", 2, 12 + len(chunks)) + chunks
+
+
+def test_a_raw_rigs_hands_are_found_by_the_skeletons_shape_and_counted(tmp_path):
+    from test_hero_parts import stick_figure
+
+    parents, heads, role = stick_figure()
+    names = list(heads)
+    hand = hand_figure(4)                     # five digits hanging from a wrist at the origin
+    body_p, body_f = box((-0.15, 0.1, -0.1), (0.15, 1.5, 0.1))
+    hand_p = hand.model.positions + heads[role["Rhand"]]
+    points, faces = join((body_p, body_f), (hand_p, hand.model.faces))
+    owner = np.r_[np.full(len(body_p), names.index(role["hips"])), np.full(len(hand_p), names.index(role["Rhand"]))]
+    path = tmp_path / "rigged.glb"
+    path.write_bytes(rigged_glb(points, faces, parents, heads, owner))
+    figure = fc.read_figure(path)
+    assert "RightHand" not in figure.joints and figure.parents[role["Rhand"]] == role["Rfa"]
+    found = fc.hand(figure, "Right")
+    assert found is not None and found[0].sum() == len(hand_p)
+    assert np.allclose(found[1], heads[role["Rhand"]])
+    result = fc.fingers(figure)
+    assert result.status == "pass" and "right hand 4" in result.value

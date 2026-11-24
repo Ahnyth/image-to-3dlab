@@ -50,6 +50,7 @@ class Figure:
     names: list                              # the skin's joint names, in weight order
     weights: np.ndarray | None               # (V, J) dense skin weights, rows sum to 1
     glow: cc.Model | None = None             # the emissive colour, where the figure glows
+    parents: dict | None = None              # joint name -> its parent joint's name (None at the root)
 
     @property
     def height(self) -> float:
@@ -79,6 +80,14 @@ def read_figure(path: Path) -> Figure:
     names = [nodes[j].get("name", f"joint{j}") for j in skins[0]["joints"]] if skins else []
     joints = {nodes[j].get("name", f"joint{j}"): world.get(j, np.eye(4))[:3, 3].copy()
               for j in (skins[0]["joints"] if skins else [])}
+    in_skin = set(skins[0]["joints"]) if skins else set()
+    parent_of = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    parents = {}
+    for j in in_skin:
+        p = parent_of.get(j)
+        while p is not None and p not in in_skin:      # the nearest joint above it (a scene node may sit between)
+            p = parent_of.get(p)
+        parents[nodes[j].get("name", f"joint{j}")] = None if p is None else nodes[p].get("name", f"joint{p}")
     weights = []
     for n in world:
         node = nodes[n]
@@ -104,7 +113,7 @@ def read_figure(path: Path) -> Figure:
     if names and weights and all(w is not None for w in weights):
         dense = np.concatenate(weights)
         dense /= np.maximum(dense.sum(axis=1, keepdims=True), 1e-9)
-    return Figure(model, joints, names, dense, cc.read_glow(path))
+    return Figure(model, joints, names, dense, cc.read_glow(path), parents or None)
 
 
 # --- drawing ---------------------------------------------------------------------------------
@@ -550,12 +559,30 @@ HAND_PARTS = ("Hand", "Thumb", "Index", "Middle", "Ring", "Little")
 FINGERS = 4                # a cut across the fingers of a five-digit hand: the thumb branched off before
 
 
+def hand_bones(figure: Figure, side: str) -> tuple[str, list] | None:
+    """(the hand's bone, it and every bone of it) for SIDE ("Left" or "Right", the figure's own): by Unity's names on
+    a game figure, else by the skeleton's shape (a raw Rig output names its bones bone_0 ... in no telling order; the
+    arms are found as `hero_hands.arm_bones` finds them, the hand being the forearm's end and all below it)."""
+    if f"{side}Hand" in figure.joints:
+        return f"{side}Hand", [n for n in figure.names if n.startswith(side) and any(k in n for k in HAND_PARTS)]
+    if not figure.parents:
+        return None
+    from image_to_3dlab import hero_hands as hh
+
+    try:
+        arms, _ = hh.arm_bones(figure.parents, figure.joints)
+    except (ValueError, StopIteration, KeyError):
+        return None
+    arm = arms.get(side.lower())
+    return None if arm is None else (arm["hand"], [arm["hand"], *arm["below"]])
+
+
 def hand(figure: Figure, side: str):
     """(the hand's vertex mask, the wrist, the axis to the fingertips, the hand's length), or None."""
-    bone = f"{side}Hand"
-    if bone not in figure.joints or figure.weights is None:
+    found = hand_bones(figure, side) if figure.weights is not None else None
+    if found is None:
         return None
-    bones = [n for n in figure.names if n.startswith(side) and any(k in n for k in HAND_PARTS)]
+    bone, bones = found
     owned = figure.owned_by(*bones) > 0.5
     if owned.sum() < 30:
         return None
@@ -591,7 +618,8 @@ def fingers(figure: Figure) -> Result:
         elif most < FINGERS and worst == "pass":
             worst = "look"
     if not per_side:
-        return Result("fingers", "info", "-", f"{FINGERS} per hand", "no hand bones with skin weights: not counted")
+        return Result("fingers", "info", "-", f"{FINGERS} per hand", "no hands found in the skeleton with skin "
+                      "weights: not counted")
     text = ", ".join(f"{s} hand {n}" for s, n in per_side.items())
     return Result("fingers", worst, text, f"{FINGERS} fingers per cut (more fails, fewer is a mitten)",
                   f"most separate fingers in a cut across the hand: {text} (the thumb branches off nearer the "

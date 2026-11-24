@@ -194,7 +194,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   teeth along the head's outline, loose flakes and colour changes come back as "look here" with
   the spot circled, and fail only when they got clearly worse than before (or, with `--same-look`,
   when a rebuild that should only lose faults changed colour). An HTML page shows every view and verdict side
-  by side, so a run of versions reads at a glance (`--series`).
+  by side, so a run of versions reads at a glance (`--series`). The hands are found by the bones' names on a game
+  figure and by the skeleton's shape on a raw Rig output (its bones are bone_0 ... in no telling order), so the
+  fingers are counted before the game-ready step too: the Zauberer's rigged figure shows mittens (3 and 2 pieces per
+  cut), the same figure after Hero hands 4 and 4.
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).
