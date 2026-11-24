@@ -612,3 +612,10 @@ def test_read_parts_reads_every_part_of_one_mesh():
     writer.doc["nodes"][0]["translation"] = [0, 1, 0]
     with pytest.raises(ValueError, match="moved by its node"):
         hf.read_parts(writer.build())
+
+
+def test_auto_builds_the_whole_head_under_a_brim_and_the_face_alone_without_one():
+    assert hf.pick_region("auto", {"floor": 1.62})[0] == "head"
+    assert hf.pick_region("auto", {"floor": None})[0] == "face"
+    assert hf.pick_region("face", {"floor": 1.62})[0] == "face"
+    assert hf.pick_region("head", {"floor": None})[0] == "head"

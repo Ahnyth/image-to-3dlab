@@ -45,7 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   figure with its Hero hands on (two parts) is read as it is.
 - **Hero head under the brim** (`scripts/hero_face.py --region head`): for a figure with a hat brim, and best with a
   high collar, the whole head between the brim's underside and the collar is built again instead of the face alone:
-  face, ears, side strands and the hair under the brim. With the face alone, the coarse old head stayed all round it:
+  face, ears, side strands and the hair under the brim (`--region auto` picks it when the measure finds a brim over
+  the face, else the face alone, and falls back to the face when the head cannot be set in). With the face alone, the
+  coarse old head stayed all round it:
   a seam from the eye down the cheek, a thick side strand between ear and face, and under the brim open shells of old
   hair with gaps through which the hat's inside showed. The head is unrolled round an axis through skull and neck;
   the brim's tilted underside is read from below, the collar told from the neck by where the air between them opens to

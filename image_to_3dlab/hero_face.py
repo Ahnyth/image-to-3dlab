@@ -368,6 +368,16 @@ TALL_LIMIT = 1.6         # a face window this many times taller than wide ran pa
 NOSE_SPAN = (0.3, 0.75)  # the nose sits this far down its window; the Zauberer's at 0.5, skin_sorcerer_a's at 0.1
 
 
+def pick_region(asked: str, window: dict) -> tuple[str, str]:
+    """(what is built again, why): ASKED "face" or "head" as it is; "auto" the whole head under a hat's brim when the
+    face's WINDOW found one above the face (its underside, `floor`), else the face alone."""
+    if asked != "auto":
+        return asked, f"asked for the {asked}"
+    if window.get("floor") is not None:
+        return "head", "a hat's brim stands over the face: the whole head under it is built again"
+    return "face", "no hat's brim over the face: the face alone is built again"
+
+
 def window_doubts(window: dict) -> list[str]:
     """Plain-words reasons to look at window.png before trusting the result: the window's shape or the nose's place in
     it is unlike a face's. Measured on six figures of round 22: the Zauberer (built and checked) and four more looked

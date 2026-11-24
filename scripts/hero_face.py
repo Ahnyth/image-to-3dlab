@@ -2,7 +2,7 @@
 """Give a figure a sharper face, or its whole head under a hat brim: built again on its own and set in above its collar.
 
     .venv/bin/python scripts/hero_face.py model.glb front.png [--out output/hero_face/NAME] [--rig rigged.glb]
-        [--also finer.glb ...] [--seed 42]
+        [--also finer.glb ...] [--seed 42] [--region face|head|auto]
 
 A face that is a few dozen pixels of a full-body picture gets few of Pixal3D's voxels: a hair strand that is thin in
 the picture comes out fat and in front of an eye, and Pixel Match paints the eye's glow onto it. Built on its own
@@ -39,7 +39,8 @@ watertight. Where a collar stands round the neck, the new neck reaches on down i
 closed inside the body, so nothing of the old neck shows through the collar's open front; a bare neck is stitched to
 the figure's own. Strands of the build standing off the face are laid onto it, and the skin the picture does not see
 (the ears, the jaw's sides) takes the build's own paint in the face's tone. head.png shows the region unrolled round
-the head.
+the head. --region auto takes the head when the measure finds a brim over the face, else the face (and the face too
+when the head under a brim cannot be set in).
 
 Writes <out>/<model>_face.glb (and <out>/<also>_face.glb; _head.glb with --region head), with face.json (every
 number), window.png and a licence record. Every step skips when its output exists, so a rerun picks up after a fix.
@@ -281,9 +282,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="more models of the figure in the same frame (the finer ones a game-ready step bakes "
                              "paint and bumps from): each gets the same face")
     parser.add_argument("--seed", type=int, default=SEED, help="Pixal3D's seed for the face")
-    parser.add_argument("--region", choices=("face", "head"), default="face",
+    parser.add_argument("--region", choices=("face", "head", "auto"), default="face",
                         help="what is built again: the face alone, or the whole head under a hat's brim down into "
-                             "its collar (ears, side hair, the hair under the brim)")
+                             "its collar (ears, side hair, the hair under the brim); auto: the head when a brim stands "
+                             "over the face, else the face")
     args = parser.parse_args(argv)
 
     missing = [name for name, path in needed_parts().items() if not Path(path).exists()]
@@ -324,11 +326,19 @@ def main(argv: list[str] | None = None) -> int:
     for doubt in hf.window_doubts(window):
         run.flag(f"{doubt}; check window.png")
     zone = None
-    if args.region == "head":
+    region, why = hf.pick_region(args.region, window)
+    run.say(f"measure: region {region} ({why})")
+    if region == "head":
         try:
             zone = hd.head_zone(body["positions"], body["faces"], window)
         except ValueError as error:
-            raise SystemExit(f"[hero] the head under the brim cannot be set in: {error}") from None
+            if args.region != "auto":
+                raise SystemExit(f"[hero] the head under the brim cannot be set in: {error}") from None
+            run.flag(f"the head under the brim cannot be set in ({error}): the face alone is built again")
+            region = "face"
+    (out / "region.json").write_text(json.dumps({"asked": args.region, "region": region, "why": why}),
+                                     encoding="utf-8")
+    if zone is not None:
         hd.zone_picture(zone).save(out / "head.png")
         bounds = head_bounds(zone)
         run.say(f"measure: the head under the brim: axis {zone['axis']}, stitch at {zone['bottom']:.4f} "
