@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Hero face's cut never goes through the head.** Where the face's build shows no face (skin_sorcerer_c's lower
+  cheeks), its relief falls to the build's own back of the head, up to 0.9 head widths behind the figure's face, and
+  the cut, which takes what lies just behind the new face, followed it through the head and out of the back hair:
+  holes a game shows from behind (dark shards in the game figure's back hair, 223 see-through pixels behind the full
+  shape model). `hero_face.py` now measures the cut against the new face only where it is a face, reached from the
+  nose without a cliff and less than a quarter of the head's width behind the figure's front; the four models it wrote
+  for skin_sorcerer_c show no hole from behind. Where the new face falls into the head, the log says so and face.json
+  gives its share (`off_cliff_share`).
 - **Hero parts set a part into each finer model no finer than that model.** The finer models a figure's game step takes
   its shape and paint from got every new part at 150,000 faces: skin_sorcerer_b's two boots took its 58,000-triangle
   shape model to 344,000, and the game step's even thinning to 14,000 left the body a few thousand (a smashed face, no

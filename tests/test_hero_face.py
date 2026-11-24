@@ -544,6 +544,12 @@ def test_reference_depth_takes_the_deeper_of_the_two_where_both_are():
     assert hf.reference_depth(own, new).tolist() == [[0.4, 0.3, 0.2, np.inf]]
 
 
+def test_reference_depth_leaves_out_a_new_face_lying_further_than_dive_behind_the_figure():
+    own = np.array([[0.5, 0.5, -np.inf]])
+    new = np.array([[0.3, 0.1, 0.0]])                    # 0.2 and 0.4 behind the figure; alone where it has nothing
+    assert hf.reference_depth(own, new, dive=0.25).tolist() == [[0.3, 0.5, 0.0]]
+
+
 def figure_head():
     """The old head: a sphere, a strand standing in front of its face, and a collar piece hidden behind the jaw (in
     the window, deeper than the new face). Skin weights: the front on bone 1, the back on bone 0."""
@@ -576,6 +582,7 @@ def test_graft_face_takes_the_strand_keeps_the_hidden_collar_and_tucks_the_face_
     assert np.allclose(radius[middle], 0.052, atol=2e-4)                            # the middle is the new face's own
     assert report["seam_gap_max"] == pytest.approx(0.0385 - 0.0357 + hf.TUCK_SHARE * 0.1, abs=1e-3)
     assert np.allclose(new["dense"], [0.0, 1.0])                                    # the old face's weights
+    assert report["off_cliff_share"] == 0.0                                         # a whole face, no pit
 
 
 def test_graft_face_leaves_parts_away_from_the_face_alone():
@@ -585,6 +592,86 @@ def test_graft_face_leaves_parts_away_from_the_face_alone():
     face = dict(zip(("positions", "faces"), sphere(0.051)))
     parts, _, report = hf.graft_face([hand, body], disk_window(0.035, width=0.1), face)
     assert parts[0] is hand and report["parts"][0] == {"cut": False} and report["body_part"] == 1
+
+
+def pitted_face(surface, floor, pit=(0.02, -0.01), pit_radius=0.006, half=0.045, pixel=0.001):
+    """A new face laid out as a relief over the window, SURFACE(x, y) its depth, with a pit where the build showed no
+    face: its relief fell to the build's own back there, to FLOOR, as skin_sorcerer_c's did at both lower cheeks
+    (round 27 of the AssetFurnace Support notes)."""
+    box = (-half, half, -half, half)
+    rows, cols = hf.canvas(box, pixel)
+    x, y = np.meshgrid(box[0] + (np.arange(cols) + 0.5) * pixel, box[3] - (np.arange(rows) + 0.5) * pixel)
+    depth = surface(x, y)
+    depth[(x - pit[0]) ** 2 + (y - pit[1]) ** 2 <= pit_radius ** 2] = floor
+    return hf.relief(depth, box, pixel, np.ones(depth.shape, bool))
+
+
+def diving_face(radius=0.0525, floor=-0.035):
+    """A sphere's front 2.5 mm proud of the old face, its pit falling through the head to FLOOR."""
+    return pitted_face(lambda x, y: np.sqrt(np.clip(radius ** 2 - x ** 2 - y ** 2, 0.0, None)), floor)
+
+
+def holes_from_behind(parts, half=0.06, pixel=0.001):
+    """Pixels where the parts, seen from straight behind as a game draws them (back faces culled), show something
+    but no surface facing the camera: see-through holes."""
+    v = np.concatenate([np.asarray(p["positions"], dtype=float) for p in parts])
+    offsets = np.cumsum([0] + [len(p["positions"]) for p in parts])
+    f = np.concatenate([np.asarray(p["faces"]) + o for p, o in zip(parts, offsets)])
+    toward = hf.face_normals(v, f)[:, 2] < 0
+    turned = v * np.array([-1.0, 1.0, -1.0])                 # turned round: the back camera's view as a front view
+    box = (-half, half, -half, half)
+    shown = np.isfinite(hf.depth_map(turned, f, box, pixel)[0])
+    drawn = np.isfinite(hf.depth_map(turned, f[toward], box, pixel)[0])
+    return int((shown & ~drawn).sum())
+
+
+def test_graft_face_never_cuts_through_the_head_where_the_new_face_dives_into_it():
+    v, f = hollow_head()
+    body = {"positions": v, "faces": f}
+    window = disk_window(0.035, width=0.1)
+    assert holes_from_behind([body]) == 0
+    parts, new, report = hf.graft_face([body], window, diving_face())
+    kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
+    assert (kept[:, 2] < 0).sum() == (v[f].mean(axis=1)[:, 2] < 0).sum()      # nothing of the head's back went
+    assert holes_from_behind(parts + [new]) == 0                              # seen from behind, no hole
+    assert not ((kept[:, 2] > 0.03) & (np.hypot(kept[:, 0], kept[:, 1]) < 0.03)).any()   # the old face did go
+    assert 0.03 < report["off_cliff_share"] < 0.2                             # the pit and its rim, said
+
+
+def plate(depth, half=0.06, pixel=0.002, back=False):
+    """A flat sheet at DEPTH over the square of HALF, facing the camera (or away from it with BACK)."""
+    box = (-half, half, -half, half)
+    rows, cols = hf.canvas(box, pixel)
+    sheet = hf.relief(np.full((rows, cols), depth), box, pixel, np.ones((rows, cols), bool))
+    if back:
+        sheet["faces"] = sheet["faces"][:, ::-1]
+    return sheet
+
+
+def test_graft_face_never_cuts_through_a_shallow_head_where_the_new_face_falls_off_a_cliff():
+    # the raw model's side of the head: its front 0.01, its back only 0.03 behind it; the new face stands 0.01 proud
+    # and falls 0.03 into a pit, its floor less than DIVE_SHARE of the head's width behind the figure's front
+    front, back = plate(0.01), plate(-0.02, back=True)
+    v, f = joined((front["positions"], front["faces"]), (back["positions"], back["faces"]))
+    body = {"positions": v, "faces": f}
+    face = pitted_face(lambda x, y: np.full(x.shape, 0.02), floor=-0.01)
+    assert 0.03 - 0.01 < hf.DIVE_SHARE * 0.1                     # the depth limit alone lets this pit count
+    parts, new, _ = hf.graft_face([body], disk_window(0.035, width=0.1), face)
+    kept = parts[0]["positions"][parts[0]["faces"]].mean(axis=1)
+    assert (kept[:, 2] < 0).sum() == (v[f].mean(axis=1)[:, 2] < 0).sum()      # the back plate is whole
+    assert holes_from_behind(parts + [new], half=0.05) == 0
+
+
+def test_reached_takes_the_face_from_the_nose_and_leaves_a_pit_behind_a_cliff():
+    depth = np.full((40, 40), 0.05)
+    depth[:, 20:] -= np.linspace(0.0, 0.01, 20)[None, :]        # a gentle slope: still the face
+    depth[5:12, 5:12] = -0.03                                    # a pit 0.08 deep
+    depth[30:, :5] = -np.inf                                      # nothing there
+    out = hf.reached(depth, (20, 20), 0.025)
+    assert out[20, 35] and out[20, 2] and out[35, 6]
+    assert not out[8, 8] and not out[35, 2]
+    assert not out[8, 13] and out[8, 16]                          # the cliff's own band stays out, not more
+    assert hf.reached(depth, (8, 12), 0.025).sum() == np.isfinite(depth).sum()   # a seed on a cliff: all of it
 
 
 def test_graft_face_says_so_when_the_new_face_misses_the_window():

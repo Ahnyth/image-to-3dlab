@@ -21,8 +21,10 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
               nearest surface seen from the front (a build can be a hollow shell: its inner wall stays out), its
               creases rounded a little, painted by the crop itself, so the eyes are the picture's own pixels.
   5. graft    the figure cut along the seam: what lies inside it and not clearly behind the new face goes (a strand
-              in front of an eye, the eye under it, an inner skin); hat, collar and the hidden rest stay. The new
-              face reaches a few pixels past the seam and is tucked just behind the figure's surface there, so the
+              in front of an eye, the eye under it, an inner skin); hat, collar and the hidden rest stay. Where the
+              new face falls into the head (its build showed no face there) only the figure's front goes, so the
+              back of the head stays whole, and the log says so. The new face reaches a few pixels past the seam
+              and is tucked just behind the figure's surface there, so the
               figure's cut edge lies over it (Pixal3D's skin and inner wall are one surface, so neither cut gives a
               clean rim to stitch). The crop's paint is moved to the figure's own just outside the seam, smoothly
               across the face (a figure's paint is often lighter or darker than the picture, and the face's outline
@@ -71,6 +73,7 @@ FIT_LIMIT = 0.03            # a new face whose points lie further than this shar
                             # face (the closest three quarters of them, on average) was put somewhere else
 HEAD_CROP_PAD = 1.4         # the head's crop is this many times the head's own size (some brim and collar round it)
 HEAD_COARSEST = 4           # a model's new head is laid out at most this many of the region's pixels apart
+PIT_LIMIT = 0.01            # a new face falling off a cliff into the head over more than this share of it is flagged
 
 
 def fresh(run: Run, name: str) -> None:
@@ -467,6 +470,9 @@ def main(argv: list[str] | None = None) -> int:
             run.flag(f"{model.name}: along {report['seam_raised_short']:.0%} of the seam the figure stands more than "
                      f"{hf.EASE_SHARE * window['width']:.4f} in front of the new face (up to "
                      f"{report['seam_gap_max']:.4f}): its cut edge hangs over the face there; look at the seam")
+        if report["off_cliff_share"] > PIT_LIMIT:
+            run.flag(f"{model.name}: {report['off_cliff_share']:.0%} of the new face falls into the head where its "
+                     "build showed no face (a pit; the old head behind it stays): look at the face's sides")
         write_derived_sidecar(model, target_path, operation="hero_face",
                               source_record=record if model == args.model else None,
                               component_records=[r for r in (face_record, upscaled) if r])

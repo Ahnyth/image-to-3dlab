@@ -47,6 +47,9 @@ MARGIN_SHARE = 0.06    # the seam runs this share of the head's width inside the
 SMOOTH_SHARE = 0.04    # the seam's line is smoothed over this share of the head's width
 BEHIND_SHARE = 0.15    # what of the figure lies less than this share of the head's width behind the new face goes: the
                        # old eye under a strand, an inner skin; a collar hidden behind the jaw lies deeper and stays
+DIVE_SHARE = 0.25      # ... but the new face counts there only where it lies less than this share of it behind the
+                       # figure's front (`reference_depth`): skin_sorcerer_c's lay within 0.22 of it over 95 % of the
+                       # face, and 0.4 to 0.9 behind it in two pits where the build showed no face (round 27)
 NEAR_PIXELS = 3        # the new face's depth is carried this many pixels past its outline, for the faces the seam cuts
 BLEND_SHARE = 0.12     # the new face eases into the figure's depth over this share of the head's width ...
 EASE_SHARE = 0.05      # ... toward the front by at most this share of it (`tuck`)
@@ -252,6 +255,18 @@ def cliffs(depth: np.ndarray, jump: float, span: int = CLIFF_PIXELS) -> np.ndarr
                     index[axis] = slice(j, j + depth.shape[axis] - k)
                     out[tuple(index)] |= steep
     return out
+
+
+def reached(depth: np.ndarray, seed: tuple[int, int], jump: float) -> np.ndarray:
+    """The pixels of DEPTH (a front depth map) reached from SEED without crossing a cliff (`cliffs`, a step of JUMP or
+    more within CLIFF_PIXELS); every pixel DEPTH holds when SEED lies on a cliff or on nothing. A new face's relief
+    falls off a cliff where its build showed no face (to the build's own back of the head), and what lies beyond is
+    no face."""
+    ok = np.isfinite(depth) & ~cliffs(np.where(np.isfinite(depth), depth, np.nan), jump)
+    label, _ = ndimage.label(ok)
+    if not label[seed]:
+        return np.isfinite(depth)
+    return label == label[seed]
 
 
 def face_outline(depth: np.ndarray, facing: np.ndarray, seed: tuple[int, int], jump: float,
@@ -572,11 +587,17 @@ def tuck(points: np.ndarray, values: np.ndarray, target: np.ndarray, blend: floa
     return p
 
 
-def reference_depth(own: np.ndarray, new: np.ndarray) -> np.ndarray:
+def reference_depth(own: np.ndarray, new: np.ndarray, dive: float = np.inf) -> np.ndarray:
     """What a figure's face is measured against: the nearer-to-the-back of its own front depth and the new face's,
-    where both are (+inf where neither is, so nothing there counts as in front)."""
+    where both are (+inf where neither is, so nothing there counts as in front). The new face counts only where it
+    lies less than DIVE behind the figure's front: where the build shows no face, its relief falls to the build's own
+    back of the head, and measured against that the cut went through the figure's head and out of its back hair, a
+    see-through hole a game shows from behind (skin_sorcerer_c, its new face up to 0.9 head widths behind its lower
+    cheeks; round 27 of the AssetFurnace Support notes)."""
     out = np.where(np.isfinite(own), own, np.inf)
     both = np.isfinite(own) & np.isfinite(new)
+    with np.errstate(invalid="ignore"):
+        both &= own - new < dive
     out[both] = np.minimum(own[both], new[both])
     only_new = np.isfinite(new) & ~np.isfinite(own)
     out[only_new] = new[only_new]
@@ -886,12 +907,15 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
 
     What goes of the figure: inside the window, whatever is not more than BEHIND (default BEHIND_SHARE of the head's
     width) behind the new face or the figure's own front, so a strand in front of an eye, the eye under it and an
-    inner skin go, while a collar hidden behind the jaw stays. The new face reaches SKIRT_PIXELS past the seam and is
-    tucked just behind the figure's surface there (`tuck`, at most EASE toward the front, default EASE_SHARE of the
-    head's width), so the figure's cut edge lies over it. Not stitched: Pixal3D builds skin and inner wall as one
-    surface joined all over (the Zauberer's figure and face both), so neither side's cut gives one clean rim, and a
-    stitch between two such rims tore across the face. With skin weights (dense) the new face takes the weights of
-    the nearest old face point."""
+    inner skin go, while a collar hidden behind the jaw stays. The new face counts there only where it is a face,
+    reached from the nose without a cliff (`reached`) and less than DIVE_SHARE of the head's width behind the figure's
+    front (`reference_depth`), so a new face that falls into the head where its build showed no face never takes the
+    back of the head with it; the report's off_cliff_share says how much of the face that is. The new face reaches
+    SKIRT_PIXELS past the seam and is tucked just behind the figure's surface there (`tuck`, at most EASE toward the
+    front, default EASE_SHARE of the head's width), so the figure's cut edge lies over it. Not stitched: Pixal3D builds
+    skin and inner wall as one surface joined all over (the Zauberer's figure and face both), so neither side's cut
+    gives one clean rim, and a stitch between two such rims tore across the face. With skin weights (dense) the new
+    face takes the weights of the nearest old face point."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
@@ -903,7 +927,12 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
         raise ValueError("the new face does not reach into the window: check its placement")
     new, _ = hh.keep_faces(new, front_piece(new["positions"], new["faces"]))
     new_depth = spread(depth_map(new["positions"], new["faces"], box, pixel)[0], NEAR_PIXELS)
+    # the cut measures against the new face only where it is a face: reached from the nose without a cliff
+    is_face = reached(new_depth, window["seed"], JUMP_SHARE * width)
+    counted = np.where(is_face, new_depth, -np.inf)
+    shown = np.isfinite(new_depth) & (window["field"] > 0)
     out_parts, old_points, old_dense, report = [], [], [], {"parts": []}
+    report["off_cliff_share"] = float((shown & ~is_face).sum() / max(int(shown.sum()), 1))
     body_index, target, most = None, None, 0
     for index, part in enumerate(parts):
         p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
@@ -915,14 +944,15 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             report["parts"].append({"cut": False})
             continue
         own, _ = depth_map(p, f[reach], box, pixel)
-        ref = sample(reference_depth(own, new_depth), box, pixel, middle, outside=np.inf, nearest=True)
+        ref = sample(reference_depth(own, counted, DIVE_SHARE * width), box, pixel, middle, outside=np.inf,
+                     nearest=True)
         cuttable = reach & (middle[:, 2] > ref - behind)
         gone = cuttable & (values[f] > 0).all(axis=1)
         if part.get("dense") is not None and gone.any():
             used = np.unique(f[gone])
             old_points.append(p[used])
             old_dense.append(np.asarray(part["dense"])[used])
-        in_front = middle[gone, 2] - sample(new_depth, box, pixel, middle[gone], outside=-np.inf, nearest=True)
+        in_front = middle[gone, 2] - sample(counted, box, pixel, middle[gone], outside=-np.inf, nearest=True)
         cut, _ = hh.cut_part_values(part, values, cuttable)
         report["parts"].append({"cut": True, "faces_removed": int(gone.sum()),
                                 "old_in_front_max": float(np.max(in_front[np.isfinite(in_front)], initial=0.0))})
