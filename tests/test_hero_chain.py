@@ -310,6 +310,22 @@ def test_after_new_boots_the_game_step_cuts_no_feet():
     assert hero_chain.stage_models("hands", models, {}).new_feet is False
 
 
+def test_after_new_hands_the_game_step_keeps_their_fingers():
+    # skin_sorcerer_c's new hands came out of the even thinning to 14,000 triangles as thin flat claws, about 200
+    # triangles a hand; --hand-protect 0.6 kept four fingers and a thumb (round 27); the chain passes it itself once its
+    # hands stage is kept, and an explicit value of the caller's stands
+    import hero_chain
+
+    models = ch.Models(Path("C:/f/rig.glb"), ch.game_models(GAME))
+    assert ch.option_value(models.game_args(GAME), "--hand-protect") is None
+    handed = hero_chain.stage_models("hands", models, {models.rig: Path("C:/o/rig_hands.glb")})
+    assert ch.option_value(handed.game_args(GAME), "--hand-protect") == str(ch.HAND_PROTECT)
+    assert ch.option_value(handed.game_args([*GAME, "--hand-protect", "0.3"]), "--hand-protect") == "0.3"
+    assert ch.Models.from_dict(handed.as_dict()).new_hands is True
+    booted = hero_chain.stage_models("boots", handed, {handed.rig: Path("C:/o/rig_hands_boots.glb")})
+    assert booted.new_hands is True and booted.new_feet is True       # a later stage keeps the new hands
+
+
 def test_a_problem_game_ready_names_after_a_stage_and_not_before_drops_it():
     # skin_sorcerer_b's boots, built far finer than its body, took most of the 14,000 triangles: the body came out
     # crude, 1.813 m tall for 1.85, and game_ready said so in its report; every stage check passed (2026-11-24)
@@ -321,3 +337,18 @@ def test_a_problem_game_ready_names_after_a_stage_and_not_before_drops_it():
     had = {"problems": ["2 materials: an engine draws each one separately"]}
     assert ch.problems_verdict({"problems": ["2 materials: an engine draws each one separately"]}, had)[0] is True
     assert ch.problems_verdict({"problems": []}, None)[0] is True
+
+
+def test_a_shape_stage_is_counted_for_see_through_on_the_models_the_game_step_shapes_from():
+    # the face stage's holes were in its own rigged and shape models (145 and 223 pixels from behind, round 27): both
+    # are counted before the game step runs; the paint source is not a shape (round 28)
+    import hero_chain
+
+    models = ch.Models(Path("C:/f/rig.glb"), {"--mesh-from": Path("C:/f/fine.glb"), "--colour-from": Path("C:/f/paint.glb")})
+    after = hero_chain.stage_models("head", models, {models.rig: Path("C:/o/rig_face.glb"),
+                                                     Path("C:/f/fine.glb"): Path("C:/o/fine_face.glb"),
+                                                     Path("C:/f/paint.glb"): Path("C:/o/paint_face.glb")})
+    pairs = ch.shape_pairs(models, after)
+    assert [label for label, _, _ in pairs] == ["rigged model", "shape model"]
+    assert pairs[1][1:] == (Path("C:/f/fine.glb"), Path("C:/o/fine_face.glb"))
+    assert ch.shape_pairs(models, models) == []

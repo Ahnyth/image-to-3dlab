@@ -118,8 +118,9 @@ def game_cut_share(game: list[str]) -> float | None:
 
 
 def stage_models(stage: str, models: hc.Models, results: dict) -> hc.Models:
-    """MODELS after STAGE wrote RESULTS: the boots stage gives the figure new feet (`Models.new_feet`)."""
-    return models.swapped(results, new_feet=stage == "boots")
+    """MODELS after STAGE wrote RESULTS: the boots stage gives the figure new feet (`Models.new_feet`), the hands stage
+    new hands (`Models.new_hands`)."""
+    return models.swapped(results, new_feet=stage == "boots", new_hands=stage == "hands")
 
 
 def stage_command(stage: str, models: hc.Models, picture: Path, folder: Path, given: dict) -> list[str]:
@@ -419,6 +420,13 @@ class Chain:
                 return checks
         from image_to_3dlab import colour_compare as cc
 
+        if name in hc.GEOMETRY:      # seconds, where a hole otherwise shows only in the game figure ten minutes later
+            for label, old_path, new_path in hc.shape_pairs(before, after):
+                result = fc.see_through_against(cc.read_model(old_path), cc.read_model(new_path))
+                stage.measured[f"see-through, {label}"] = result.value
+                checks.append((result.status != "fail", f"the {label}: {result.message}"))
+                if result.status == "fail":
+                    return checks
         what = {"hands": "the hands", "head": "the head", "boots": "the boots", "band": "the band"}[name]
         old, new = cc.read_model(before.colour()), cc.read_model(after.colour())    # each read once: 6144 maps
         if name == "band":

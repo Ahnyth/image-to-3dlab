@@ -72,12 +72,17 @@ def game_models(args: list[str]) -> dict[str, Path]:
     return {flag: Path(value) for flag in GAME_MODELS if (value := option_value(args, flag))}
 
 
+HAND_PROTECT = 0.6    # game_ready's --hand-protect once new hands are kept: four fingers and a thumb at 14,000
+                      # triangles where the even thinning left thin flat claws (skin_sorcerer_c, round 27)
+
+
 @dataclass
 class Models:
     """A figure's models in one frame: the rigged one and the finer ones the game-ready step takes."""
     rig: Path
     finer: dict = field(default_factory=dict)        # game-ready option -> path
     new_feet: bool = False                           # a boots stage replaced the feet: the game step cuts none
+    new_hands: bool = False                          # a hands stage gave real fingers: the game step protects them
 
     def all(self) -> list[Path]:
         """The rigged model first, then each finer one once."""
@@ -96,37 +101,53 @@ class Models:
         """The model the game figure's colour comes from: --colour-from, else the rigged model."""
         return Path(self.finer.get("--colour-from", self.rig))
 
-    def swapped(self, results: dict, new_feet: bool = False) -> Models:
+    def swapped(self, results: dict, new_feet: bool = False, new_hands: bool = False) -> Models:
         """These models with each one a stage changed (RESULTS: old path -> new path, by resolved path) swapped;
-        NEW_FEET when the stage gave the figure new feet (kept from then on)."""
+        NEW_FEET when the stage gave the figure new feet, NEW_HANDS new hands (each kept from then on)."""
         index = {str(Path(old).resolve()).lower(): Path(new) for old, new in results.items()}
 
         def swap(path):
             return index.get(str(Path(path).resolve()).lower(), Path(path))
 
         return Models(swap(self.rig), {flag: swap(path) for flag, path in self.finer.items()},
-                      self.new_feet or new_feet)
+                      self.new_feet or new_feet, self.new_hands or new_hands)
 
     def game_args(self, args: list[str]) -> list[str]:
         """A game-ready command line's options with these models as its finer ones. With new feet the game step cuts
         none: the sole it would cut (planned from the figure's Finish run) went with the old feet, and measured from
-        the new lowest point its cut took the new boots' feet (skin_sorcerer_c, 2026-11-24)."""
+        the new lowest point its cut took the new boots' feet (skin_sorcerer_c, 2026-11-24). With new hands the thinning
+        spares them (`--hand-protect` HAND_PROTECT), unless the command line names its own."""
         out = list(args)
         for flag, path in self.finer.items():
             out = with_option(out, flag, str(path))
         if self.new_feet:
             out = with_option(with_option(out, "--feet-from", None), "--feet", "off")
+        if self.new_hands and option_value(out, "--hand-protect") is None:
+            out = with_option(out, "--hand-protect", str(HAND_PROTECT))
         return out
 
     def as_dict(self) -> dict:
         return {"rig": str(self.rig), **{flag.lstrip("-"): str(path) for flag, path in self.finer.items()},
-                **({"new_feet": True} if self.new_feet else {})}
+                **({"new_feet": True} if self.new_feet else {}), **({"new_hands": True} if self.new_hands else {})}
 
     @classmethod
     def from_dict(cls, data: dict) -> Models:
         """`as_dict` read back."""
         return cls(Path(data["rig"]), {f"--{key}": Path(value) for key, value in data.items()
-                                       if key not in ("rig", "new_feet")}, bool(data.get("new_feet")))
+                                       if key not in ("rig", "new_feet", "new_hands")}, bool(data.get("new_feet")),
+                   bool(data.get("new_hands")))
+
+
+def shape_pairs(before: Models, after: Models) -> list[tuple[str, Path, Path]]:
+    """(label, model before, model after) for each model a stage changed that the game step takes its shape from: the
+    rigged one and the --mesh-from one; each is counted for see-through (`figure_check.see_through_against`) before
+    the game step runs."""
+    out = []
+    for label, old, new in (("rigged model", before.rig, after.rig),
+                            ("shape model", before.finer.get("--mesh-from"), after.finer.get("--mesh-from"))):
+        if old is not None and new is not None and str(Path(old).resolve()).lower() != str(Path(new).resolve()).lower():
+            out.append((label, Path(old), Path(new)))
+    return out
 
 
 # --- where a stage changed the figure ------------------------------------------------------------------------------

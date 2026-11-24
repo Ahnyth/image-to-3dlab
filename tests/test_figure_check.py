@@ -373,3 +373,66 @@ def test_a_stage_fails_only_on_what_got_clearly_worse():
     assert out["jagged outline"].status == "fail" and "worse than the version before (0.4)" in out["jagged outline"].message
     assert out["loose flakes"].status == "pass"
     assert "fingers" not in out                                          # not a look the stage is judged by
+
+
+def grid_box(n=8, half=(0.2, 0.9, 0.15), centre=(0.0, 0.9, 0.0)):
+    """A closed box of n x n squares a side, faces wound outward, and each face's side as (axis, sign)."""
+    points, faces, sides = [], [], []
+    for axis in range(3):
+        u_axis, v_axis = [a for a in range(3) if a != axis]
+        for sign in (-1.0, 1.0):
+            s = np.linspace(-1.0, 1.0, n + 1)
+            uu, vv = np.meshgrid(s, s, indexing="ij")
+            p = np.zeros((n + 1, n + 1, 3))
+            p[..., axis], p[..., u_axis], p[..., v_axis] = sign, uu, vv
+            base = sum(len(q) for q in points)
+            idx = base + np.arange((n + 1) * (n + 1)).reshape(n + 1, n + 1)
+            for i in range(n):
+                for j in range(n):
+                    a, b, c, d = idx[i, j], idx[i + 1, j], idx[i + 1, j + 1], idx[i, j + 1]
+                    for tri in ((a, b, c), (a, c, d)):
+                        faces.append(tri)
+                        sides.append((axis, sign))
+            points.append(p.reshape(-1, 3))
+    v = np.concatenate(points) * np.array(half) + np.array(centre)
+    f = np.array(faces)
+    n_ = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    out = np.array([[sign if k == axis else 0.0 for k in range(3)] for axis, sign in sides])
+    flip = (n_ * out).sum(axis=1) < 0
+    f[flip] = f[flip][:, ::-1]
+    return v, f, np.array(sides)
+
+
+def test_see_through_counts_what_a_game_shows_through_a_hole_from_each_side():
+    # skin_sorcerer_c's face stage cut a hole through the back hair: from behind, with back faces culled, 223 pixels of
+    # its shape model showed the inside of the head (round 27); the count takes seconds where the game step takes ten
+    # minutes (round 28 of the AssetFurnace Support notes)
+    v, f, sides = grid_box()
+    whole = model_of(v, f)
+    assert fc.see_through(whole) == {"front": 0, "back": 0, "left": 0, "right": 0}
+    middle = v[f].mean(axis=1)
+    hole = (sides[:, 0] == 2) & (sides[:, 1] < 0) & (np.abs(middle[:, 0]) < 0.08) & (np.abs(middle[:, 1] - 0.9) < 0.3)
+    holed = model_of(v, f[~hole])
+    counts = fc.see_through(holed)
+    assert counts["back"] > 100                                  # through the hole onto the front wall's back
+    assert counts["front"] == 0 and counts["left"] == 0 and counts["right"] == 0
+
+
+def test_see_through_against_fails_a_stage_that_opens_a_hole():
+    v, f, sides = grid_box()
+    middle = v[f].mean(axis=1)
+    hole = (sides[:, 0] == 2) & (sides[:, 1] < 0) & (np.abs(middle[:, 0]) < 0.08) & (np.abs(middle[:, 1] - 0.9) < 0.3)
+    result = fc.see_through_against(model_of(v, f), model_of(v, f[~hole]))
+    assert result.status == "fail" and "back" in result.message
+    assert fc.see_through_against(model_of(v, f[~hole]), model_of(v, f[~hole])).status == "pass"   # there before
+
+
+def test_the_head_is_drawn_twice_as_large_for_the_eye():
+    # three light specks under skin_sorcerer_c's brim showed only on an enlarged picture (round 27); the report adds the
+    # head's views at twice the size beside the measured ones (round 28 of the AssetFurnace Support notes)
+    v, f, _ = grid_box()
+    figure = fc.Figure(model_of(v, f), joints={}, names=[], weights=None)
+    head = fc.find_head(figure)
+    close = fc.close_head_views(figure, head, 64)
+    assert close and all(view.rgb.shape[:2] == (128, 128) for view in close.values())
+    assert set(close) == set(fc.head_views(figure, head, 64))

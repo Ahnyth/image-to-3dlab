@@ -732,3 +732,14 @@ def test_auto_builds_the_whole_head_under_a_brim_and_the_face_alone_without_one(
     assert hf.pick_region("auto", {"floor": None})[0] == "face"
     assert hf.pick_region("face", {"floor": 1.62})[0] == "face"
     assert hf.pick_region("head", {"floor": None})[0] == "head"
+
+
+def test_a_face_finer_than_the_head_it_replaces_is_laid_out_coarser():
+    # skin_sorcerer_c's rigged model: its new face had 4,705 triangles where the head it replaced had about 2,026, the
+    # game step's head protect kept them and thinned the body about 30 % harder (round 27); the rule of the boots
+    # (hero_parts.matched_faces) holds for the face too (round 28 of the AssetFurnace Support notes)
+    pixel = 0.001
+    assert hf.matched_step(4 * pixel, 4705, 3000, pixel) == pytest.approx(4 * pixel * np.sqrt(4705 / 3000))
+    assert hf.matched_step(4 * pixel, 2000, 3000, pixel) == 4 * pixel          # not finer than asked: as it was
+    assert hf.matched_step(4 * pixel, 40000, 3000, pixel) == hf.MATCHED_COARSEST * pixel   # never coarser than this
+    assert hf.matched_step(4 * pixel, 4705, None, pixel) == 4 * pixel          # density unknown: as it was

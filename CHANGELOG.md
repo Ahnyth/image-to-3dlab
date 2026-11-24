@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Hero chain counts see-through holes in each shape stage's own models, before the game step.** A stage's hole
+  showed only in the game figure ten minutes later (skin_sorcerer_c's face stage: 223 pixels one sees through from
+  behind in its shape model, 145 in its rigged one). `figure_check.see_through` counts, from the front, back, left and
+  right with back faces culled as a game draws, where something shows but no surface faces the camera, in seconds;
+  a shape stage (hands, head, boots) that adds more than 20 such pixels on one side of its rigged or shape model is
+  dropped before its game step. figure_check's report also draws the head twice as large beside the measured views
+  (three light specks under a brim showed only on an enlarged picture).
+- **A new face no finer than the head it replaces.** The rule Hero parts take (`hero_parts.matched_faces`: no finer
+  than 1.5 times the model round it) holds for the face too: skin_sorcerer_c's face had 4,705 triangles where the head
+  it replaced had about 2,026, the game step's head protect kept them and thinned the body about 30 % harder. The face
+  is laid out coarser to match (`hero_face.matched_step`, at most 8 of the window's pixels apart); face.json gives the
+  target (`face_faces_target`).
+- **The chain passes `--hand-protect 0.6` to the game step once it keeps new hands**, unless its command line names
+  its own: without it the even thinning to 14,000 triangles left them thin flat claws.
 - **The Hero face's cut never goes through the head.** Where the face's build shows no face (skin_sorcerer_c's lower
   cheeks), its relief falls to the build's own back of the head, up to 0.9 head widths behind the figure's face, and
   the cut, which takes what lies just behind the new face, followed it through the head and out of the back hair:

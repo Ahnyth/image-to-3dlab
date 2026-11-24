@@ -907,6 +907,21 @@ def relief_step(parts: list[dict], window: dict, most: int = COARSEST_STEP) -> f
     return float(np.clip(np.median(np.concatenate(lengths)) / 2, pixel, most * pixel))
 
 
+MATCHED_COARSEST = 8     # a face laid out coarser to match its head (`matched_step`) stays at most this many pixels apart
+
+
+def matched_step(step: float, faces: int, target: int | None, pixel: float, most: int = MATCHED_COARSEST) -> float:
+    """The relief step that gives a face of FACES triangles (laid out at STEP) about TARGET: a relief's triangles go
+    with one over the step squared. Never finer than STEP, never coarser than MOST pixels; STEP as it was when TARGET
+    is None (the model's density unknown) or the face is not finer than it. The target is the rule every Hero part
+    takes (`hero_parts.matched_faces`: no finer than 1.5 times the model round it): at `relief_step`'s cap of
+    COARSEST_STEP pixels skin_sorcerer_c's face had 4,705 triangles where the head it replaced had about 2,026, and the
+    game step, keeping them, thinned the body about 30 % harder (round 27 of the AssetFurnace Support notes)."""
+    if target is None or faces <= target:
+        return step
+    return float(min(step * np.sqrt(faces / target), most * pixel))
+
+
 def place_face(face: dict, tf: np.ndarray) -> dict:
     """FACE (a part) moved by the 4x4 TF; its normals turned along."""
     out = {**face, "positions": hh.moved(tf, face["positions"])}

@@ -268,6 +268,16 @@ class Result:
                 "message": self.message, "spots": [[v, list(b)] for v, b in self.spots]}
 
 
+HEAD_CLOSE = 2     # the head's views for the eye are this many times the measured ones' size
+
+
+def close_head_views(figure: Figure, head: Head, size: int = 320) -> dict:
+    """The head's views at HEAD_CLOSE times SIZE, for the report only (the measures keep SIZE): three light specks
+    under skin_sorcerer_c's brim showed only on an enlarged picture (rounds 27 and 28 of the AssetFurnace Support
+    notes)."""
+    return head_views(figure, head, HEAD_CLOSE * size)
+
+
 def _boxes(mask: np.ndarray, min_area: int):
     labels, _ = ndimage.label(mask)
     out = []
@@ -820,6 +830,53 @@ def feet_against(before: Figure, figure: Figure) -> Result:
 STAGE_LOOKS = {"head": "head", "boots": "feet"}   # what a Hero chain stage's game figure is judged on: its own region
 
 
+SEE_THROUGH_SIZE = 400        # pixels over the figure's height for the see-through count
+SEE_THROUGH_LIMIT = 20        # see-through pixels a change may add on one side before it fails
+SEE_THROUGH_SIDES = {"front": 0.0, "back": 180.0, "left": 90.0, "right": -90.0}   # turn about the up axis
+
+
+def see_through(model: cc.Model, size: int = SEE_THROUGH_SIZE) -> dict:
+    """{side: pixels}: where the model, seen from the front, back, left and right as a game draws it (back faces
+    culled), shows something but no surface facing the camera: holes one sees through. Seconds on a full shape
+    model, where the game step's pose check takes minutes: the Hero face stage's cut went through skin_sorcerer_c's
+    head and out of its back hair, 223 such pixels from behind in its own shape model, and the chain found it only in
+    the game figure ten minutes later (rounds 27 and 28 of the AssetFurnace Support notes)."""
+    from image_to_3dlab import hero_face as hf
+
+    p = np.asarray(model.positions, dtype=np.float64)
+    f = np.asarray(model.faces, dtype=np.int64)
+    if not len(f):
+        return dict.fromkeys(SEE_THROUGH_SIDES, 0)
+    pixel = max(float(np.ptp(p[:, 1])), 1e-9) / size
+    out = {}
+    for side, degrees in SEE_THROUGH_SIDES.items():
+        a = np.radians(degrees)
+        turned = np.stack([p[:, 0] * np.cos(a) + p[:, 2] * np.sin(a), p[:, 1],
+                           -p[:, 0] * np.sin(a) + p[:, 2] * np.cos(a)], axis=1)
+        box = (turned[:, 0].min() - pixel, turned[:, 0].max() + pixel, p[:, 1].min() - pixel, p[:, 1].max() + pixel)
+        toward = hf.face_normals(turned, f)[:, 2] > 0
+        shown = np.isfinite(hf.depth_map(turned, f, box, pixel)[0])
+        drawn = np.isfinite(hf.depth_map(turned, f[toward], box, pixel)[0])
+        out[side] = int((shown & ~drawn).sum())
+    return out
+
+
+def see_through_against(before: cc.Model, model: cc.Model, size: int = SEE_THROUGH_SIZE,
+                        limit: int = SEE_THROUGH_LIMIT) -> Result:
+    """`see_through` of MODEL against BEFORE (the same figure before a change): fails where one side shows more than
+    LIMIT pixels more."""
+    was, now = see_through(before, size), see_through(model, size)
+    grown = {side: now[side] - was[side] for side in now if now[side] - was[side] > limit}
+    counts = ", ".join(f"{side} {was[side]} -> {now[side]}" for side in now)
+    if grown:
+        worst = max(grown, key=grown.get)
+        return Result("see-through", "fail", now, f"at most {limit} new pixels a side",
+                      f"one sees through it from the {worst} where one did not before ({counts} pixels at "
+                      f"{size} over the height)")
+    return Result("see-through", "pass", now, f"at most {limit} new pixels a side",
+                  f"no new see-through ({counts} pixels at {size} over the height)")
+
+
 def stage_against(stage: str, before_path, path, size: int = 320) -> list:
     """A Hero chain STAGE's game figure at PATH against the one before the stage, on the stage's own region alone: the
     head's LOOKS that got clearly worse (`against`), or the feet (`feet_against`); each "pass" or "fail". Looks
@@ -880,7 +937,8 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None, 
         results.append(colour_against(old, figure, colour_picture, same_look))
     else:
         results.append(feet(figure))
-    return Checked(path, results, {"head": views, "whole": whole_views(figure, size),
+    return Checked(path, results, {"head": views, "head close": close_head_views(figure, head, size),
+                                   "whole": whole_views(figure, size),
                                    "hands": hand_views(figure)})
 
 
@@ -956,7 +1014,7 @@ def write_report(checked: list, out, title: str = "Figure check", preface: str =
         for group, views in c.views.items():
             if not views:
                 continue
-            file = f"{c.path.stem}_{group}.jpg"
+            file = f"{c.path.stem}_{group.replace(' ', '_')}.jpg"
             sheet(views, spots if group == "head" else []).save(out / file, quality=90)
             parts.append(f"<p>{group}</p><img src='{file}'>")
         for r in c.results:

@@ -73,6 +73,7 @@ FIT_LIMIT = 0.03            # a new face whose points lie further than this shar
                             # face (the closest three quarters of them, on average) was put somewhere else
 HEAD_CROP_PAD = 1.4         # the head's crop is this many times the head's own size (some brim and collar round it)
 HEAD_COARSEST = 4           # a model's new head is laid out at most this many of the region's pixels apart
+MATCH_LEAST = 1500            # a face matched to its head keeps at least this many triangles (as hero_parts' parts)
 PIT_LIMIT = 0.01            # a new face falling off a cliff into the head over more than this share of it is flagged
 
 
@@ -304,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     from image_to_3dlab import hero_face as hf
     from image_to_3dlab import hero_hands as hh
     from image_to_3dlab import hero_head as hd
+    from image_to_3dlab import hero_parts as hp
     from image_to_3dlab.provenance import read_model_record, write_derived_sidecar
 
     out = (args.out or REPO / "output" / "hero_face" / args.model.stem[:60]).resolve()
@@ -456,10 +458,24 @@ def main(argv: list[str] | None = None) -> int:
         data = model.read_bytes()
         _, _, model_parts = hf.read_parts(data)
         step = hf.relief_step(model_parts, window)   # a coarse model gets a face as coarse as its old one
-        model_face = face if step <= window["pixel"] else hf.face_relief(
-            placed, window, box, face_picture.width, full_frame, material, step=step)
-        model_face, offset = hf.match_face_paint(model_face, model_parts, window, crop_rgb, box, full_frame)
-        cut_parts, face_out, report = hf.graft_face(model_parts, window, model_face)
+
+        def set_in(step, model_parts=model_parts):
+            model_face = face if step <= window["pixel"] else hf.face_relief(
+                placed, window, box, face_picture.width, full_frame, material, step=step)
+            model_face, offset = hf.match_face_paint(model_face, model_parts, window, crop_rgb, box, full_frame)
+            return (*hf.graft_face(model_parts, window, model_face), offset)
+
+        cut_parts, face_out, report, offset = set_in(step)
+        # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces)
+        target = hp.matched_faces(face_out, model_parts, MATCH_LEAST, len(face_out["faces"]))
+        matched = hf.matched_step(step, len(face_out["faces"]), target, window["pixel"])
+        if matched > step:
+            finer = len(face_out["faces"])
+            cut_parts, face_out, report, offset = set_in(matched)
+            run.say(f"graft: {model.name}: the new face laid out {matched / step:.2f} times coarser to match the head "
+                    f"round it: {len(face_out['faces'])} triangles for {finer} (the head's density allows {target})")
+            step = matched
+        report["face_faces_target"] = target
         report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]
         report["relief_step_pixels"] = round(step / window["pixel"], 2)
         written = [hh.finish_part(p) for p in cut_parts] + [hh.finish_part(face_out, smooth=True)]
