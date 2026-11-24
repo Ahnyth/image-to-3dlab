@@ -318,3 +318,20 @@ def test_a_raw_rigs_hands_are_found_by_the_skeletons_shape_and_counted(tmp_path)
     assert np.allclose(found[1], heads[role["Rhand"]])
     result = fc.fingers(figure)
     assert result.status == "pass" and "right hand 4" in result.value
+
+
+def test_a_long_thumb_reaching_among_the_fingers_is_no_sixth_finger():
+    # Hero hands draw the hand flat with the thumb spread: a cut below the knuckles catches its tip beside the four
+    # fingers, set apart from their row (the Sorcerer's grafted hands: five pieces in two cuts, five digits all told)
+    parts = [box((-0.05, -0.08, -0.01), (0.05, 0.0, 0.01))]                     # the palm
+    for k in range(4):
+        x = -0.05 + k * 0.025
+        parts.append(box((x + 0.004, -0.18, -0.008), (x + 0.021, -0.075, 0.008)))
+    parts.append(box((0.078, -0.13, -0.008), (0.093, -0.03, 0.008)))           # the thumb, long, beside the hand
+    parts.append(box((0.045, -0.06, -0.006), (0.082, -0.045, 0.006)))          # joined to the palm
+    p, f = join(*parts)
+    figure = fc.Figure(model_of(p, f), {"LeftHand": np.zeros(3)}, ["LeftHand"], np.ones((len(p), 1)))
+    assert fc.fingers(figure).status == "pass"
+    five = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0], [40.0, 0.0]])
+    assert fc.digits_in_cut(five) == 5                                        # evenly spaced: a digit too many
+    assert fc.digits_in_cut(np.r_[five[:4], [[70.0, 5.0]]]) == 4               # one set apart: the thumb's tip

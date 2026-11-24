@@ -213,7 +213,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by side, so a run of versions reads at a glance (`--series`). The hands are found by the bones' names on a game
   figure and by the skeleton's shape on a raw Rig output (its bones are bone_0 ... in no telling order), so the
   fingers are counted before the game-ready step too: the Zauberer's rigged figure shows mittens (3 and 2 pieces per
-  cut), the same figure after Hero hands 4 and 4.
+  cut), the same figure after Hero hands 4 and 4. A thumb whose tip reaches down among the fingers (Hero hands draw it
+  long and spread) is told from a sixth finger by standing apart from their row; on the Sorcerer's grafted hands the
+  cut there showed five pieces and the hand was failed for a digit too many it did not have.
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).

@@ -520,12 +520,17 @@ def _welded(model: cc.Model):
 def section_pieces(points: np.ndarray, faces: np.ndarray, origin, axis, pixel: float) -> int:
     """How many separate solid pieces the plane through ORIGIN square to AXIS cuts out of the
     triangles FACES: the cut's outlines drawn on a grid of PIXEL, filled, and counted."""
+    return len(section_parts(points, faces, origin, axis, pixel))
+
+
+def section_parts(points: np.ndarray, faces: np.ndarray, origin, axis, pixel: float) -> np.ndarray:
+    """The middles (in the cut's plane, in PIXEL units) of the separate solid pieces `section_pieces` counts."""
     axis = np.asarray(axis, float) / np.linalg.norm(axis)
     d = (points - np.asarray(origin, float)) @ axis
     fd = d[faces]
     crossing = faces[(fd.min(axis=1) < 0) & (fd.max(axis=1) > 0)]
     if not len(crossing):
-        return 0
+        return np.zeros((0, 2))
     starts = np.full((len(crossing), 3), np.nan)
     stops = np.full((len(crossing), 3), np.nan)
     for a, b in ((0, 1), (1, 2), (2, 0)):
@@ -552,7 +557,30 @@ def section_pieces(points: np.ndarray, faces: np.ndarray, origin, axis, pixel: f
     grid = ndimage.binary_fill_holes(ndimage.binary_dilation(grid))
     labels, _ = ndimage.label(grid)
     sizes = np.bincount(labels.ravel())[1:]
-    return int((sizes >= 3).sum())
+    keep = np.flatnonzero(sizes >= 3) + 1
+    if not len(keep):
+        return np.zeros((0, 2))
+    return np.asarray(ndimage.center_of_mass(grid, labels, keep), dtype=np.float64).reshape(-1, 2)
+
+
+THUMB_APART = 1.5          # a piece this many times farther from its nearest neighbour than the rest are is a thumb
+
+
+def digits_in_cut(middles: np.ndarray, fingers: int | None = None) -> int:
+    """The fingers a cut across a hand shows: its pieces, less a thumb that reaches down among the fingers. Built alone
+    and drawn flat, a hand's thumb is long and spread (Hero hands), so a cut below the knuckles can catch its tip beside
+    the four fingers: five pieces, the thumb's set apart from the row (its nearest neighbour THUMB_APART times farther
+    than the fingers' are). Five evenly spaced pieces are a digit too many and stay five."""
+    fingers = FINGERS if fingers is None else fingers
+    n = len(middles)
+    if n <= fingers:
+        return n
+    gaps = np.linalg.norm(middles[:, None] - middles[None], axis=-1)
+    np.fill_diagonal(gaps, np.inf)
+    nearest = gaps.min(axis=1)
+    apart = int(np.argmax(nearest))
+    rest = np.delete(nearest, apart)
+    return n - 1 if nearest[apart] >= THUMB_APART * float(np.median(rest)) else n
 
 
 HAND_PARTS = ("Hand", "Thumb", "Index", "Middle", "Ring", "Little")
@@ -609,7 +637,7 @@ def fingers(figure: Figure) -> Result:
             continue
         owned, wrist, axis, length = found
         faces = wfaces[owned[figure.model.faces].any(axis=1)]
-        counts = [section_pieces(points, faces, wrist + t * axis, axis, length / 200)
+        counts = [digits_in_cut(section_parts(points, faces, wrist + t * axis, axis, length / 200))
                   for t in np.linspace(0.20, 0.95, 16) * length]
         most = max(counts)
         per_side[side.lower()] = most
@@ -623,7 +651,8 @@ def fingers(figure: Figure) -> Result:
     text = ", ".join(f"{s} hand {n}" for s, n in per_side.items())
     return Result("fingers", worst, text, f"{FINGERS} fingers per cut (more fails, fewer is a mitten)",
                   f"most separate fingers in a cut across the hand: {text} (the thumb branches off nearer the "
-                  "wrist, so a five-digit hand shows 4 here)")
+                  "wrist, or stands apart from the fingers where its tip reaches among them, so a five-digit hand "
+                  "shows 4 here)")
 
 
 # --- whole figure, hands, holes, colour ------------------------------------------------------
