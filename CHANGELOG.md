@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`make_side_views.py` notices a front picture that already shows the side.** A vehicle drawn side-on has its
+  profile as the "front"; asked for its right side, the picture engine drew that profile again, and the four-view
+  build took a scissor lift's length for its depth too (a near-square footprint). When the drawn side has the
+  front's outline, the script draws the subject's end and keeps it where it differs; where the end comes back alike
+  too, the subject looks alike from every side (a round slime) and the side stands. The record says which view.
 - `scripts/unity_humanoid_names.py` renames a rigged character's bones from `bone_0`... to Unity
   Humanoid names (Hips, Spine, ... LeftToes) or Mixamo names, so game engines map the skeleton
   on their own (#237).
