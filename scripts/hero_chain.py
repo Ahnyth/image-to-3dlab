@@ -364,6 +364,7 @@ class Chain:
 
         checks = []
         if name == "hands":
+            stage.measured["fingers per cut before"] = fc.fingers(fc.read_figure(before.rig)).value
             result = fc.fingers(fc.read_figure(after.rig))
             ok, why = hc.fingers_verdict(result)
             stage.measured["fingers per cut"] = result.value
