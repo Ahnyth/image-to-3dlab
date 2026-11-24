@@ -198,9 +198,10 @@ def frames(old: Model, new: Model) -> tuple[tuple, tuple]:
     return (((a0 + a1) / 2, 1.0 / float((a1 - a0).max())), ((b0 + b1) / 2, 1.0 / float((b1 - b0).max())))
 
 
-def render(model: Model, direction, size: int, frame: tuple | None = None) -> tuple[np.ndarray, np.ndarray]:
+def render(model: Model, direction, size: int, frame: tuple | None = None, points: bool = False):
     """The model's base colour seen orthographically from `direction` (figure toward camera), Y up:
-    (size, size, 3) floats 0..1 and the mask of covered pixels."""
+    (size, size, 3) floats 0..1 and the mask of covered pixels; with POINTS also (size, size, 3) the surface point
+    each covered pixel shows, in the model's own frame (NaN elsewhere)."""
     centre, scale = frame or ((model.positions.min(0) + model.positions.max(0)) / 2,
                               1.0 / float(np.ptp(model.positions, axis=0).max()))
     d = np.asarray(direction, float)
@@ -217,12 +218,15 @@ def render(model: Model, direction, size: int, frame: tuple | None = None) -> tu
     normal = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     keep = np.flatnonzero(normal @ d > 0)          # back faces culled, as a game draws them
     rgb = np.zeros((size, size, 3))
+    where = np.full((size, size, 3), np.nan)
     if not len(keep):
-        return rgb, np.zeros((size, size), bool)
+        return (rgb, np.zeros((size, size), bool), where) if points else (rgb, np.zeros((size, size), bool))
     f = model.faces[keep]
     face_of, bary = rasterize(np.stack([x, y], 1)[f], depth[f], (size, size))
     covered = face_of >= 0
     hit = keep[face_of[covered]]
+    if points:
+        where[covered] = (bary[covered][:, :, None] * model.positions[model.faces[hit]]).sum(1)
     uv = (bary[covered][:, :, None] * model.uvs[model.faces[hit]]).sum(1)
     for k, picture in enumerate(model.textures):
         mine = model.part[hit] == k
@@ -235,7 +239,7 @@ def render(model: Model, direction, size: int, frame: tuple | None = None) -> tu
         cols = np.minimum((u * w).astype(int), w - 1)
         idx = np.flatnonzero(covered)[mine]
         rgb.reshape(-1, 3)[idx] = picture[rows, cols] / 255.0
-    return rgb, covered
+    return (rgb, covered, where) if points else (rgb, covered)
 
 
 # --- comparing -------------------------------------------------------------------------------
@@ -275,19 +279,30 @@ def _where(cy: float, cx: float, rows: np.ndarray, cols: np.ndarray) -> str:
 
 def compare_view(old: Model, new: Model, name: str, direction, size: int = 384, delta: float = 12.0,
                  min_share: float = 0.003, reach: int = 2, rim: int = 2, frame=None,
-                 ignore: Model | None = None) -> tuple[list, dict]:
+                 ignore: Model | None = None, leave_out=None) -> tuple[list, dict]:
     """The patches of one view, and the two pictures and the changed mask for a marked picture.
 
     `ignore` (`read_glow` of `new`): where it shows a colour, `new` glows on purpose, and those pixels (grown by
-    the colour edge's reach) do not count."""
+    the colour edge's reach) do not count. `leave_out` (points (N, 3) -> bool (N,)): pixels whose surface point, in
+    either model, it marks do not count either (a part changed on purpose: only a change elsewhere is a patch)."""
     fo, fn = frame or frames(old, new)
-    a, ca = render(old, direction, size, fo)
-    b, cb = render(new, direction, size, fn)
+    if leave_out is None:
+        a, ca = render(old, direction, size, fo)
+        b, cb = render(new, direction, size, fn)
+    else:
+        a, ca, pa = render(old, direction, size, fo, points=True)
+        b, cb, pb = render(new, direction, size, fn, points=True)
     la, lb = lab(a), lab(b)
     inside = ndimage.binary_erosion(ca, iterations=rim) & ndimage.binary_erosion(cb, iterations=rim)
     if ignore is not None:
         g, cg = render(ignore, direction, size, fn)
         inside &= ~ndimage.binary_dilation(cg & (g.max(-1) > 0.08), iterations=reach + 1)
+    if leave_out is not None:
+        out = np.zeros((size, size), bool)
+        for covered, where in ((ca, pa), (cb, pb)):
+            if covered.any():
+                out[covered] |= np.asarray(leave_out(where[covered]), bool)
+        inside &= ~ndimage.binary_dilation(out, iterations=reach + 1)
     diff = np.maximum(_nearest_difference(la, lb, cb, reach), _nearest_difference(lb, la, ca, reach))
     changed = inside & (diff > delta)
     changed = ndimage.binary_opening(changed, structure=np.ones((3, 3), bool))
@@ -310,23 +325,26 @@ def compare_view(old: Model, new: Model, name: str, direction, size: int = 384, 
 
 
 def compare(old: Model, new: Model, size: int = 384, delta: float = 12.0, min_share: float = 0.003,
-            views=VIEWS, ignore: Model | None = None) -> list[Patch]:
-    """Every patch, over all `views`, where `new` differs in colour from `old` (outside `ignore`'s glow)."""
+            views=VIEWS, ignore: Model | None = None, leave_out=None) -> list[Patch]:
+    """Every patch, over all `views`, where `new` differs in colour from `old` (outside `ignore`'s glow and what
+    `leave_out` marks)."""
     frame = frames(old, new)
     found = []
     for name, direction in views:
-        found += compare_view(old, new, name, direction, size, delta, min_share, frame=frame, ignore=ignore)[0]
+        found += compare_view(old, new, name, direction, size, delta, min_share, frame=frame, ignore=ignore,
+                              leave_out=leave_out)[0]
     return found
 
 
 def marked_picture(old: Model, new: Model, path: Path, size: int = 384, delta: float = 12.0,
-                   min_share: float = 0.003, views=VIEWS, ignore: Model | None = None) -> list[Patch]:
+                   min_share: float = 0.003, views=VIEWS, ignore: Model | None = None,
+                   leave_out=None) -> list[Patch]:
     """`compare`, and a picture of every view with a patch: old | new | new with the patches in red."""
     frame = frames(old, new)
     rows, found = [], []
     for name, direction in views:
         patches, pics = compare_view(old, new, name, direction, size, delta, min_share, frame=frame,
-                                     ignore=ignore)
+                                     ignore=ignore, leave_out=leave_out)
         found += patches
         if not patches:
             continue

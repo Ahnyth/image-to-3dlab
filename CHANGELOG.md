@@ -293,7 +293,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--picture`. A hole check in motion does not see a wrong colour; this caught a bake that put a
   dark, faceted patch on a cape's back, and passed 16 of 20 rebuilt figures untouched (the other
   four only lost dark specks their old bake had). `--ignore-glow` leaves out where the second
-  model glows on purpose, for a game model against its source.
+  model glows on purpose, for a game model against its source. The comparison can also leave out a
+  part changed on purpose (`leave_out`: the pixels whose surface lies there, in either model), so a
+  step that swaps hands or a head is checked for a change anywhere else.
 - `game_ready.py` checks its own result by colour: the finished figure against the model its colour
   came from (`--colour-from`, else the source), from eight sides, where it glows on purpose left
   out. A patch that differs is a bake fault: it is named in the report and its problems, and marked

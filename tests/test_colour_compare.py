@@ -215,3 +215,19 @@ def test_the_script_can_leave_out_where_the_new_model_glows(tmp_path):
     assert plain.returncode == 1, plain.stdout + plain.stderr
     lit = subprocess.run([sys.executable, script, str(old), str(new), "--ignore-glow"], capture_output=True, text=True)
     assert lit.returncode == 0, lit.stdout + lit.stderr
+
+
+def test_a_change_where_it_was_made_on_purpose_is_left_out_and_one_elsewhere_is_not():
+    # the back changed on purpose (a part set in there); a change on the front would be a fault
+    back_only = cc.compare(model(), model(dark_side=1), leave_out=lambda p: p[:, 2] < -0.4)
+    assert back_only == []
+    front = cc.compare(model(), model(dark_side=0), leave_out=lambda p: p[:, 2] < -0.4)
+    assert front and {p.view for p in front} >= {"front"}
+
+
+def test_render_tells_the_surface_point_of_each_pixel():
+    m = model()
+    rgb, covered, where = cc.render(m, (0.0, 0.0, 1.0), 64, points=True)
+    assert covered.any() and np.allclose(where[covered][:, 2], 0.5, atol=1e-6)    # the front face, at z = +0.5
+    assert np.isnan(where[~covered]).all()
+    assert np.array_equal(cc.render(m, (0.0, 0.0, 1.0), 64)[0], rgb)
