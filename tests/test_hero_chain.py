@@ -242,7 +242,8 @@ def test_a_stage_whose_game_figure_lost_its_feet_is_dropped(tmp_path, monkeypatc
     checks = chain.game_checks("boots", before, after, stage, [])
     assert (False, "the game figure: the left and right foot lost its toe") in checks
     assert stage.measured["game figure: feet forward"] == -0.009
-    assert chain.game_checks("band", before, after, ch.Stage("band", "kept", ""), []) == []
+    hands = chain.game_checks("hands", before, after, ch.Stage("hands", "kept", ""), [])
+    assert [ok for ok, _ in hands] == [True]                  # the hands: game-ready's own problems alone
 
 
 def test_new_boots_stand_where_the_game_step_cuts_the_figures_feet(monkeypatch):
@@ -307,3 +308,16 @@ def test_after_new_boots_the_game_step_cuts_no_feet():
     hands = hero_chain.stage_models("hands", booted, {booted.rig: Path("C:/o/rig_boots_hands.glb")})
     assert hands.new_feet is True                              # a later stage keeps the new feet
     assert hero_chain.stage_models("hands", models, {}).new_feet is False
+
+
+def test_a_problem_game_ready_names_after_a_stage_and_not_before_drops_it():
+    # skin_sorcerer_b's boots, built far finer than its body, took most of the 14,000 triangles: the body came out
+    # crude, 1.813 m tall for 1.85, and game_ready said so in its report; every stage check passed (2026-11-24)
+    before = {"problems": []}
+    after = {"problems": ["height 1.813 m, asked for 1.850 m",
+                          "52 patches differ in colour from paint_boots.glb (first: front: a darker patch)"]}
+    ok, why = ch.problems_verdict(after, before)
+    assert ok is False and "52 patches differ in colour" in why and "height 1.813 m" in why
+    had = {"problems": ["2 materials: an engine draws each one separately"]}
+    assert ch.problems_verdict({"problems": ["2 materials: an engine draws each one separately"]}, had)[0] is True
+    assert ch.problems_verdict({"problems": []}, None)[0] is True

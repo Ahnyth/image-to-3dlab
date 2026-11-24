@@ -210,6 +210,27 @@ def fingers_verdict(result) -> tuple[bool, str]:
     return True, f"{result.value} per cut across the fingers"
 
 
+def _problem_kind(text: str) -> str:
+    """A game-ready problem without its numbers: "height # m, asked for # m"."""
+    import re
+
+    return re.sub(r"[0-9][0-9.,]*", "#", str(text)).split("(")[0].strip()
+
+
+def problems_verdict(after: dict | None, before: dict | None) -> tuple[bool | None, str]:
+    """game-ready's own problems after a stage against before it (its report's `problems`): (passed, why). A kind of
+    problem it did not name before fails the stage: skin_sorcerer_b's boots, built far finer than its body, took most
+    of the triangle budget, and game-ready reported the crude body as a short height and 52 colour patches while every
+    stage check passed (2026-11-24)."""
+    if after is None:
+        return None, "no game-ready report"
+    had = {_problem_kind(p) for p in (before or {}).get("problems") or []}
+    new = [p for p in after.get("problems") or [] if _problem_kind(p) not in had]
+    if new:
+        return False, "game-ready names a problem it did not before: " + "; ".join(new)
+    return True, "game-ready names no new problem"
+
+
 def pose_verdict(after: dict | None, before: dict | None) -> tuple[bool | None, str]:
     """Holes in motion (game-ready's pose check, `hole_px_left`) after a stage against before it: (passed, why); passed
     is None when there was no pose check (the game-ready options have no --drop-hidden)."""

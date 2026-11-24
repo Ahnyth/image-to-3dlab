@@ -465,13 +465,13 @@ class Chain:
         whose feet game_ready cut off (2026-11-24)."""
         from image_to_3dlab import figure_check as fc
 
-        if name not in fc.STAGE_LOOKS:
-            return []
-        glb, _ = self.game_run(after, name, game)
-        old, _ = self.game_run(before, f"before_{name}", game)
+        glb, report = self.game_run(after, name, game)
+        old, old_report = self.game_run(before, f"before_{name}", game)
         if glb is None or old is None:
             return [(None, "the game figure before or after the stage was not made: not compared")]
-        out = []
+        out = [hc.problems_verdict(report, old_report)]
+        if name not in fc.STAGE_LOOKS:
+            return out
         for r in fc.stage_against(name, old, glb):
             stage.measured[f"game figure: {r.name}"] = r.value
             out.append((r.status != "fail", f"the game figure: {r.message}" if r.status == "fail"

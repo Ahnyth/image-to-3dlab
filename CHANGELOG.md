@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plans from the figure's Finish run (`--feet-from`) and hands it to the boots (`hero_parts.py --floor-at`); stood on
   the made-up sole's floor below it, they lost their feet to that cut and were left as straight shafts; once the boots stage
   is kept, the game step cuts no feet (`--feet off`: the made-up sole went with the old feet, and a cut measured from
-  the new lowest point took the new boots' feet). A stage's
+  the new lowest point took the new boots' feet). A problem game-ready names in its report after a stage and not before
+  (a height off, colour patches) drops the stage: boots built far finer than the body took most of the triangle
+  budget, the body came out crude, and only game-ready's report said so. A stage's
   colour check draws both versions in one frame (`colour_compare.shared_frame`): when the boots took the made-up sole
   away, the figure's box shrank 5.7 %, each was drawn in its own frame, and every thin trim read as a changed patch.
 - **The Hero chain** (`scripts/hero_chain.py`): a rigged figure and its front picture to a finished game figure in one
