@@ -286,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="more models of the figure in the same frame (the finer ones a game-ready step bakes "
                              "paint and bumps from): each gets the same face")
     parser.add_argument("--seed", type=int, default=SEED, help="Pixal3D's seed for the face")
+    parser.add_argument("--match-head-density", action="store_true",
+                        help="lay the new face out no finer than 1.5 times the head round it (hero_parts' rule); off by "
+                             "default: on skin_sorcerer_c its game figure's face came out as a mosaic of square blocks")
     parser.add_argument("--region", choices=("face", "head", "auto"), default="face",
                         help="what is built again: the face alone, or the whole head under a hat's brim down into "
                              "its collar (ears, side hair, the hair under the brim); auto: the head when a brim stands "
@@ -466,10 +469,11 @@ def main(argv: list[str] | None = None) -> int:
             return (*hf.graft_face(model_parts, window, model_face), offset)
 
         cut_parts, face_out, report, offset = set_in(step)
-        # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces)
+        # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces), on request:
+        # at 1,620 triangles for 4,705 skin_sorcerer_c's game figure's face came out as a mosaic of square blocks
         target = hp.matched_faces(face_out, model_parts, MATCH_LEAST, len(face_out["faces"]))
         matched = hf.matched_step(step, len(face_out["faces"]), target, window["pixel"])
-        if matched > step:
+        if args.match_head_density and matched > step:
             finer = len(face_out["faces"])
             cut_parts, face_out, report, offset = set_in(matched)
             run.say(f"graft: {model.name}: the new face laid out {matched / step:.2f} times coarser to match the head "

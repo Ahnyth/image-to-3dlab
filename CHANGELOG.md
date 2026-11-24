@@ -18,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **figure_check's hand views draw the hand alone.** From inside, the body stood in front of the palm (the view
   showed the other hand's back), and from the tips the sleeve and the cape; the palm and the fingertips were never
   shown. Each hand's views now draw its own triangles only.
-- **A new face no finer than the head it replaces.** The rule Hero parts take (`hero_parts.matched_faces`: no finer
-  than 1.5 times the model round it) holds for the face too: skin_sorcerer_c's face had 4,705 triangles where the head
-  it replaced had about 2,026, the game step's head protect kept them and thinned the body about 30 % harder. The face
-  is laid out coarser to match (`hero_face.matched_step`, at most 8 of the window's pixels apart); face.json gives the
-  target (`face_faces_target`).
+- **`hero_face.py --match-head-density`: a new face no finer than the head it replaces, on request.** The rule Hero
+  parts take (`hero_parts.matched_faces`: no finer than 1.5 times the model round it) applied to the face:
+  skin_sorcerer_c's face had 4,705 triangles where the head it replaced had about 2,026, and the game step, keeping
+  them, thinned the body about 30 % harder. Laid out coarser to match (`hero_face.matched_step`, at most 8 of the
+  window's pixels apart) it had 1,620 and the belt's links came out a little clearer, but the game figure's face came
+  out as a mosaic of square blocks with a jagged jaw line, so it is off by default; face.json gives the target
+  (`face_faces_target`) either way.
 - **The chain passes `--hand-protect 0.6` to the game step once it keeps new hands**, unless its command line names
   its own: without it the even thinning to 14,000 triangles left them thin flat claws.
 - **The Hero face's cut never goes through the head.** Where the face's build shows no face (skin_sorcerer_c's lower
