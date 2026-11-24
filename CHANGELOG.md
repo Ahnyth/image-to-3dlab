@@ -207,6 +207,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see-through slits in the gallery (533 pixels against 20). Under the hair the neck eases into a
   narrower nape instead of ending in a shelf 3 mm deep. head.png shows the region unrolled, head_paint.png the new
   head's paint.
+  Waechter's game figure stopped at 37,887 triangles instead of 14,000 and came out 10 cm short. The new hands' paint
+  is brought to the tone of the drawing they were built from (`--hand-paint match`, the default; `keep` leaves it as
+  built): Pixal3D's clean-up paints a built hand darker and far more saturated than its drawing (a summoner's skin
+  L*a*b* 59/17/24 where the drawing and its own hands were about 69/7/13, its black wrap 7.5 L* for about 24), and the
+  hands read as gloves of another colour. Each tone of the build's paint is moved to the drawing's same tone, not
+  stretched: its contrast stays (quantile curves doubled the wrap's and showed the atlas's blocks), and a near-black
+  lifted several times keeps that much less of its tint (the atlas holds the beads' red and teal there). The drawing
+  is the reference, not the figure's old hand: the summoner's mitten below the cut is skin with brown creases where
+  the new hand wears a black wrap, and the wrap came out brown. A shift over 20 L* is flagged.
 
 - **Hero head, a deep neck without a ring**: where the new neck reaches down into a collar, the band over the
   stitch now eases from the new neck's own paint just under it up to the chin, not from the figure's old neck in the

@@ -1039,8 +1039,11 @@ def dense_weights(joints: np.ndarray, weights: np.ndarray, count: int) -> np.nda
 
 
 def top_weights(dense: np.ndarray, most: int = MAX_INFLUENCES) -> tuple[np.ndarray, np.ndarray]:
-    """(joints, weights) with the MOST largest weights of each row, summing to one again."""
+    """(joints, weights) with the MOST largest weights of each row, summing to one again; MOST columns always, the
+    missing ones zero, so a skeleton of fewer bones still fills glTF's four (joint, weight) pairs."""
     dense = np.asarray(dense, dtype=np.float64)
+    if dense.shape[1] < most:
+        dense = np.pad(dense, ((0, 0), (0, most - dense.shape[1])))
     order = np.argsort(-dense, axis=1, kind="stable")[:, :most]
     weights = np.take_along_axis(dense, order, axis=1)
     total = weights.sum(axis=1, keepdims=True)
@@ -1337,6 +1340,235 @@ def finish_part(part: dict, smooth: bool = False) -> dict:
         out["normals"] = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
     if part.get("dense") is not None:
         out["joints"], out["weights"] = top_weights(part["dense"])
+    return out
+
+
+# --- The hand's paint matched to the figure's -----------------------------------------------------------------
+
+TONE_STEPS = 41            # quantiles of L* the tone curves pass through (every 2.5 %)
+TONE_SMOOTH = 7            # each shift is the median of this many neighbouring quantiles (15 %): moved, not stretched
+TONE_BAND = 10.0           # the a* and b* of a tone: the medians of this share (%) of each paint round its quantile
+TONE_GAIN = (0.75, 1.3)    # the L* curve's slope stays within these: a tone's own contrast is about kept
+TONE_SPREAD_FLOOR = 1.0    # a* or b* units added to both spreads, so two flat paints keep their colour's own play
+TONE_LIFT_FLOOR = 0.2      # a tone lifted fivefold or more keeps a fifth of its own tint
+TONE_SHIFT_LIMIT = 20.0    # a median skin shift of more L* than this is said: the old hand may have worn another thing
+TONE_LEAST_FACES = 50      # fewer painted faces than this on either hand: too few to match a tone
+_SRGB_TO_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+_WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def to_lab(rgb: np.ndarray) -> np.ndarray:
+    """CIE L*a*b* (D65) of sRGB rows 0-255."""
+    c = np.asarray(rgb, dtype=np.float64).reshape(-1, 3) / 255.0
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ _SRGB_TO_XYZ.T / _WHITE
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[:, 1] - 16, 500 * (f[:, 0] - f[:, 1]), 200 * (f[:, 1] - f[:, 2])], axis=1)
+
+
+def to_rgb(lab: np.ndarray) -> np.ndarray:
+    """sRGB rows 0-255 (clipped) of CIE L*a*b* (D65)."""
+    lab = np.asarray(lab, dtype=np.float64).reshape(-1, 3)
+    fy = (lab[:, 0] + 16) / 116
+    f = np.stack([fy + lab[:, 1] / 500, fy, fy - lab[:, 2] / 200], axis=1)
+    xyz = np.where(f ** 3 > 0.008856, f ** 3, (f - 16 / 116) / 7.787) * _WHITE
+    c = xyz @ np.linalg.inv(_SRGB_TO_XYZ).T
+    c = np.clip(c, 0.0, 1.0)
+    c = np.where(c > 0.0031308, 1.055 * c ** (1 / 2.4) - 0.055, 12.92 * c)
+    return np.clip(c * 255.0, 0.0, 255.0)
+
+
+def _smoothed(values: np.ndarray, width: int) -> np.ndarray:
+    """VALUES as the median of WIDTH neighbours (odd), the ends padded with their own value: a shift that jumps at one
+    or two quantiles (where the two paints change from wrap to skin at a slightly different share) stays out, where
+    a mean spread it over the skin's tones."""
+    if width <= 1:
+        return values
+    half = width // 2
+    padded = np.concatenate([np.full(half, values[0]), values, np.full(half, values[-1])])
+    return np.median(np.lib.stride_tricks.sliding_window_view(padded, width), axis=1)
+
+
+def tone_curves(new_rgb: np.ndarray, old_rgb: np.ndarray, steps: int = TONE_STEPS) -> dict:
+    """Curves taking one paint (NEW_RGB samples: a built hand's) to another of the same thing (OLD_RGB: the drawing it
+    was built from): the new paint's L* ("L") to the old's ("to"), and for a* and b* at each L* the new and the old
+    middle colour and how much a colour may vary there (rows of "a" and "b"). Pixal3D's clean-up paints a built hand
+    darker and far more saturated than its drawing (the summoner's skin L*a*b* 59/17/24 where the figure's and the
+    drawing were 69/7/13, its black wrap L* 7.5 for about 24: round 28 of the AssetFurnace Support notes), and the hand
+    read as a glove of another colour.
+
+    Each tone is moved, not stretched: at each of STEPS quantiles of L* the new paint is shifted by how far the old
+    paint's same quantile lies from it, each shift the median of its neighbours' (TONE_SMOOTH), the curve's slope kept
+    within TONE_GAIN; each tone's a* and b* go from the new band's median to the old's, and vary round it no more than
+    the old band's do (never more than the new paint's own). A skin and a wrap thus each meet their own tone while the
+    paint keeps its own contrast and detail: quantile curves alone took the wrap's near-black onto the figure's dark
+    grey at twice its contrast, and the atlas's blocks showed as grey squares on the back of the hand; brown and teal
+    blotches the atlas holds in a near-black, invisible there, showed once it was lifted. Both paints must show the
+    same thing in about the same mix: the figure's own hand below the cut was no such match (the summoner's mitten is
+    skin with brown creases, where the new hand wears a black wrap on its back, and the wrap came out brown); the
+    drawing a hand was built from is."""
+    q = np.linspace(0.0, 100.0, steps)
+    new, old = to_lab(new_rgb), to_lab(old_rgb)
+    xs, ys = np.percentile(new[:, 0], q), np.percentile(old[:, 0], q)
+    shift_l = _smoothed(ys - xs, TONE_SMOOTH)
+    new_rank, old_rank = np.argsort(new[:, 0], kind="stable"), np.argsort(old[:, 0], kind="stable")
+    centre_new, centre_old, gain = np.empty((steps, 2)), np.empty((steps, 2)), np.empty((steps, 2))
+    for i, at in enumerate(q):
+        lo, hi = max(at - TONE_BAND / 2, 0.0), min(at + TONE_BAND / 2, 100.0)
+        pick_new = new_rank[int(lo / 100 * len(new)):max(int(hi / 100 * len(new)), int(lo / 100 * len(new)) + 1)]
+        pick_old = old_rank[int(lo / 100 * len(old)):max(int(hi / 100 * len(old)), int(lo / 100 * len(old)) + 1)]
+        centre_new[i], centre_old[i] = np.median(new[pick_new, 1:], axis=0), np.median(old[pick_old, 1:], axis=0)
+        spread_new = np.median(np.abs(new[pick_new, 1:] - centre_new[i]), axis=0)
+        spread_old = np.median(np.abs(old[pick_old, 1:] - centre_old[i]), axis=0)
+        # a tone's colour varies no more than the figure's own does there: never amplified, at most damped fourfold
+        gain[i] = np.clip((spread_old + TONE_SPREAD_FLOOR) / (spread_new + TONE_SPREAD_FLOOR), 0.25, 1.0)
+    centre_new, centre_old, gain = (np.stack([_smoothed(a[:, k], TONE_SMOOTH) for k in range(2)], axis=1)
+                                    for a in (centre_new, centre_old, gain))
+    xs = np.maximum.accumulate(xs + 1e-6 * np.arange(steps))           # strictly rising, for np.interp
+    moved = xs + shift_l
+    # each tone moved, not stretched: the curve's slope kept within TONE_GAIN, hung at the middle tone
+    slope = np.clip(np.diff(moved) / np.maximum(np.diff(xs), 1e-9), *TONE_GAIN)
+    rebuilt = np.concatenate([[0.0], np.cumsum(slope * np.diff(xs))])
+    middle = steps // 2
+    moved = rebuilt - rebuilt[middle] + moved[middle]
+    def held(values):                                                   # beyond the samples: the last value
+        return np.concatenate([[values[0]], values, [values[-1]]])
+
+    curves = {"L": np.concatenate([[xs[0] - 100.0], xs, [xs[-1] + 100.0]]),
+              "to": np.concatenate([[moved[0] - 100.0], moved, [moved[-1] + 100.0]])}   # beyond: a slope of one
+    for k, name in enumerate("ab"):
+        curves[name] = np.stack([held(centre_new[:, k]), held(centre_old[:, k]), held(gain[:, k])])
+    return curves
+
+
+def toned(rgb: np.ndarray, curves: dict) -> np.ndarray:
+    """RGB rows 0-255 put through CURVES (`tone_curves`): L* along its curve; a* and b* from the new paint's middle
+    colour at that L* to the old's, the difference to it damped as the figure's own paint varies less there."""
+    lab = to_lab(rgb)
+    lifted = np.interp(lab[:, 0], curves["L"], curves["to"])
+    # a tone lifted to several times its lightness keeps that much less of its own tint: in a near-black the atlas's
+    # tints are bleed and noise (the summoner's wrap took the beads' red and teal), not the cloth's colour
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lift = np.clip(np.where(lifted > lab[:, 0], lab[:, 0] / np.maximum(lifted, 1e-6), 1.0), TONE_LIFT_FLOOR, 1.0)
+    out = [lifted]
+    for k, name in enumerate("ab"):
+        centre_new, centre_old, gain = (np.interp(lab[:, 0], curves["L"], row) for row in curves[name])
+        out.append(centre_old + np.minimum(gain, lift) * (lab[:, 1 + k] - centre_new))
+    return to_rgb(np.stack(out, axis=1))
+
+
+def _base_texture(doc: dict, material: int) -> tuple[int, int] | None:
+    """(texture index, image index) of MATERIAL's base colour picture, or None."""
+    info = doc.get("materials", [])[material].get("pbrMetallicRoughness", {}).get("baseColorTexture")
+    if info is None or info.get("index") is None:
+        return None
+    texture = doc["textures"][info["index"]]
+    source = texture.get("source")
+    for extension in texture.get("extensions", {}).values():
+        source = extension.get("source", source)
+    return (info["index"], source) if source is not None else None
+
+
+def _picture(doc: dict, binary: bytes, image: int):
+    import io
+
+    from PIL import Image
+
+    entry = doc["images"][image]
+    view = doc["bufferViews"][entry["bufferView"]]
+    start = view.get("byteOffset", 0)
+    return Image.open(io.BytesIO(binary[start:start + view["byteLength"]]))
+
+
+def part_paint(part: dict, faces: np.ndarray | None = None) -> np.ndarray | None:
+    """The base colour (RGB 0-255) at the middle of each of PART's FACES (a mask, default all), read from its
+    material's picture through its uvs; None when the part has no painted picture."""
+    if part.get("material") is None or part.get("uvs") is None:
+        return None
+    doc, binary, material = part["material"]
+    found = _base_texture(doc, material)
+    if found is None:
+        return None
+    picture = np.asarray(_picture(doc, binary, found[1]).convert("RGB"), dtype=np.float64)
+    f = np.asarray(part["faces"])
+    if faces is not None:
+        f = f[np.asarray(faces, dtype=bool)]
+    uv = np.asarray(part["uvs"], dtype=np.float64)[f].mean(axis=1)
+    h, w = picture.shape[:2]
+    x = np.clip(np.floor((uv[:, 0] % 1.0) * w), 0, w - 1).astype(int)
+    y = np.clip(np.floor((uv[:, 1] % 1.0) * h), 0, h - 1).astype(int)
+    return picture[y, x]
+
+
+def drawing_paint(drawing: Path) -> np.ndarray | None:
+    """The drawing's own paint (RGB 0-255 rows) where it shows the subject: the cut-out Pixal3D kept beside it
+    (`<drawing>__matted.png`), else the background remover's; None when neither can be read."""
+    from PIL import Image
+
+    drawing = Path(drawing)
+    matted = drawing.with_name(f"{drawing.stem}__matted.png")
+    if matted.is_file():
+        with Image.open(matted) as opened:
+            cut = np.asarray(opened.convert("RGBA"))
+    elif drawing.is_file():
+        from image_to_3dlab import matte
+
+        with Image.open(drawing) as opened:
+            cut = np.asarray(matte.cut_out(opened.convert("RGB"))[0].convert("RGBA"))
+    else:
+        return None
+    return cut[..., :3][cut[..., 3] > 127].astype(np.float64)
+
+
+def retinted(material: tuple, curves: dict) -> tuple:
+    """MATERIAL ((document, binary, index), as `read_part` gives it) with its base colour picture put through CURVES,
+    as a new (document, binary, index): the picture a PNG of its own, its other pictures (normal map, metal and
+    roughness) as they were. The alpha, if any, is kept."""
+    import io
+
+    from PIL import Image
+
+    doc, binary, index = material
+    found = _base_texture(doc, index)
+    if found is None:
+        return material
+    texture_index, image_index = found
+    picture = _picture(doc, binary, image_index)
+    alpha = picture.getchannel("A") if "A" in picture.getbands() else None
+    rgb = np.asarray(picture.convert("RGB"), dtype=np.float64)
+    mapped = toned(rgb.reshape(-1, 3), curves).reshape(rgb.shape)
+    out_picture = Image.fromarray(np.round(mapped).astype(np.uint8), "RGB")
+    if alpha is not None:
+        out_picture.putalpha(alpha)
+    data = io.BytesIO()
+    out_picture.save(data, "PNG")
+    png = data.getvalue()
+    doc = copy.deepcopy(doc)
+    blob = bytearray(binary)
+    blob.extend(b"\0" * (-len(blob) % 4))
+    doc["bufferViews"].append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(png)})
+    blob.extend(png)
+    doc["images"].append({"bufferView": len(doc["bufferViews"]) - 1, "mimeType": "image/png",
+                          "name": f"{doc['images'][image_index].get('name', 'base')}_toned"})
+    texture = {k: v for k, v in doc["textures"][texture_index].items() if k != "extensions"}
+    texture["source"] = len(doc["images"]) - 1
+    doc["textures"].append(texture)
+    new_material = copy.deepcopy(doc["materials"][index])
+    new_material["pbrMetallicRoughness"]["baseColorTexture"]["index"] = len(doc["textures"]) - 1
+    doc["materials"].append(new_material)
+    if doc.get("buffers"):
+        doc["buffers"][0]["byteLength"] = len(blob)
+    return doc, bytes(blob), len(doc["materials"]) - 1
+
+
+def old_hand_faces(positions: np.ndarray, faces: np.ndarray, bone: np.ndarray, plans: dict[str, dict]) -> np.ndarray:
+    """The faces of the figure's own hands: on an arm, near its seam (`arm_faces`) and past the cut toward the
+    fingers, the ones `graft_model` cuts off."""
+    middle = np.asarray(positions)[np.asarray(faces)].mean(axis=1)
+    out = np.zeros(len(faces), bool)
+    for plan in plans.values():
+        past = (middle - plan["cut"]) @ plan["axis"] > 0
+        out |= arm_faces(positions, faces, bone, plan) & past
     return out
 
 
