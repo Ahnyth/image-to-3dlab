@@ -370,8 +370,10 @@ class Chain:
             checks.append((ok, why))
             if not ok:
                 return checks
+        from image_to_3dlab import colour_compare as cc
+
         what = {"hands": "the hands", "head": "the head", "boots": "the boots", "band": "the band"}[name]
-        old, new = before.colour(), after.colour()
+        old, new = cc.read_model(before.colour()), cc.read_model(after.colour())    # each read once: 6144 maps
         if name == "band":
             data = json.loads((folder / "band.json").read_text(encoding="utf-8"))
             rings = data.get("rings", data) if isinstance(data, dict) else data
@@ -382,10 +384,11 @@ class Chain:
                     hit = hit | rp.in_ring(points, ring)
                 return hit
         else:
-            inside, changed = hc.changed_region(hc.model_points(old), hc.model_points(new))
+            inside, changed = hc.changed_region(old.positions, new.positions)
             stage.measured["points of the colour model changed"] = changed
         picture = folder / "colour_outside.png"
-        patches = hc.colour_outside(old, new, inside, picture)
+        patches = hc.colour_outside(old, new, inside, picture, glow=cc.read_glow(after.colour()))
+        del old, new
         ok, why = hc.colour_verdict(patches, what)
         stage.measured["patches outside it"] = len(patches)
         if patches and picture.exists():

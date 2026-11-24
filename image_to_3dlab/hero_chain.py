@@ -163,13 +163,16 @@ def changed_region(old: np.ndarray, new: np.ndarray, moved: float = MOVED_SHARE,
     return near(changed, reach * height), int(len(changed))
 
 
-def colour_outside(old: Path, new: Path, inside, picture: Path | None = None, size: int = 384) -> list:
-    """The patches where NEW differs in colour from OLD outside what INSIDE marks (and where NEW glows on purpose), with
-    a marked picture at PICTURE when one differs (`colour_compare`)."""
+def colour_outside(old, new, inside, picture: Path | None = None, size: int = 384, glow=None) -> list:
+    """The patches where NEW differs in colour from OLD (paths, or `colour_compare.Model`s read already) outside what
+    INSIDE marks (and where NEW glows on purpose: GLOW, read from NEW's file when it is a path), with a marked picture
+    at PICTURE when one differs (`colour_compare`)."""
     from image_to_3dlab import colour_compare as cc
 
-    a, b = cc.read_model(Path(old)), cc.read_model(Path(new))
-    glow = cc.read_glow(Path(new))
+    if isinstance(new, (str, Path)):
+        glow = cc.read_glow(Path(new))
+    a = cc.read_model(Path(old)) if isinstance(old, (str, Path)) else old
+    b = cc.read_model(Path(new)) if isinstance(new, (str, Path)) else new
     if picture is not None:
         return cc.marked_picture(a, b, Path(picture), size=size, ignore=glow, leave_out=inside)
     return cc.compare(a, b, size=size, ignore=glow, leave_out=inside)
