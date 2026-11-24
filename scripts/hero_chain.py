@@ -117,6 +117,11 @@ def game_cut_share(game: list[str]) -> float | None:
     return float(plan["at"]) if plan else None
 
 
+def stage_models(stage: str, models: hc.Models, results: dict) -> hc.Models:
+    """MODELS after STAGE wrote RESULTS: the boots stage gives the figure new feet (`Models.new_feet`)."""
+    return models.swapped(results, new_feet=stage == "boots")
+
+
 def stage_command(stage: str, models: hc.Models, picture: Path, folder: Path, given: dict) -> list[str]:
     """The command line of STAGE's tool on MODELS, writing into FOLDER. GIVEN: what a person gave by hand ("top": the
     boots' row in the picture; "boxes": the band's boxes; "views": the cameras' folder)."""
@@ -331,7 +336,7 @@ class Chain:
         missing = [str(p) for p in results.values() if not Path(p).exists()]
         if not results or missing:
             return hc.Stage(name, "failed", f"its tool wrote no result for {missing or 'any model'}"), None
-        new = models.swapped(results)
+        new = stage_models(name, models, results)
         stage = hc.Stage(name, "kept", "", self.measure(name, folder), models=new.as_dict())
         checks = self.check(name, models, new, folder, stage, game)
         failed = [why for ok, why in checks if ok is False]

@@ -291,3 +291,19 @@ def test_a_stage_that_drops_a_made_up_sole_is_compared_in_one_frame():
     want = cc.shared_frame(old, new)[0]
     assert other is seen["frame"][0] and np.allclose(centre, want[0]) and scale == pytest.approx(want[1])
     assert cc.frames(old, new)[0] is not cc.frames(old, new)[1]        # alone, the two boxes count as two places
+
+
+def test_after_new_boots_the_game_step_cuts_no_feet():
+    # the boots stage replaced the feet that stood on a made-up sole; the game step's cut, measured from the new lowest
+    # point, then took 5.8 % off the new boots: their feet (skin_sorcerer_c, 2026-11-24)
+    import hero_chain
+
+    models = ch.Models(Path("C:/f/rig.glb"), ch.game_models(GAME))
+    assert ch.option_value(models.game_args(GAME), "--feet") == "cut"
+    booted = hero_chain.stage_models("boots", models, {models.rig: Path("C:/o/rig_boots.glb")})
+    args = booted.game_args(GAME)
+    assert ch.option_value(args, "--feet") == "off" and ch.option_value(args, "--feet-from") is None
+    assert ch.Models.from_dict(booted.as_dict()).new_feet is True
+    hands = hero_chain.stage_models("hands", booted, {booted.rig: Path("C:/o/rig_boots_hands.glb")})
+    assert hands.new_feet is True                              # a later stage keeps the new feet
+    assert hero_chain.stage_models("hands", models, {}).new_feet is False

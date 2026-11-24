@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jaw strokes (`figure_check.against`), the feet reaching ahead of the ankles (`figure_check.feet`, also in the
   figure check). New boots stand where the game step will cut the figure's feet: the chain reads the cut game_ready
   plans from the figure's Finish run (`--feet-from`) and hands it to the boots (`hero_parts.py --floor-at`); stood on
-  the made-up sole's floor below it, they lost their feet to that cut and were left as straight shafts. A stage's
+  the made-up sole's floor below it, they lost their feet to that cut and were left as straight shafts; once the boots stage
+  is kept, the game step cuts no feet (`--feet off`: the made-up sole went with the old feet, and a cut measured from
+  the new lowest point took the new boots' feet). A stage's
   colour check draws both versions in one frame (`colour_compare.shared_frame`): when the boots took the made-up sole
   away, the figure's box shrank 5.7 %, each was drawn in its own frame, and every thin trim read as a changed patch.
 - **The Hero chain** (`scripts/hero_chain.py`): a rigged figure and its front picture to a finished game figure in one
