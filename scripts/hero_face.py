@@ -334,7 +334,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as error:
             if args.region != "auto":
                 raise SystemExit(f"[hero] the head under the brim cannot be set in: {error}") from None
-            run.flag(f"the head under the brim cannot be set in ({error}): the face alone is built again")
+            why = f"the head under the brim cannot be set in ({error}): the face alone is built again"
+            run.flag(why)
             region = "face"
     (out / "region.json").write_text(json.dumps({"asked": args.region, "region": region, "why": why}),
                                      encoding="utf-8")
