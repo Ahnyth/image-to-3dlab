@@ -162,14 +162,6 @@ def test_the_models_kept_by_a_stage_are_read_back_as_they_were_written():
     assert again.rig == models.rig and again.finer == models.finer
 
 
-def test_new_boots_keep_their_feet_in_the_game_ready_step():
-    import hero_chain
-
-    assert ch.option_value(hero_chain.feet_off(GAME), "--feet") == "off"
-    plain = ["--height", "1.8"]
-    assert hero_chain.feet_off(plain) == plain
-
-
 def test_a_rerun_keeps_a_stages_builds_when_only_the_stages_before_it_changed_the_models():
     origin = {"rig.glb": [1, 1], "front.png": [5, 1]}
     before = {"origin": origin, "files": {"rig.glb": [1, 1]}, "options": {"stage": "head"}}

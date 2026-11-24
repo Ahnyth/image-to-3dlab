@@ -19,8 +19,10 @@ after `--`, and every stage changes them too):
   4. band   Ring paint (`ring_paint.py`): a band whose pattern repeats along it (a hat band's runes) is found in the
             picture the figure was painted from and its runes are carried round it; no such band, no stage (`--box`
             gives it by hand).
-  5. game   game_ready.py with the options given, on the last models kept (the feet left as they are when the boots
-            were set in: they stand on the floor already), then figure_check.py on the result.
+  5. game   game_ready.py with the options given, on the last models kept, then figure_check.py on the result.
+            The figure's own foot option stays: Hero parts stands new boots on the figure's floor, and where the
+            generator made up a sole below the pictures' feet (the Sorcerer's, 76 px) the foot cut, measured on the
+            pictures, takes it off the new boots as it did off the old feet.
 
 Every stage checks itself and is dropped when its check fails, the chain going on with the models from before it:
 the colour of the model the game figure takes its paint from must stay as it was outside where the stage changed the
@@ -63,12 +65,6 @@ SKIPPED = 3                 # the exit code of hero_parts --top auto (no boots) 
 GPU_STAGES = ("hands", "head", "boots")
 STAGE_HOURS = 4.0           # a stage that runs longer is stopped (a build hung)
 LOCK_MINUTES = 90.0         # how long a GPU step waits for the card
-
-
-def feet_off(game: list[str]) -> list[str]:
-    """Game-ready options that leave the feet as they are (new boots stand on the floor the picture shows; a foot cut
-    measured on the old feet would cut into them)."""
-    return game if hc.option_value(game, "--feet") in (None, "off") else hc.with_option(game, "--feet", "off")
 
 
 def split_args(argv: list[str]) -> tuple[list[str], list[str]]:
@@ -289,8 +285,6 @@ class Chain:
 
     def run_stage(self, name: str, models: hc.Models, folder: Path, given: dict,
                   game: list[str]) -> tuple[hc.Stage, hc.Models | None]:
-        if name == "boots":                   # new boots stand on the floor already: no foot cut in their pose check
-            game = feet_off(game)
         command = stage_command(name, models, self.args.picture, folder, given)
         log = folder / "stage.log"
         code = self.call(command, log, name, gpu=name in GPU_STAGES)
@@ -475,9 +469,6 @@ def main(argv: list[str] | None = None) -> int:
         run.say(f"{stage_name}: {hc.STATUS_WORDS[result.status]}: {result.why}")
         if after is not None:
             models = after
-            if stage_name == "boots" and feet_off(game) != game:
-                game = feet_off(game)
-                run.say("game: --feet off (the new boots stand on the floor the picture shows)")
 
     stage(run, "game", "The game-ready step")
     glb, report = chain.game_run(models, "final", game)
