@@ -31,7 +31,9 @@ stage's models). A stage whose own run fails is dropped the same way.
 Writes, in --out: a folder per stage (its tool's run folder, its log, stage.json), game/ (the game-ready runs the
 checks made), <name>.glb (the finished figure, with its game-ready report) and report/ (index.html and report.json: what
 each stage did, measured and why it was kept, dropped or skipped, above the finished figure's own check). A rerun
-picks up where it stopped: a stage whose inputs did not change keeps its result. GPU steps take each --gpu-lock folder
+picks up where it stopped: a stage whose inputs did not change keeps its result, and one whose models only changed
+because a stage before it did runs its tool again on them in its folder, keeping the tool's own builds (they depend on
+the picture and the stage's own part of the figure). GPU steps take each --gpu-lock folder
 first (mkdir is atomic; another run on the same card waits for it), so two runs share one card in turn.
 
 The bookkeeping lives in `image_to_3dlab/hero_chain.py`.
@@ -142,14 +144,19 @@ def stage_results(stage: str, models: hc.Models, folder: Path) -> dict:
     return {m: Path(done[m.name]["result"]) for m in models.all() if m.name in done}
 
 
-def _fingerprint(paths: list[Path], extra: dict) -> dict:
-    """What a stage's result depends on: each input's size and time, and the options."""
+def _files(paths: list[Path]) -> dict:
+    """Each file's size and time (None when missing)."""
     files = {}
     for path in paths:
         path = Path(path)
         stat = path.stat() if path.exists() else None
         files[str(path)] = [stat.st_size, stat.st_mtime_ns] if stat else None
-    return {"files": files, "options": extra}
+    return files
+
+
+def _fingerprint(origin: dict, paths: list[Path], extra: dict) -> dict:
+    """What a stage's result depends on: the chain's own inputs (ORIGIN), the stage's input files and its options."""
+    return {"origin": origin, "files": _files(paths), "options": extra}
 
 
 def _last_line(log: Path) -> str:
@@ -166,6 +173,7 @@ class Chain:
         self.out = run.out
         self.locks = [Path(p) for p in args.gpu_lock]
         self.games: dict = {}               # models' key -> (game glb, its report)
+        self.origin: dict = {}              # the chain's own inputs, as `_files` gives them
 
     # --- running tools -------------------------------------------------------------------------------------------
 
@@ -245,21 +253,26 @@ class Chain:
         inputs = [*models.all(), self.args.picture] + ([Path(given["views"]) / "transforms.json"]
                                                        if given.get("views") else [])
         print_given = {k: (str(v) if isinstance(v, Path) else v) for k, v in given.items()}
-        fingerprint = _fingerprint(inputs, {"stage": name, "given": print_given})
+        fingerprint = _fingerprint(self.origin, inputs, {"stage": name, "given": print_given})
         record = folder / "stage.json"
         if record.is_file():
             kept = json.loads(record.read_text(encoding="utf-8"))
-            if kept.get("fingerprint") == fingerprint and kept.get("result", {}).get("status") in (
-                    "kept", "dropped", "skipped"):
-                result = kept["result"]
-                outputs_there = all(Path(p).exists() for p in result.get("outputs", []))
-                if outputs_there:
-                    self.run.say(f"{name}: kept from the run before ({result['status']})")
-                    done = hc.Stage(name, result["status"], result["why"], result.get("measured", {}),
-                                    result.get("seconds", 0.0), result.get("models", {}),
-                                    [tuple(p) for p in result.get("pictures", [])])
-                    return done, (hc.Models.from_dict(done.models) if done.status == "kept" else None)
-            elif kept.get("fingerprint") != fingerprint:
+            how = hc.rerun(kept.get("fingerprint"), fingerprint)
+            result = kept.get("result", {})
+            if how == "same" and result.get("status") in ("kept", "dropped", "skipped") and all(
+                    Path(p).exists() for p in result.get("outputs", [])):
+                self.run.say(f"{name}: kept from the run before ({result['status']})")
+                done = hc.Stage(name, result["status"], result["why"], result.get("measured", {}),
+                                result.get("seconds", 0.0), result.get("models", {}),
+                                [tuple(p) for p in result.get("pictures", [])])
+                return done, (hc.Models.from_dict(done.models) if done.status == "kept" else None)
+            if how == "rebuild":               # the stages before it changed the models: its builds still hold
+                for old in result.get("outputs", []):
+                    if Path(old).parent.resolve() == folder.resolve():
+                        Path(old).unlink(missing_ok=True)
+                self.run.say(f"{name}: the stages before it changed the models; its tool runs again on them, keeping "
+                             "its own builds")
+            elif how == "fresh":
                 aside = folder.with_name(folder.name + "_before")
                 shutil.rmtree(aside, ignore_errors=True)
                 folder.rename(aside)
@@ -450,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     game = models.game_args(game)
     run.say(f"hero chain: {args.model} + {args.picture} -> {out}; finer models {models.as_dict()}")
     chain = Chain(args, game, run)
+    chain.origin = _files([*models.all(), args.picture])
     stages = []
     for index, stage_name in enumerate(hc.STAGES, start=1):
         if stage_name in args.skip:

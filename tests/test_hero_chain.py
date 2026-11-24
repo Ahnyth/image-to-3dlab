@@ -168,3 +168,15 @@ def test_new_boots_keep_their_feet_in_the_game_ready_step():
     assert ch.option_value(hero_chain.feet_off(GAME), "--feet") == "off"
     plain = ["--height", "1.8"]
     assert hero_chain.feet_off(plain) == plain
+
+
+def test_a_rerun_keeps_a_stages_builds_when_only_the_stages_before_it_changed_the_models():
+    origin = {"rig.glb": [1, 1], "front.png": [5, 1]}
+    before = {"origin": origin, "files": {"rig.glb": [1, 1]}, "options": {"stage": "head"}}
+    assert ch.rerun(None, before) == "fresh"
+    assert ch.rerun(before, json.loads(json.dumps(before))) == "same"
+    hands_kept = {"origin": origin, "files": {"out/1_hands/rig_hands.glb": [3, 2]}, "options": {"stage": "head"}}
+    assert ch.rerun(before, hands_kept) == "rebuild"
+    new_picture = {**hands_kept, "origin": {"rig.glb": [1, 1], "front.png": [6, 2]}}
+    assert ch.rerun(before, new_picture) == "fresh"
+    assert ch.rerun(before, {**before, "options": {"stage": "head", "given": {"top": 1}}}) == "fresh"

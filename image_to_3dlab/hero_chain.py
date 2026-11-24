@@ -223,6 +223,25 @@ def colour_verdict(patches: list, what: str) -> tuple[bool, str]:
     return False, f"{len(patches)} patch(es) changed colour outside {what}: {words}"
 
 
+# --- a rerun -----------------------------------------------------------------------------------------------------
+
+
+def rerun(before: dict | None, now: dict) -> str:
+    """How a stage meets the run before it, from the two fingerprints ({"origin": the chain's own inputs, "files": the
+    stage's input models, "options"}, each file as [size, time]): "same" (nothing changed: keep its result),
+    "rebuild" (the chain's inputs are as they were and only the stages before it changed the models: its tool runs
+    again in its folder and keeps its own builds, which depend on the picture and its own part of the figure, not on
+    what the stages before it changed elsewhere), or "fresh" (the chain's own inputs or the stage's options changed,
+    or there was no run before: start over)."""
+    if not before:
+        return "fresh"
+    if before == now:
+        return "same"
+    if before.get("origin") != now.get("origin") or before.get("options") != now.get("options"):
+        return "fresh"
+    return "rebuild"
+
+
 # --- the report ---------------------------------------------------------------------------------------------------
 
 
