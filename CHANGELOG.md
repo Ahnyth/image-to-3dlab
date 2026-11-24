@@ -120,8 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hero head, a deep neck without a ring**: where the new neck reaches down into a collar, the band over the
   stitch now eases from the new neck's own paint just under it up to the chin, not from the figure's old neck in the
   collar's shadow; eased from the old one, the new neck stood under a wizard's chin as a pale ring with a hard top edge.
-  The new neck under the stitch counts as neck too: where the picture shows the collar's dark there, it turns into the
-  skin a little shaded, easing in with how dark it is, so neither a black blotch nor a ragged edge stands under the jaw.
+  The band never starts from a collar's dark: where the picture shows a shirt under the stitch beside the throat, the
+  band starts from the skin a little shaded, easing in with how dark the shirt is, so neither a black blotch nor a
+  ragged edge stands under the jaw; under the stitch the shirt stays.
 ### Fixed
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
