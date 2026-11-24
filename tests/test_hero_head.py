@@ -564,6 +564,36 @@ def test_figure_paint_takes_no_collar_dark_onto_the_neck_beside_the_jaw():
     assert neck.any() and out[neck].sum(axis=-1).min() > 0.7 * sum(skin)   # its skin, a little shaded, not black
 
 
+def test_figure_paint_takes_no_collar_dark_into_a_deep_necks_band():
+    # a neck reaching down into a collar eases its band from the paint just under the stitch; beside the jaw that is
+    # the collar's dark, and on the Zauberer's v19l it stood under his jaw as a black ragged blotch (2026-11-24)
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.024, 0.02, 0.04) * np.ones((1, frame["cols"]))
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.03, "low": -0.045, "cut": 0.0, "width": 0.08,
+            "pixel": 0.002, "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "chin": -0.024, "nose": np.array([0.0, -0.005, 0.04]), "reach": 0.06,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
+    points, normals = hd.tube_points(zone, radius, (40, 64))
+    skin = [200.0, 160.0, 150.0]
+    old, faces = joined(tube(0.021, -0.0445, -0.0235, segments=96, rings=10), tube(0.039, -0.0235, 0.02, segments=96))
+    aside = (np.abs(np.sin(np.arctan2(old[:, 0], old[:, 2]))) > 0.6) & (old[:, 1] < -0.024)
+    part = {"positions": old, "faces": faces, "uvs": np.where(aside[:, None], [0.75, 0.5], [0.25, 0.5]),
+            "material": painted(skin, right=[25, 25, 45])}      # beside the jaw the figure's neck in the collar's dark
+    colour = np.full((40, 64, 3), skin)
+    aside = np.abs(points[..., 0]) > 0.3 * np.hypot(points[..., 0], points[..., 2])
+    colour[aside & (points[..., 1] < zone["bottom"])] = [30.0, 28.0, 40.0]   # and the picture shows the collar there
+    weight = np.clip((normals[..., 2] - 0.35) / 0.45, 0, 1)
+    out, _ = hd.figure_paint(colour, points, part, zone, crop=(colour, weight, colour))
+    base = hd.stitch_rows(points[..., 1] >= zone["bottom"] - 0.5 * zone["pixel"])
+    assert (base < points.shape[0] - 1).all()                   # the new neck goes on under the stitch
+    band = hd.neck_band(points, zone)
+    beside = band & aside
+    assert beside.any() and out[beside].sum(axis=-1).min() > 0.7 * sum(skin)   # skin, a little shaded, not black
+    under = aside & (points[..., 1] < zone["bottom"] - zone["pixel"])
+    assert under.any() and out[under].sum(axis=-1).min() > 0.7 * sum(skin)    # under the stitch too: still neck
+
+
 # --- the hairline under the brim (2026-11-23) -------------------------------------------------------------------------
 
 def kinds_zone():
@@ -899,6 +929,32 @@ def test_neck_band_stays_over_the_stitch_when_the_neck_reaches_down_into_the_col
     assert points[..., 1].min() < -0.04                         # the head's picture reaches down into the collar
     band = hd.neck_band(points, zone)
     assert band.any() and not band[points[..., 1] < zone["bottom"] - 0.001].any()   # the neck under the chin only
+
+
+def test_figure_paint_starts_a_deep_necks_band_from_the_new_neck_under_the_stitch():
+    frame = frame_round()
+    heights = hd.row_heights(frame)[:, None]
+    radius = np.where(heights < -0.024, 0.02, 0.04) * np.ones((1, frame["cols"]))     # a neck under a chin
+    zone = {"frame": frame, "axis": frame["axis"], "bottom": -0.03, "low": -0.045, "cut": 0.0, "width": 0.08,
+            "pixel": 0.002, "plane": {"a": 0.03, "b": 0.0, "c": 0.0, "axis": (0.0, 0.0)}, "radius": radius,
+            "limit": np.full((frame["rows"], frame["cols"]), 0.06)}
+    points, _ = hd.tube_points(zone, radius, (40, 64))
+    picture = np.full((40, 64, 3), [200.0, 170.0, 160.0])                       # the face
+    picture[points[..., 1] < zone["bottom"]] = [235.0, 215.0, 205.0]   # down in the collar: the picture's pale throat
+    turn = np.linspace(-np.pi, np.pi, 90, endpoint=False)
+    rings = [(0.021, y) for y in np.arange(-0.0445, -0.024, 0.001)] + [(0.041, y) for y in np.arange(-0.023, 0.02, 0.002)]
+    old = np.concatenate([hd.unpolar(frame, turn, np.full(90, r), np.full(90, y)) for r, y in rings])
+    uvs = np.where((np.hypot(old[:, 0], old[:, 2]) < 0.03)[:, None], [0.75, 0.5], [0.25, 0.5])
+    part = {"positions": old, "faces": np.zeros((0, 3), np.int64), "uvs": uvs,    # the figure's own neck lies in
+            "material": painted([190, 160, 160], right=[110, 80, 80])}          # its collar's shadow
+    out, _ = hd.figure_paint(picture, points, part, zone)
+    base = hd.stitch_rows(points[..., 1] >= zone["bottom"] - 0.5 * zone["pixel"])
+    cols = np.arange(points.shape[1])
+    assert (base < points.shape[0] - 1).all()                   # the new neck goes on under the stitch
+    step = np.abs(out[base, cols] - out[base + 1, cols]).max()
+    assert step < 12, step                                      # no hard edge where the band meets the new neck
+    band = hd.neck_band(points, zone)
+    assert out[band][:, 0].min() > 150                          # and no old, shaded neck in the band
 
 
 def test_tube_radius_lays_a_strand_standing_off_the_face_onto_it():
