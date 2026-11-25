@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero face: a face matched to its head's density has no stair steps.** A new face finer than the head it replaces
+  was laid out on a coarser grid, and every edge across it (where the fringe crosses the face, round the eyes, the
+  nose's root) became a staircase of the grid's squares: on one figure 1.78 times coarser, square notches a second
+  reviewer called clear in every view and that a rerun at the fine layout took away. The face is now built fine and
+  made lighter where its skin is flat (a quadric decimation, `fast_simplification`, that keeps the outline's points
+  and the fine points along each edge in the surface): the same figure's face 1,493 triangles for 1,582 on the coarse
+  grid, the game figure no heavier (8,784 triangles for 8,901), its eyes and brows smooth.
+- **Hero parts keeps a figure's own boots when they follow its picture.** The boots stage builds each new boot from a
+  drawing, and the drawing may make up a boot the picture does not show: one figure's own mid-calf boots with a gold
+  V cuff became tall riding boots with a tan heel, 92 % of their paint from the drawing. With a top (`--top auto` or a
+  row), `hero_parts.py --boots` first measures the figure's own boots against the picture in its own front camera:
+  from the boots' top down to the ankle, how much of them lies past the picture's outline, and down to the drawn feet,
+  how much of the picture's boots they leave bare (a sole made up under the feet does not count; the game-ready
+  step's foot rule cuts it). Under 15 % both, the boots stay and the tool stops with exit code 3 before drawing
+  anything (`--even-if-fine` builds anyway), and the Hero chain says so. Two approved figures' own boots measure 6 and
+  12 % past and 0 to 2 % bare; boots the stage built wrongly, each as wide as two legs, 18 and 40 % past and 40 and
+  44 % bare.
 - **`game_ready.py --glow` no longer lights slivers of hair in the glow's own colour.** A red glow meant for a coat's
   trims lit the brightest bits of the figure's red hair as scattered flecks: the hair is cut into many thin islands
   in the atlas, and a thin island of hair passes the width gate as if it were a painted line. A glowing bit whose

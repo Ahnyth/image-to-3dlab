@@ -364,6 +364,76 @@ def test_a_sole_below_the_pictures_feet_is_measured_in_its_pixels():
     assert hp.sole_below_feet(view, boot) == pytest.approx(lowest - 1000.0)
 
 
+def legs_view(*legs):
+    """The gauge camera with a picture whose subject is LEGS (boxes, (low, high) corners) as the camera sees them."""
+    view = gauge_view()
+    parts = [box(low, high, subdivide=1) for low, high in legs]
+    covered = hp.figure_mask(view, *_points_faces(parts))
+    image = np.zeros_like(view.image)
+    image[..., 3] = np.where(covered, 255, 0)
+    return pp.View(image, view.cam_to_world, view.fov_x)
+
+
+def _points_faces(parts):
+    points = np.concatenate([p["positions"] for p in parts])
+    offsets = np.cumsum([0] + [len(p["positions"]) for p in parts[:-1]])
+    return points, np.concatenate([np.asarray(p["faces"]) + o for p, o in zip(parts, offsets)])
+
+
+def test_a_models_outline_is_drawn_in_the_views_pixels():
+    view = gauge_view()
+    leg = box((-0.05, -0.30, 0.0), (0.05, -0.10, 0.1), subdivide=1)
+    covered = hp.figure_mask(view, leg["positions"], leg["faces"])
+    x, y, _ = hp.view_pixels(view, leg["positions"])
+    assert covered.shape == view.image.shape[:2]
+    assert covered[int(y.mean()), int(x.mean())]                          # inside the leg
+    assert not covered[int(y.min()) - 3, int(x.mean())]                    # above it
+    assert covered.sum() == pytest.approx(np.ptp(x) * np.ptp(y), rel=0.1)  # as large as the leg seen from the front
+
+
+def test_a_figures_own_boots_that_follow_the_picture_need_no_new_ones():
+    # skin_sorcerer_b's own mid-calf boots with their gold V cuff were right; the boots stage drew a tall riding boot
+    # with a tan heel and olive trims for them, 92 % of the new boots' paint from the drawing (round 29 of the
+    # AssetFurnace Support notes): the stage runs only for boots whose outline strays from the picture's
+    legs = [((-0.12, -0.40, 0.0), (-0.04, -0.10, 0.08)), ((0.04, -0.40, 0.0), (0.12, -0.10, 0.08))]
+    view = legs_view(*legs)
+    points, faces = _points_faces([box(low, high, subdivide=1) for low, high in legs])
+    _, y, _ = hp.view_pixels(view, points)
+    top = float(y.min()) + 20                                               # the boots' top, a little under the knee
+    fine = hp.own_boots(view, points, faces, top)
+    assert fine["fault"] is None and fine["past"] < 0.02 and fine["bare"] < 0.02
+    pair = [((-0.20, -0.40, 0.0), (-0.04, -0.10, 0.08)), ((0.04, -0.40, 0.0), (0.20, -0.10, 0.08))]
+    p2, f2 = _points_faces([box(low, high, subdivide=1) for low, high in pair])   # each boot as wide as two legs
+    wide = hp.own_boots(view, p2, f2, top)
+    assert wide["past"] > hp.BOOT_OUTLINE_LIMIT and "past the picture" in wide["fault"]
+    thin = [((-0.10, -0.40, 0.0), (-0.06, -0.10, 0.08)), ((0.06, -0.40, 0.0), (0.10, -0.10, 0.08))]
+    p3, f3 = _points_faces([box(low, high, subdivide=1) for low, high in thin])   # shafts far thinner than drawn
+    bare = hp.own_boots(view, p3, f3, top)
+    assert bare["bare"] > hp.BOOT_OUTLINE_LIMIT and "bare" in bare["fault"]
+
+
+def test_only_the_boots_rows_count_not_a_coat_above_them_nor_a_sole_made_up_below_the_feet():
+    legs = [((-0.12, -0.40, 0.0), (-0.04, -0.10, 0.08)), ((0.04, -0.40, 0.0), (0.12, -0.10, 0.08))]
+    view = legs_view(*legs)
+    parts = [box(low, high, subdivide=1) for low, high in legs]
+    _, y, _ = hp.view_pixels(view, _points_faces(parts)[0])
+    top = float(y.min()) + 40
+    coat = box((-0.25, -0.12, 0.0), (0.25, 0.10, 0.1), subdivide=1)        # wider than the picture, above the boots
+    sole = box((-0.14, -0.48, 0.0), (0.14, -0.40, 0.1), subdivide=1)       # a platform made up under the feet
+    assert hp.own_boots(view, *_points_faces([*parts, coat, sole]), top)["fault"] is None
+    # skin_sorcerer_c's made-up sole was wider than the drawn feet and reached up past their sides (2026-11-25):
+    # below the ankle only a foot left bare counts
+    feet = [box((-0.16, -0.40, 0.0), (-0.02, -0.33, 0.1), subdivide=1), box((0.02, -0.40, 0.0), (0.16, -0.33, 0.1),
+                                                                             subdivide=1)]
+    _, ya, _ = hp.view_pixels(view, np.array([[0.0, -0.33, 0.08]]))
+    wide_feet = _points_faces([*parts, *feet])
+    assert hp.own_boots(view, *wide_feet, top)["fault"] is not None                    # counted without the ankle
+    assert hp.own_boots(view, *wide_feet, top, ankle=float(ya[0]))["fault"] is None    # not below it
+    no_feet = _points_faces([box(low, (high[0], -0.33, high[2]), subdivide=1) for low, high in
+                             [((-0.12, -0.33, 0.0), (-0.04, -0.10, 0.08)), ((0.04, -0.33, 0.0), (0.12, -0.10, 0.08))]])
+    assert "bare" in (hp.own_boots(view, *no_feet, top, ankle=float(ya[0]))["fault"] or "")   # a foot missing counts
+
+
 def test_a_made_up_sole_under_the_old_foot_lowers_no_new_boot():
     # Pixal3D made up a sole below skin_sorcerer_c's drawn feet; the new boot stood on it, 71 px too low, and game_ready
     # cut everything below the picture's feet off: the boot's foot, so a straight shaft was left (2026-11-24)

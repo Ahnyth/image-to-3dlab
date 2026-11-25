@@ -84,6 +84,8 @@ BOOT_LIGHT_WEIGHT = 0.5      # light and shade count half against hue (the same 
 BOOT_CONTRAST = 2.0          # the boot and what is above it differ at least this much (delta E, light at half weight)
 BOOT_LOW = 0.2               # a top less than this share of the shin above the ankle is a shoe's, not a boot's
 BOOT_AGREE = 0.05            # both legs' tops lie within this share of the shin of each other
+BOOT_OUTLINE_LIMIT = 0.15    # a figure's own boots stray from the picture when this share of them lies past its outline
+                             # or this share of the picture's boots is left bare (`own_boots`): then the stage runs
 BOOT_DEPTH = 0.9             # a boot built from its side view is at most this deep (toward the camera) for its length:
                              # the Sorcerer's first boot was a pair, one behind the other (deep 1.6 times its length)
 
@@ -914,6 +916,53 @@ def picture_floor(view: pp.View, foot: np.ndarray, floor: float, mesh_scale: flo
         if not np.isfinite(below) or abs(below) < 0.5:
             break
     return float(floor) + lift
+
+
+def figure_mask(view: pp.View, positions: np.ndarray, faces: np.ndarray, mesh_scale: float = 1.0) -> np.ndarray:
+    """Where a model covers VIEW's picture (rows x columns, bool): its triangles drawn in the view's pixels."""
+    from PIL import Image, ImageDraw
+
+    rows, cols = np.asarray(view.image).shape[:2]
+    x, y, _ = view_pixels(view, positions, mesh_scale)
+    corners = np.stack([x, y], axis=1)[np.asarray(faces, dtype=np.int64)]
+    mask = Image.new("1", (cols, rows), 0)
+    pen = ImageDraw.Draw(mask)
+    for triangle in corners:
+        pen.polygon([tuple(c) for c in triangle], fill=1)
+    return np.asarray(mask, dtype=bool)
+
+
+def own_boots(view: pp.View, positions: np.ndarray, faces: np.ndarray, top: float, mesh_scale: float = 1.0,
+              limit: float = BOOT_OUTLINE_LIMIT, ankle: float | None = None) -> dict:
+    """Whether a figure's own boots follow its picture, in the figure's front VIEW: in the rows from the boots' TOP (a
+    row of the view, `boot_top`) down to the picture's feet (its subject's lowest row), the share of the model's pixels
+    outside the picture's outline ("past") and of the picture's pixels the model leaves bare ("bare"). "fault" says in
+    words which share is LIMIT or more, None when neither: such boots need no new ones. A coat above the top and a
+    sole the generator made up below the feet (which the game-ready step's foot rule cuts) do not count, nor, below
+    the ANKLE's row when given, a foot wider than the drawn one: there a sole made up under the feet reaches up past
+    the picture's sides (skin_sorcerer_c's, 2026-11-25), and only a foot left bare counts.
+
+    skin_sorcerer_b's own mid-calf boots with their gold V cuff were right; the boots stage drew a tall riding boot
+    with a tan heel and olive trims for them, and 92 % of the new boots' paint came from that drawing (round 29 of the
+    AssetFurnace Support notes)."""
+    alpha = np.asarray(view.image)[..., 3] > 127
+    covered = figure_mask(view, positions, faces, mesh_scale)
+    feet = int(np.flatnonzero(alpha.any(axis=1)).max()) + 1 if alpha.any() else 0
+    band = np.zeros(alpha.shape, dtype=bool)
+    band[max(int(np.ceil(top)), 0):feet] = True
+    shaft = band.copy()
+    if ankle is not None:
+        shaft[max(int(np.ceil(ankle)), 0):] = False
+    model, picture = covered & band, alpha & band
+    past = float((covered & shaft & ~alpha).sum() / max(int((covered & shaft).sum()), 1))
+    bare = float((picture & ~model).sum() / max(int(picture.sum()), 1))
+    faults = []
+    if past >= limit:
+        faults.append(f"{past:.0%} of the figure's boots reach past the picture's outline")
+    if bare >= limit:
+        faults.append(f"they leave {bare:.0%} of the picture's boots bare")
+    return {"past": round(past, 4), "bare": round(bare, 4), "rows": [max(int(np.ceil(top)), 0), feet],
+            "fault": "; ".join(faults) or None}
 
 
 def boot_weights(points: np.ndarray, part: dict, bone: np.ndarray, plan: dict) -> np.ndarray:

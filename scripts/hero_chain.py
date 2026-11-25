@@ -15,7 +15,9 @@ after `--`, and every stage changes them too):
   2. head   Hero head (`hero_face.py --region auto`): the whole head under a hat's brim, or the face alone without a
             brim, built alone and set in; brim and collar are measured by the tool itself.
   3. boots  Hero parts (`hero_parts.py --boots --top auto`): where the boots end is read in the picture (the boot's
-            colour ending up both shins); no boots in the picture, no stage (`--boot-top` gives the row by hand).
+            colour ending up both shins); no boots in the picture, no stage (`--boot-top` gives the row by hand), and
+            none when the figure's own boots follow the picture's outline (`hero_parts.own_boots`): a new boot is built
+            from a drawing that may make up a boot the picture does not show.
   4. band   Ring paint (`ring_paint.py`): a band whose pattern repeats along it (a hat band's runes) is found in the
             picture the figure was painted from and its runes are carried round it; no such band, no stage (`--box`
             gives it by hand).
@@ -351,8 +353,10 @@ class Chain:
     def skip_reason(self, name: str, folder: Path) -> str:
         if name == "boots":
             data = folder / "boots.json"
-            why = json.loads(data.read_text(encoding="utf-8")).get("skipped") if data.is_file() else None
-            return f"no boots in the picture: {why or 'see stage.log'}"
+            found = json.loads(data.read_text(encoding="utf-8")) if data.is_file() else {}
+            if found.get("own_boots"):              # the figure's own boots follow the picture: they stay
+                return found.get("skipped") or "the figure's own boots follow the picture"
+            return f"no boots in the picture: {found.get('skipped') or 'see stage.log'}"
         return "no band in the picture whose pattern repeats along it"
 
     def measure(self, name: str, folder: Path) -> dict:

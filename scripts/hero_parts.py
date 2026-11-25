@@ -29,7 +29,11 @@ hands do this for hands; this does it for any part on the body (--box) and for b
               figure's floor with its sole flat, turned as the old foot was, as tall as the picture shows it (--top:
               where its shaft ends in the picture; --top auto finds it there, where the boot's colour ends up the shin
               of both legs, and with no boots in the picture stops with exit code 3) or else as long as the old foot
-              (--left mirror: the right boot mirrored; own: drawn and built from its own crop).
+              (--left mirror: the right boot mirrored; own: drawn and built from its own crop). With a top, the
+              figure's own boots are measured against the picture first (`own_boots`: in the rows from the top down
+              to the drawn feet, how much of them lies past the picture's outline and how much of the picture's they
+              leave bare); when they follow it, they stay and the tool stops with exit code 3 before drawing anything
+              (--even-if-fine builds anyway): the drawing may make up a boot the picture does not show.
   7. graft    inside a part's outline the figure loses what lies in front of the part's back (the slab, a strap across
               it) and keeps what lies behind (the thigh); a leg is cut straight across just under the new boot's top and
               the old boot below goes. Every outline the cut leaves is closed, so no edge stays open. A part on the body
@@ -407,6 +411,10 @@ def main(argv: list[str] | None = None) -> int:
                              "or auto: found there, where the boot's colour ends up the shin (exit code 3 when the "
                              "picture shows no boots); the drawing's own proportions decide without it, from the old "
                              "foot's length")
+    parser.add_argument("--even-if-fine", action="store_true",
+                        help="with --boots: build new boots even when the figure's own follow the picture (by default "
+                             "they stay then, exit code 3: the drawing a new boot is built from may make up a boot the "
+                             "picture does not show)")
     parser.add_argument("--floor-at", type=float, default=None, metavar="SHARE",
                         help="with --boots: the game-ready step will cut the figure's feet at this share of its height "
                              "above its lowest point (a sole the generator made up: game_ready.py --feet-from); the "
@@ -549,6 +557,21 @@ def main(argv: list[str] | None = None) -> int:
                                 for side, s in boot_top["sides"].items()) + ")")
         elif args.top is not None:
             top_view = args.top * stage_map[0] + stage_map[1][1]
+        if top_view is not None and views_dir is not None and not args.even_if_fine:
+            _, ankle_rows, _ = hp.view_pixels(view, np.array([plans[s]["ankle"] for s in hh.SIDES]), mesh_scale)
+            own = hp.own_boots(view, every, every_faces, top_view, mesh_scale, ankle=float(np.mean(ankle_rows)))
+            run.say(f"measure: the figure's own boots against the picture's: {own['past']:.1%} past its outline, "
+                    f"{own['bare']:.1%} of it bare")
+            if own["fault"] is None:
+                why = (f"the figure's own boots follow the picture ({own['past']:.0%} past its outline, "
+                       f"{own['bare']:.0%} of it bare, under {hp.BOOT_OUTLINE_LIMIT:.0%}): they stay")
+                run.say(f"measure: {why}")
+                (out / f"{name}.json").write_text(json.dumps({"model": str(args.model), "picture": str(args.picture),
+                                                              "name": name, "skipped": why, "own_boots": own,
+                                                              "boot_top": boot_top if args.top == "auto" else None},
+                                                             indent=1), encoding="utf-8")
+                return NO_BOOTS
+            run.say(f"measure: the figure's own boots stray from the picture: {own['fault']}")
         for side in hh.SIDES:
             plan = plans[side]
             near = (np.isin(all_bones, plan["bones"]) & (every[:, 1] < plan["knee"][1])
