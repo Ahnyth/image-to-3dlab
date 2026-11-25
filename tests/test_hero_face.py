@@ -946,15 +946,60 @@ def test_auto_builds_the_whole_head_under_a_brim_and_the_face_alone_without_one(
     assert hf.pick_region("head", {"floor": None})[0] == "head"
 
 
-def test_a_face_finer_than_the_head_it_replaces_is_laid_out_coarser():
+def strand_step(half=0.04, step=0.001, rise=0.01):
+    """A build whose front is flat skin with a strand over its upper left: z = 0.05, RISE more above the line
+    y = 0.5 x, the edge crossing the build at a slant as a strand of hair crosses a face."""
+    xs = np.arange(-half, half + step / 2, step)
+    x, y = np.meshgrid(xs, xs)
+    v = np.stack([x.ravel(), y.ravel(), 0.05 + rise * (y.ravel() > 0.5 * x.ravel())], axis=1)
+    n = len(xs)
+    i = np.arange(n * n).reshape(n, n)
+    a, b, c, d = i[:-1, :-1], i[:-1, 1:], i[1:, :-1], i[1:, 1:]
+    f = np.concatenate([np.stack([c, d, b], -1).reshape(-1, 3), np.stack([c, b, a], -1).reshape(-1, 3)])
+    return v, f
+
+
+def step_widths(part, rise=0.01, within=0.025):
+    """How far across the strand's edge (the line y = 0.5 x) each triangle reaches that climbs it (spans most of
+    RISE), WITHIN that radius: the width of the steps the edge is drawn in, one grid square on a grid."""
+    tri = np.asarray(part["positions"])[np.asarray(part["faces"])]
+    middle = tri.mean(axis=1)
+    climbs = (np.ptp(tri[:, :, 2], axis=1) > 0.5 * rise) & (np.hypot(middle[:, 0], middle[:, 1]) < within)
+    return np.ptp((tri[climbs, :, 1] - 0.5 * tri[climbs, :, 0]) / np.sqrt(1.25), axis=1)
+
+
+def test_a_face_made_lighter_keeps_its_outline_and_the_strands_edge_fine_and_thins_the_flat_skin():
     # skin_sorcerer_c's rigged model: its new face had 4,705 triangles where the head it replaced had about 2,026, the
-    # game step's head protect kept them and thinned the body about 30 % harder (round 27); the rule of the boots
-    # (hero_parts.matched_faces) holds for the face too (round 28 of the AssetFurnace Support notes)
-    pixel = 0.001
-    assert hf.matched_step(4 * pixel, 4705, 3000, pixel) == pytest.approx(4 * pixel * np.sqrt(4705 / 3000))
-    assert hf.matched_step(4 * pixel, 2000, 3000, pixel) == 4 * pixel          # not finer than asked: as it was
-    assert hf.matched_step(4 * pixel, 40000, 3000, pixel) == hf.MATCHED_COARSEST * pixel   # never coarser than this
-    assert hf.matched_step(4 * pixel, 4705, None, pixel) == 4 * pixel          # density unknown: as it was
+    # game step's head protect kept them and thinned the body about 30 % harder (round 27), so the face takes the rule
+    # of the boots (hero_parts.matched_faces, round 28). Laid out on a coarser grid for it, every edge across the face
+    # became a staircase of the grid's squares: square notches round the Nachtschwinge's eyes, brows and nose root,
+    # gone in a rerun with the fine layout (round 30 of the AssetFurnace Support notes). Made lighter instead, the
+    # flat skin gives up its triangles and the outline and the strand's edge keep the fine layout's points.
+    v, f = strand_step(half=0.035, step=0.0002)
+    window = disk_window(0.03, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    pixel = window["pixel"]
+    fine = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, rounding=0.0)
+    light = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, rounding=0.0, keep=0.1)
+    coarse = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, rounding=0.0, step=3 * pixel)
+    assert len(light["faces"]) <= 0.11 * len(fine["faces"])
+    assert len(light["faces"]) < len(coarse["faces"])                          # lighter than the coarse grid, and
+    assert np.median(step_widths(coarse)) > 2.5 * pixel                        # where the grid draws the edge in
+    assert np.median(step_widths(light)) < 0.7 * np.median(step_widths(coarse))  # steps of its squares, the light
+    assert np.median(step_widths(light)) < 2 * pixel                           # face keeps it nearly as fine
+    tri = light["positions"][light["faces"]]
+    middle = tri.mean(axis=1)
+    flat = (np.hypot(middle[:, 0], middle[:, 1]) < 0.02) & (np.abs(middle[:, 1] - 0.5 * middle[:, 0]) > 0.006)
+    area = 0.5 * np.abs(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])[:, 2])       # seen from the front
+    assert np.median(area[flat]) > 4 * 0.5 * pixel ** 2                        # the flat skin in large triangles
+    for part in (light, fine):                                                  # the skirt under the cut edge whole
+        new, _ = hh.cut_part_values(part, -(hf.window_values(window, part["positions"]) + hf.SKIRT_PIXELS * pixel))
+        t = new["positions"][new["faces"]]
+        seen = 0.5 * np.abs(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])[:, 2]).sum()
+        assert seen == pytest.approx(np.pi * (0.03 + hf.SKIRT_PIXELS * pixel) ** 2, rel=0.03)
+    assert np.allclose(np.sort(light["positions"][:, 2])[[0, -1]], [0.05, 0.06], atol=1e-4)   # on the build's planes
+    assert light["uvs"].shape == (len(light["positions"]), 2)
+    assert hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, keep=1.0)["faces"].shape == \
+        hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME)["faces"].shape   # nothing to take
 
 
 # --- the seam along the old cheek's edge (round 29) ----------------------------------------------------------------

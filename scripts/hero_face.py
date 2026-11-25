@@ -470,22 +470,22 @@ def main(argv: list[str] | None = None) -> int:
         _, _, model_parts = hf.read_parts(data)
         step = hf.relief_step(model_parts, window)   # a coarse model gets a face as coarse as its old one
 
-        def set_in(step, model_parts=model_parts):
-            model_face = face if step <= window["pixel"] else hf.face_relief(
-                placed, window, box, face_picture.width, full_frame, material, step=step)
+        def set_in(step, keep=None, model_parts=model_parts):
+            model_face = face if step <= window["pixel"] and keep is None else hf.face_relief(
+                placed, window, box, face_picture.width, full_frame, material, step=step, keep=keep)
             model_face, offset = hf.match_face_paint(model_face, model_parts, window, crop_rgb, box, full_frame)
             return (*hf.graft_face(model_parts, window, model_face), offset)
 
         cut_parts, face_out, report, offset = set_in(step)
-        # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces)
+        # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces): the flat
+        # skin gives up triangles, the outline and the edges where hair crosses the face keep the fine layout
         target = hp.matched_faces(face_out, model_parts, MATCH_LEAST, len(face_out["faces"]))
-        matched = hf.matched_step(step, len(face_out["faces"]), target, window["pixel"])
-        if matched > step:
+        if target is not None and len(face_out["faces"]) > target:
             finer = len(face_out["faces"])
-            cut_parts, face_out, report, offset = set_in(matched)
-            run.say(f"graft: {model.name}: the new face laid out {matched / step:.2f} times coarser to match the head "
-                    f"round it: {len(face_out['faces'])} triangles for {finer} (the head's density allows {target})")
-            step = matched
+            cut_parts, face_out, report, offset = set_in(step, target / finer)
+            run.say(f"graft: {model.name}: the new face made lighter to match the head round it: "
+                    f"{len(face_out['faces'])} triangles for {finer} (the head's density allows {target}), its "
+                    "outline and the edges where hair crosses it as fine as before")
         report["face_faces_target"] = target
         report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]
         report["relief_step_pixels"] = round(step / window["pixel"], 2)

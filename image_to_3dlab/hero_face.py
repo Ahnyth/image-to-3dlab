@@ -956,8 +956,8 @@ def fill_pits(part: dict, new_depth: np.ndarray, is_face: np.ndarray, surface: n
     box, pixel = window["box"], window["pixel"]
     p = np.asarray(part["positions"], dtype=np.float64)
     f = np.asarray(part["faces"], dtype=np.int64)
-    # a point within one of the face's own steps of a pit is filled in full: laid out coarser (`matched_step`), a
-    # point next to the pit kept its depth and its triangles fell into the pit as a wall (round 28)
+    # a point within one of the face's own steps of a pit is filled in full: laid out coarser (round 28's density
+    # rule), a point next to the pit kept its depth and its triangles fell into the pit as a wall
     step = float(np.median(np.linalg.norm(p[f[:, 0], :2] - p[f[:, 1], :2], axis=1))) if len(f) else 0.0
     away = sample(signed_distance(~pit, pixel), box, pixel, p, outside=FAR) - step    # at most 0 in a pit
     # filled up to its rim at most: where the figure's surface stands higher (a hood's edge in front of the jaw),
@@ -1235,10 +1235,11 @@ def picture_material(png: bytes, name: str = "HeroFace", roughness: float = 0.8)
 
 def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_size: int, frame,
                 material: tuple[dict, bytes, int] | None = None, step: float | None = None,
-                rounding: float | None = None) -> dict:
+                rounding: float | None = None, keep: float | None = None) -> dict:
     """The placed new FACE (a build in the figure's frame) as a relief over the window and a little beyond it
     (`relief`), every STEP (default the window's pixel), rounded over ROUNDING (default ROUND_SHARE of the head's
-    width, `round_relief`) and painted by the crop picture (`picture_uvs`)."""
+    width, `round_relief`), made lighter to KEEP of its triangles when given (`lighter`) and painted by the crop
+    picture (`picture_uvs`)."""
     box, pixel = window["box"], window["pixel"]
     step = pixel if step is None else step
     rounding = ROUND_SHARE * window["width"] if rounding is None else rounding
@@ -1254,6 +1255,8 @@ def face_relief(face: dict, window: dict, crop: tuple[int, int, int, int], crop_
     inside = window_values(window, np.c_[grid, np.zeros(len(grid))]).reshape(rows, cols) > -reach   # skirt is whole
     depth = round_relief(depth, inside, rounding / step, JUMP_SHARE * window["width"])
     out = relief(depth, box, step, inside)
+    if keep is not None:
+        out = lighter(out, keep)
     out["uvs"] = picture_uvs(out["positions"], crop, crop_size, frame)
     if material is not None:
         out["material"] = material
@@ -1282,19 +1285,32 @@ def relief_step(parts: list[dict], window: dict, most: int = COARSEST_STEP) -> f
     return float(np.clip(np.median(np.concatenate(lengths)) / 2, pixel, most * pixel))
 
 
-MATCHED_COARSEST = 8     # a face laid out coarser to match its head (`matched_step`) stays at most this many pixels apart
+LIGHT_AGG = 3            # how hard `lighter` decimates (fast_simplification's agg, its default 7): at 7 the
+                         # Nachtschwinge's face came out crumpled, slivers across its forehead and nose; at 1 it
+                         # stopped at 3,321 of 4,778 triangles where 1,500 were asked; at 3 it reached 1,493, smooth
 
 
-def matched_step(step: float, faces: int, target: int | None, pixel: float, most: int = MATCHED_COARSEST) -> float:
-    """The relief step that gives a face of FACES triangles (laid out at STEP) about TARGET: a relief's triangles go
-    with one over the step squared. Never finer than STEP, never coarser than MOST pixels; STEP as it was when TARGET
-    is None (the model's density unknown) or the face is not finer than it. The target is the rule every Hero part
-    takes (`hero_parts.matched_faces`: no finer than 1.5 times the model round it): at `relief_step`'s cap of
-    COARSEST_STEP pixels skin_sorcerer_c's face had 4,705 triangles where the head it replaced had about 2,026, and the
-    game step, keeping them, thinned the body about 30 % harder (round 27 of the AssetFurnace Support notes)."""
-    if target is None or faces <= target:
-        return step
-    return float(min(step * np.sqrt(faces / target), most * pixel))
+def lighter(part: dict, keep: float, agg: float = LIGHT_AGG) -> dict:
+    """PART (a relief, two triangles on every square of its grid) with about KEEP of its triangles, given up where
+    the surface is flat: a quadric decimation (`fast_simplification`) that leaves the outline's points where they are,
+    folds flat skin into large triangles and keeps the fine layout's points along an edge in the surface (a crease,
+    the step where a strand crosses the face), which no flat triangle can follow.
+
+    The target is the rule every Hero part takes (`hero_parts.matched_faces`: no finer than 1.5 times the model round
+    it): skin_sorcerer_c's face had 4,705 triangles where the head it replaced had about 2,026, and the game step,
+    keeping them, thinned the body about 30 % harder (round 27 of the AssetFurnace Support notes). Laid out on a
+    coarser grid to meet it (round 28), every edge across the face became a staircase of the grid's squares: square
+    notches round the Nachtschwinge's eyes, brows and nose root (1.78 times coarser), gone in a rerun with the fine
+    layout (round 30)."""
+    faces = np.asarray(part["faces"], dtype=np.int64)
+    count = int(round(keep * len(faces)))
+    if count >= len(faces) or count < 2:
+        return part
+    import fast_simplification
+
+    points, faces = fast_simplification.simplify(np.asarray(part["positions"], dtype=np.float64), faces,
+                                                 target_count=count, agg=agg, preserve_border=True)
+    return {**part, "positions": np.asarray(points, dtype=np.float64), "faces": np.asarray(faces, dtype=np.int64)}
 
 
 def place_face(face: dict, tf: np.ndarray) -> dict:
