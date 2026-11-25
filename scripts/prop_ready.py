@@ -23,6 +23,10 @@ vehicle wants all of them:
    engine can make it without a mesh; `hull` is a convex hull of LOD0 cut to `--hull-faces`
    triangles (Unity takes at most 255 for a convex mesh collider).
 
+6. **A glow** (`--glow COLOUR`, optional): `game_ready.py`'s glow for a model without a rig (a slime's eyes, a
+   rock creature's ember cracks), made from the model's own paint by the body's rules and written as an emission
+   map into every LOD.
+
 Writes `OUT_DIR/<name>_LOD<n>.glb` (each LOD's node named after it, as `finish_props.py`
 names them), `<name>_COL.glb`, `<name>.prop.json` (size, pivot, front, LODs, collider, and
 what looks wrong) and carries the licence record on as `<name>.provenance.json`.
@@ -353,6 +357,124 @@ def with_painted_atlas(parts_glb: bytes, painted_glb: bytes) -> bytes:
     return photo_paint.replace_base_colour(parts_glb, png.getvalue())
 
 
+GLOW_OPTIONS = ("glow_strength", "glow_width", "glow_max_width", "glow_max_area")
+
+
+def _colour(text: str) -> str:
+    """A --glow colour as given, once game_ready can read it."""
+    import argparse
+
+    from game_ready import parse_colour
+
+    try:
+        parse_colour(text)
+    except (argparse.ArgumentTypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(f"not a colour: {text!r} ({error})") from None
+    return text
+
+
+def glow_argv(args: argparse.Namespace) -> list[str]:
+    """The glow options given to prop_ready, as game_ready's own option list; empty without --glow."""
+    if not args.glow:
+        return []
+    out = [item for colour in args.glow for item in ("--glow", colour)]
+    for name in GLOW_OPTIONS:
+        value = getattr(args, name)
+        if value is not None:
+            out += ["--" + name.replace("_", "-"), str(value)]
+    return out
+
+
+def glow_settings(argv: list[str]) -> dict:
+    """game_ready's settings for these glow options (everything else at its default)."""
+    from game_ready import settings
+
+    return settings(argv)
+
+
+def uv_inside(document: dict, binary: bytes, width: int, height: int):
+    """Which texels of a `width` x `height` atlas lie inside the model's UV islands (a triangle covers them)."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from image_to_3dlab.photo_paint import _accessor
+
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    for mesh in document.get("meshes", []):
+        for primitive in mesh.get("primitives", []):
+            if "TEXCOORD_0" not in primitive.get("attributes", {}):
+                continue
+            uvs = _accessor(document, binary, primitive["attributes"]["TEXCOORD_0"]).astype(np.float64)
+            uvs = uvs * (width, height)
+            if "indices" in primitive:
+                faces = _accessor(document, binary, primitive["indices"]).reshape(-1, 3).astype(np.int64)
+            else:
+                faces = np.arange(len(uvs) - len(uvs) % 3).reshape(-1, 3)
+            for triangle in uvs[faces]:
+                draw.polygon([tuple(point) for point in triangle], fill=255)
+    return np.asarray(mask) > 0
+
+
+def _png_bytes(srgb) -> bytes:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.fromarray(np.clip(np.round(np.asarray(srgb) * 255), 0, 255).astype(np.uint8)).save(out, "PNG")
+    return out.getvalue()
+
+
+def with_glow(glb: bytes, s: dict) -> tuple[bytes, dict]:
+    """The model with game_ready's glow made from its own paint: the accents of each --glow colour painted in it
+    and an emission map at the glow's strength. Returns (glb, numbers); the GLB comes back as it was when nothing
+    glows (no colour asked, or the colour matched nothing, or the cap's ladder dropped it)."""
+    if not s.get("glow"):
+        return glb, {}
+    import io
+
+    import numpy as np
+    from compress_glb_textures import build_glb, parse_glb
+    from game_ready import flat_glow
+    from PIL import Image
+
+    from image_to_3dlab import photo_paint
+
+    document, binary = parse_glb(glb)
+    image = document["images"][photo_paint.base_colour_image_index(document)]
+    view = document["bufferViews"][image["bufferView"]]
+    start = view.get("byteOffset", 0)
+    picture = Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB")
+    srgb = np.asarray(picture, dtype=np.float64) / 255.0
+    inside = uv_inside(document, binary, picture.width, picture.height)
+    colours, emission, found = flat_glow(srgb, inside, s)
+    found = {"glow_share": round(found["glow_share"], 4)} | {k: v for k, v in found.items() if k != "glow_share"}
+    if emission is None:
+        return glb, found
+    document, binary = parse_glb(photo_paint.replace_base_colour(glb, _png_bytes(colours)))
+    png = _png_bytes(emission)
+    binary = binary + b"\0" * (-len(binary) % 4)
+    document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(png)})
+    binary += png + b"\0" * (-len(png) % 4)
+    document["buffers"][0]["byteLength"] = len(binary)
+    document["images"].append({"bufferView": len(document["bufferViews"]) - 1, "mimeType": "image/png",
+                               "name": "emission"})
+    material = document["materials"][0]
+    base = document["textures"][material["pbrMetallicRoughness"]["baseColorTexture"]["index"]]
+    document["textures"].append({"source": len(document["images"]) - 1}
+                                | ({"sampler": base["sampler"]} if "sampler" in base else {}))
+    material["emissiveTexture"] = {"index": len(document["textures"]) - 1}
+    material["emissiveFactor"] = [1.0, 1.0, 1.0]
+    material.setdefault("extensions", {})["KHR_materials_emissive_strength"] = {
+        "emissiveStrength": float(s["glow_strength"])}
+    used = document.setdefault("extensionsUsed", [])
+    if "KHR_materials_emissive_strength" not in used:
+        used.append("KHR_materials_emissive_strength")
+    return build_glb(document, binary), found
+
+
 def place_job(source: Path, output: Path, yaw: float, size: dict, node: str, hull: dict | None,
               parts: bool = False) -> dict:
     """The job file `blender_prop_ready.py` places the prop by."""
@@ -388,6 +510,9 @@ def problems(record: dict) -> list[str]:
                 floor = floors[index] if index < len(floors) and floors[index] else PART_FLOOR
                 if count < floor * ROUND_MINIMUM / PART_FLOOR:
                     found.append(f"{part['name']} has {count} triangles in LOD{index}: too few to stay round")
+    if record.get("glow") and not any(lod.get("glow_share", 0) > 0 for lod in record.get("lods", [])):
+        found.append(f"nothing glows: no accent of {', '.join(record['glow'])} was found in the paint, or the "
+                     "glow cap (--glow-max-area) dropped it")
     collider = record.get("collider") or {}
     if collider.get("kind") == "hull" and collider.get("triangles", 0) > CONVEX_LIMIT:
         found.append(f"the hull has {collider['triangles']} triangles; a convex mesh collider takes "
@@ -422,6 +547,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paint-from", type=Path,
                         help="with --parts: take the base colour from this GLB (Pixel Match's output on the "
                              "joined copy of the same model, same UVs)")
+    parser.add_argument("--glow", type=_colour, action="append", default=[], metavar="COLOUR",
+                        help="make this colour's accents glow, as game_ready's --glow does on a rigged figure "
+                             "(ember cracks, a slime's eyes; repeatable): an emission map at every LOD")
+    parser.add_argument("--glow-strength", type=float, help="emission strength (game_ready's default 3)")
+    parser.add_argument("--glow-width", type=int, help="texels each accent is widened by at 1024 (default 2)")
+    parser.add_argument("--glow-max-width", type=int,
+                        help="texels at 1024: only accents up to this wide glow (default 0, any width: eyes glow)")
+    parser.add_argument("--glow-max-area", type=float,
+                        help="the share of the atlas that may glow (default 0.08); past it the colour is narrowed "
+                             "step by step and dropped if it stays past it, and the record says so")
     parser.add_argument("--blender", type=Path, help="Blender to use (default: I2L_BLENDER, then the usual places)")
     return parser
 
@@ -569,6 +704,25 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - runs Blend
         write_lod(detailed, target, lod_name(args.name, index))
         record["lods"].append({"glb": target.name, "faces": faces, "atlas": lod_atlas,
                                "triangles": glb_triangles(target.read_bytes()), "bytes": target.stat().st_size})
+
+    if args.glow:
+        # last, on every LOD from its own paint: each LOD is baked or decimated from LOD0, and a LOD0 already painted
+        # with its glow would hand the widened glow down to be widened again
+        s = glow_settings(glow_argv(args))
+        record["glow"] = list(args.glow)
+        for lod in record["lods"]:
+            path = out / lod["glb"]
+            glowing, found = with_glow(path.read_bytes(), s)
+            lod["glow_share"] = found.get("glow_share", 0.0)
+            if "glow_cap" in found:
+                lod["glow_cap"] = found["glow_cap"]
+            if lod["glow_share"] > 0:
+                squeezed, _report = compress(glowing, max_size=lod["atlas"], map_size=min(lod["atlas"], 1024),
+                                             normal_size=lod["atlas"])
+                path.write_bytes(squeezed)
+                lod["bytes"] = path.stat().st_size
+        print("glow: " + ", ".join(f"LOD{i} {lod['glow_share']:.1%}" for i, lod in enumerate(record["lods"])),
+              flush=True)
 
     if args.collider == "box":
         box = collider_box(placed["size"])

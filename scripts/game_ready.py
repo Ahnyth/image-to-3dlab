@@ -726,6 +726,40 @@ def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap
             "first": masks}
 
 
+def glow_paint(v, masks, s: dict, grow: int, keep=1.0):
+    """The glow masks painted into the colours `v` (sRGB 0..1) in their glow colour, widened and with a soft halo,
+    and the emission map they glow by: (colours, emission)."""
+    emission = np.zeros_like(v)
+    for colour, m in zip(s["glow"], masks):
+        col = np.asarray(colour, float)
+        grown, halo = glow_weight(m, grow, keep)
+        v = v * (1 - grown[..., None]) + col * grown[..., None]
+        v = np.clip(v + col * (halo * (1 - grown))[..., None] * 0.35, 0.0, 1.0)
+        emission = np.maximum(emission, col * np.clip(grown + halo * (1 - grown), 0.0, 1.0)[..., None])
+    return v, emission
+
+
+def flat_glow(srgb, inside, s: dict):
+    """The glow of a model without a rig (a prop, a slime, a rock creature) from its own painted atlas (sRGB 0..1)
+    and the texels inside its UV islands: (colours, emission or None, numbers). The body's rules: the hue, the
+    width gate, the bright split and the cap's ladder; nothing of the head's, which needs bones to find."""
+    srgb = np.asarray(srgb, dtype=np.float64)
+    inside = np.asarray(inside, bool)
+    scale = srgb.shape[1] / 1024  # widths are given in texels at 1024
+    grow = int(round(s["glow_grow"] * scale))
+    cap = s.get("glow_max_area", 1.0)
+    glow = narrowed_glow(srgb, inside, 1.0, s, scale, grow, cap)
+    stats = {"glow_share": glow["share"], "glow_split": glow["splits"]}
+    if any(glow["steps"]):
+        stats["glow_cap"] = {"before": glow["before"], "after": glow["share"], "cap": cap,
+                             "steps": {_hex(c): GLOW_CAP_STEPS[step - 1]
+                                       for c, step in zip(s["glow"], glow["steps"]) if step}}
+    if not glow["masks"] or glow["share"] <= 0:
+        return srgb, None, stats
+    colours, emission = glow_paint(srgb, glow["masks"], s, grow)
+    return colours, emission, stats
+
+
 def head_solid(masks, head_keep, inside) -> float:
     """The share of the head's own texels that hold a solid match of a glow colour: eyes or a visor slit give a few
     per cent, a head with nothing of the colour 0."""
@@ -797,13 +831,7 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None, head=None):
         v = np.clip(v * shade[..., None], 0.0, 1.0)
     emission = None
     if masks and share > 0:
-        emission = np.zeros_like(v)
-        for colour, m in zip(s["glow"], masks):
-            col = np.asarray(colour, float)
-            grown, halo = glow_weight(m, grow, keep)
-            v = v * (1 - grown[..., None]) + col * grown[..., None]
-            v = np.clip(v + col * (halo * (1 - grown))[..., None] * 0.35, 0.0, 1.0)
-            emission = np.maximum(emission, col * np.clip(grown + halo * (1 - grown), 0.0, 1.0)[..., None])
+        v, emission = glow_paint(v, masks, s, grow, keep)
         stats["accent_share_widened"] = float((emission.max(-1)[inside] > 0.5).mean())
     stats["lightness_after"] = _percentiles(v.mean(-1)[grey])
     mean = v[inside].mean(0) if inside.any() else np.full(3, 0.5)

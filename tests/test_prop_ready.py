@@ -479,3 +479,137 @@ def test_a_wheel_well_under_its_own_floor_is_named():
     record = _record(parts=[{"name": "wheel_F1L", "pivot": [-0.8, 0.42, 6.0], "motion": "turn", "axis": [1, 0, 0],
                              "triangles": [572, 140, 12], "floors": [0, 54, 31]}])
     assert any("wheel_F1L" in line for line in pr.problems(record))
+
+
+# --- a glow for a model without a rig (TODO 209 of the AssetFurnace Support notes) ----------------
+# game_ready's --glow needs a rig; a slime, a rock creature or a pet before its rig left Finish with base colour
+# and normals alone, and ArcherSoul keyed its glow with a script of its own (its tools/prop_glow.py).
+
+RED = (255, 36, 72)
+
+
+def _painted_square(picture, uv=((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))) -> bytes:
+    """A GLB of one square whose UVs span `uv`, painted with `picture` (an RGB array, 0..255)."""
+    import io
+
+    import numpy as np
+    from compress_glb_textures import build_glb
+    from PIL import Image
+
+    png = io.BytesIO()
+    Image.fromarray(np.asarray(picture, np.uint8)).save(png, "PNG")
+    chunks = [np.array([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], np.float32).tobytes(),
+              np.array(uv, np.float32).tobytes(), np.array([0, 1, 2, 0, 2, 3], np.uint16).tobytes(), png.getvalue()]
+    binary, views = b"", []
+    for chunk in chunks:
+        binary += b"\0" * (-len(binary) % 4)
+        views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(chunk)})
+        binary += chunk
+    binary += b"\0" * (-len(binary) % 4)
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2, "material": 0}]}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 0]},
+                      {"bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC2"},
+                      {"bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR"}],
+        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+        "textures": [{"source": 0}], "images": [{"bufferView": 3, "mimeType": "image/png"}],
+        "buffers": [{"byteLength": len(binary)}], "bufferViews": views,
+    }
+    return build_glb(document, binary)
+
+
+def _cloth(size: int = 64):
+    import numpy as np
+
+    return np.full((size, size, 3), 60, np.uint8)  # dark grey cloth
+
+
+def _emission(glb: bytes):
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    document, binary = parse_glb(glb)
+    material = document["materials"][0]
+    if "emissiveTexture" not in material:
+        return None
+    image = document["images"][document["textures"][material["emissiveTexture"]["index"]]["source"]]
+    view = document["bufferViews"][image["bufferView"]]
+    start = view.get("byteOffset", 0)
+    return np.asarray(Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB"))
+
+
+def test_a_prop_glows_on_its_accent_of_the_colour_and_nowhere_else():
+    picture = _cloth()
+    picture[20, 4:60] = RED  # a red trim, one texel high
+    glb, found = pr.with_glow(_painted_square(picture), pr.glow_settings(["--glow", "#ff2448"]))
+    emission = _emission(glb)
+    assert emission is not None and emission[20, 30].max() > 128
+    assert emission[45, 30].max() == 0
+    document, _ = parse_glb(glb)
+    material = document["materials"][0]
+    assert material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"] == 3.0
+    assert "KHR_materials_emissive_strength" in document["extensionsUsed"]
+    assert 0 < found["glow_share"] < 0.08
+
+
+def test_texels_outside_the_uv_islands_never_glow():
+    # the left half is the island; the right half is padding a bake filled with the glow's own red
+    picture = _cloth()
+    picture[:, 40:] = RED
+    picture[10, 4:28] = RED
+    glb, found = pr.with_glow(_painted_square(picture, uv=((0, 0), (0.5, 0), (0.5, 1), (0, 1))),
+                              pr.glow_settings(["--glow", "#ff2448"]))
+    emission = _emission(glb)
+    assert emission[10, 15].max() > 128
+    assert emission[30, 60].max() == 0
+    assert found["glow_share"] < 0.08
+
+
+def test_a_prop_painted_all_over_in_the_glow_colour_stays_under_the_cap_and_says_so():
+    picture = _cloth()
+    picture[:] = RED
+    _glb, found = pr.with_glow(_painted_square(picture), pr.glow_settings(["--glow", "#ff2448"]))
+    assert found["glow_share"] <= 0.08
+    assert found["glow_cap"]["before"] > 0.08
+
+
+def test_a_glowing_eye_of_any_width_glows_by_default():
+    # a slime's eyes and a rock creature's ember eyes are patches, not lines (ArcherSoul D1134)
+    picture = _cloth()
+    picture[10:16, 10:16] = RED
+    glb, _found = pr.with_glow(_painted_square(picture), pr.glow_settings(["--glow", "#ff2448"]))
+    assert _emission(glb)[13, 13].max() > 128
+
+
+def test_without_a_glow_colour_the_glb_is_left_as_it_is():
+    glb = _painted_square(_cloth())
+    out, found = pr.with_glow(glb, pr.glow_settings([]))
+    assert out == glb and found == {}
+
+
+def test_the_glow_options_reach_the_glow_settings():
+    args = pr.build_parser().parse_args(["in.glb", "out", "--name", "slime", "--glow", "#ff2448",
+                                         "--glow-max-area", "0.05", "--glow-strength", "2"])
+    s = pr.glow_settings(pr.glow_argv(args))
+    assert len(s["glow"]) == 1 and s["glow_max_area"] == 0.05 and s["glow_strength"] == 2.0
+    assert pr.glow_argv(pr.build_parser().parse_args(["in.glb", "out", "--name", "rock"])) == []
+
+
+def test_a_glow_colour_that_is_not_a_colour_is_refused():
+    with pytest.raises(SystemExit):
+        pr.build_parser().parse_args(["in.glb", "out", "--name", "slime", "--glow", "reddish"])
+
+
+def test_a_glow_that_lit_nothing_is_named():
+    record = _record(glow=["#ff2448"])
+    for lod in record["lods"]:
+        lod["glow_share"] = 0.0
+    assert any("#ff2448" in line and "glow" in line for line in pr.problems(record))
+    lit = _record(glow=["#ff2448"])
+    for lod in lit["lods"]:
+        lod["glow_share"] = 0.01
+    assert pr.problems(lit) == []
