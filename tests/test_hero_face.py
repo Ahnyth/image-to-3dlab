@@ -955,3 +955,109 @@ def test_a_face_finer_than_the_head_it_replaces_is_laid_out_coarser():
     assert hf.matched_step(4 * pixel, 2000, 3000, pixel) == 4 * pixel          # not finer than asked: as it was
     assert hf.matched_step(4 * pixel, 40000, 3000, pixel) == hf.MATCHED_COARSEST * pixel   # never coarser than this
     assert hf.matched_step(4 * pixel, 4705, None, pixel) == 4 * pixel          # density unknown: as it was
+
+
+# --- the seam along the old cheek's edge (round 29) ----------------------------------------------------------------
+
+def texture_material(texture):
+    """A material painted by TEXTURE (an RGB array)."""
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.fromarray(np.asarray(texture, np.uint8), "RGB").save(buffer, format="PNG")
+    return hf.picture_material(buffer.getvalue())
+
+
+def two_tone_plane(skin, hair, hair_from_x, half=0.05, step=0.002):
+    """`painted_plane` painted SKIN, and HAIR where x is past HAIR_FROM_X."""
+    plane = painted_plane(skin, half, step)
+    texture = np.empty((64, 64, 3), np.uint8)
+    texture[:] = skin
+    texture[:, int(np.ceil((hair_from_x + half) / (2 * half) * 64)):] = hair
+    return {**plane, "material": texture_material(texture)}
+
+
+def test_seam_paint_leaves_out_pairs_that_are_not_one_surface():
+    # with the seam along the old cheek's edge the band just outside it runs over hair locks: on the Nachtschwinge a
+    # third of its pairs differed by more than 45 levels (hair against the crop's skin, up to 196), and clipped to 60
+    # they lit the jaw corners up (round 29 of the AssetFurnace Support notes)
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    crop = np.full((1024, 1024, 3), 100.0)
+    figure = two_tone_plane((130, 120, 110), (20, 40, 30), 0.012)
+    points, offsets = hf.seam_paint([figure], window, crop, CROP, FRAME)
+    assert len(points) > 100 and np.allclose(offsets, [30, 20, 10])       # the skin's side of the seam is read ...
+    assert (points[:, 0] > 0.013).sum() == 0                                # ... the hair's side left out
+    matched, median = hf.match_face_paint({"positions": np.zeros((3, 3)), "faces": np.array([[0, 1, 2]])}, [figure],
+                                          window, crop, CROP, FRAME)
+    assert median == pytest.approx([30.0, 20.0, 10.0])
+    doc, binary, _ = matched["material"]
+    import io
+
+    from PIL import Image
+
+    view = doc["bufferViews"][doc["images"][0]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    picture = np.asarray(Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB"))
+    assert np.allclose(picture[500, 500], [130, 120, 110], atol=2)         # the face's middle: the skin's tone
+    assert np.allclose(picture[500, 515], [130, 120, 110], atol=2)         # next to the hair too
+
+
+def painted_head(hair_from_x=None):
+    """A sphere head (0.05 across half) and its part, painted skin all over, or hair past HAIR_FROM_X (a lock hanging
+    beside the cheek on the figure's left), UVs straight from the front."""
+    v, f = sphere(0.05, rings=40, segments=60)
+    uvs = np.stack([(v[:, 0] + 0.05) / 0.1, (0.05 - v[:, 1]) / 0.1], axis=1)
+    texture = np.empty((64, 64, 3), np.uint8)
+    texture[:] = (220, 180, 150)
+    if hair_from_x is not None:
+        texture[:, int(np.ceil((hair_from_x + 0.05) / 0.1 * 64)):] = (25, 45, 35)
+    return v, f, {"positions": v, "faces": f, "uvs": uvs, "material": texture_material(texture)}
+
+
+def test_face_window_runs_the_seam_out_to_the_old_cheeks_edge_over_skin_and_never_over_hair():
+    # the Nachtschwinge's hard lines down both cheeks were the seam itself: it ran 0.06 of the head's width inside the
+    # face's reach, and the strip of old cheek it left (one flat facet of the coarse head, its own paint) showed
+    # between it and the side hair lock. Run out to the reach's edge over the figure's own skin, the lines went; run out
+    # over the hair lock too, the cut took the lock (see-through from the side 12 -> 939 px) (round 29)
+    v, f, part = painted_head(hair_from_x=0.04)
+    head = np.ones(len(v), bool)
+    old = hf.face_window(v, f, head)
+    new = hf.face_window(v, f, head, part=part)
+    pixel, box = new["pixel"], new["box"]
+    x = box[0] + (np.arange(new["mask"].shape[1]) + 0.5) * pixel
+    assert (new["mask"] | old["mask"] == new["mask"]).all()                  # it only grows
+    grown = new["mask"] & ~old["mask"]
+    rows = np.nonzero(old["mask"][:, :old["seed"][1]].any(axis=1))[0]
+    left = lambda mask: x[np.argmax(mask, axis=1)]
+    middle = rows[len(rows) // 2]
+    assert left(new["mask"])[middle] < left(old["mask"])[middle] - 0.03 * new["width"]    # out on the skin's side
+    assert grown.any()                                                      # never over the lock's paint, nor
+    assert x[np.nonzero(grown)[1]].max() < 0.04 - hf.HAIR_MARGIN_SHARE * new["width"] + pixel   # near it
+    bottom = lambda mask: np.nonzero(mask[:, new["seed"][1]])[0].max()
+    assert abs(bottom(new["mask"]) - bottom(old["mask"])) <= 1              # the chin keeps its margin
+    assert hf.window_bounds(new) == hf.window_bounds(old)                   # the crop and the fit stay where they were
+    bare = {k: val for k, val in part.items() if k != "material"}
+    assert (hf.face_window(v, f, head, part=bare)["mask"] == old["mask"]).all()   # unpainted: as it was
+
+
+def test_the_face_rises_fully_to_the_hair_beside_it_and_not_to_a_strand_across_it():
+    # skin_sorcerer_c's window reached over the hair hanging beside its face; cut away there, the hair gave way to the
+    # new face's relief, which the strand rule held up to 2.7 cm under it, and from three quarters one looked over the
+    # face into the hood's inside (433 and 356 see-through pixels). Risen to the hair's own depth there: 5 and 0 (round 29)
+    own = np.full((20, 20), 0.02)
+    new = np.zeros((20, 20))
+    held = hf.rise_target(own, np.zeros((20, 20)), np.zeros((20, 20)), new, 0.003)
+    assert np.allclose(held, 0.0)                                           # a strand across the face: no rise to it
+    beside = np.zeros((20, 20), bool)
+    beside[:, 15:] = True
+    out = hf.rise_target(own, np.zeros((20, 20)), np.zeros((20, 20)), new, 0.003, beside=beside)
+    assert np.allclose(out[:, 15:], 0.02) and np.allclose(out[:, :10], 0.0)   # beside the face: to the hair, in full
+    v, f, part = painted_head(hair_from_x=0.02)                              # hair over the window's right side
+    window = hf.face_window(v, f, np.ones(len(v), bool), part=part)
+    x = window["box"][0] + (np.arange(window["mask"].shape[1]) + 0.5) * window["pixel"]
+    reach = hf.BESIDE_REACH_SHARE * window["width"]
+    _, cols = np.nonzero(window["beside"])
+    assert len(cols) and x[cols].min() > 0.02 - reach - window["pixel"]       # the hair beside the face, nothing else
+    assert window["beside"][window["mask"] & (x[None, :] > 0.021)].mean() > 0.9

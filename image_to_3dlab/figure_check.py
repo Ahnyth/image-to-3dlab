@@ -14,6 +14,8 @@ skeleton), in its own base colour, and measures each of those faults:
 * flakes: tiny separate bits of the model, and small bright specks on the head;
 * face seam: a face grafted on as a piece of its own (Hero face) with the figure's cut edge hanging
   over it, holes in it showing the head behind, or see-through beside it close up;
+* light on the shape: what the head's skin shows lit from the camera (the figure's own normals) that
+  its base colour does not, a crease or a darker or lighter patch; with a version before, a new one fails;
 * colour (with a version before): the patches that changed colour (`colour_compare`).
 
 Some of these a number can judge (fingers, the neck ring, colour, holes in motion); others it can
@@ -53,6 +55,7 @@ class Figure:
     weights: np.ndarray | None               # (V, J) dense skin weights, rows sum to 1
     glow: cc.Model | None = None             # the emissive colour, where the figure glows
     parents: dict | None = None              # joint name -> its parent joint's name (None at the root)
+    normals: np.ndarray | None = None        # (V, 3) the normals a game shades it with (smooth ones where it has none)
 
     @property
     def height(self) -> float:
@@ -90,16 +93,19 @@ def read_figure(path: Path) -> Figure:
         while p is not None and p not in in_skin:      # the nearest joint above it (a scene node may sit between)
             p = parent_of.get(p)
         parents[nodes[j].get("name", f"joint{j}")] = None if p is None else nodes[p].get("name", f"joint{p}")
-    weights = []
+    weights, normals = [], []
     for n in world:
         node = nodes[n]
         if "mesh" not in node:
             continue
+        turn = np.eye(3) if "skin" in node else world[n][:3, :3]
         for prim in doc["meshes"][node["mesh"]]["primitives"]:
             if prim.get("mode", 4) != 4:
                 continue
             attrs = prim["attributes"]
             count = doc["accessors"][attrs["POSITION"]]["count"]
+            normals.append(_accessor(doc, binary, attrs["NORMAL"]).astype(np.float64) @ turn.T if "NORMAL" in attrs
+                           else np.full((count, 3), np.nan))
             if not names or "JOINTS_0" not in attrs or "WEIGHTS_0" not in attrs:
                 weights.append(None if names else np.zeros((count, 0)))
                 continue
@@ -115,7 +121,16 @@ def read_figure(path: Path) -> Figure:
     if names and weights and all(w is not None for w in weights):
         dense = np.concatenate(weights)
         dense /= np.maximum(dense.sum(axis=1, keepdims=True), 1e-9)
-    return Figure(model, joints, names, dense, cc.read_glow(path), parents or None)
+    shading = np.concatenate(normals) if normals else np.zeros((0, 3))
+    if len(shading) != len(model.positions):
+        shading = np.full((len(model.positions), 3), np.nan)
+    missing = ~np.isfinite(shading).all(axis=1)
+    if missing.any():                       # glTF without normals is shaded flat; drawn smooth, as a game imports it
+        from image_to_3dlab.pixal3d_native import smooth_normals
+
+        shading[missing] = smooth_normals(model.positions, model.faces)[missing]
+    shading /= np.maximum(np.linalg.norm(shading, axis=1, keepdims=True), 1e-12)
+    return Figure(model, joints, names, dense, cc.read_glow(path), parents or None, shading)
 
 
 # --- drawing ---------------------------------------------------------------------------------
@@ -152,12 +167,13 @@ def _axes(direction):
 
 
 def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 320,
-         only: np.ndarray | None = None, cull: bool = True) -> View:
+         only: np.ndarray | None = None, cull: bool = True, smooth: bool = False) -> View:
     """FIGURE seen from DIRECTION, the square of HALF model units around CENTRE filling SIZE pixels; with ONLY (a mask
     of its triangles) those alone, the rest of the figure left out.
 
     Back faces are culled and the nearest face wins, as a game draws it; with CULL false every face is drawn, so a
-    pixel the culled view leaves empty but this one covers is one a game shows through."""
+    pixel the culled view leaves empty but this one covers is one a game shows through. With SMOOTH the view's normals
+    are the figure's own, mixed across each triangle as a game shades it (else each triangle's own)."""
     model = figure.model
     d, right, up = _axes(direction)
     p = model.positions - np.asarray(centre, float)
@@ -180,6 +196,9 @@ def draw(figure: Figure, name: str, direction, centre, half: float, size: int = 
         hit = keep[face_of[covered]]
         face[covered] = hit
         normal[covered] = normals[hit]
+        if smooth and figure.normals is not None:
+            mixed = (bary[covered][:, :, None] * figure.normals[model.faces[hit]]).sum(1)
+            normal[covered] = mixed / np.maximum(np.linalg.norm(mixed, axis=1, keepdims=True), 1e-12)
         point[covered] = (bary[covered][:, :, None] * model.positions[model.faces[hit]]).sum(1)
         rgb[covered] = _sample(model, hit, bary[covered])
         if figure.glow is not None:
@@ -630,6 +649,119 @@ def face_seam(figure: Figure, head: Head, size: int = 320) -> Result:
                   ("; ".join(failed) + "; " if failed else "") + text, spots if failed else [])
 
 
+# --- the shape in the light: lit against unlit (TODO 211) -----------------------------------------------------------
+
+LIT_VIEWS = (("front", (0.0, 0.0, 1.0)), ("front left", (_S, 0.0, _S)), ("front right", (-_S, 0.0, _S)),
+             ("left side", (1.0, 0.0, 0.0)), ("right side", (-1.0, 0.0, 0.0)), ("from below", (0.0, -0.75, 0.66)),
+             ("below left", (0.6, -0.6, 0.53)), ("below right", (-0.6, -0.6, 0.53)))
+LIT_STEP = 0.12            # the camera light (its cosine) changing this much between skin pixels two apart, where the
+                           # surface does not step in depth, is a crease: the Nachtschwinge v19b's cheek lines
+LIT_PATCH = 0.12           # skin this much darker or lighter in the light than the skin round it is a patch ...
+LIT_AROUND = 0.1           # ... round it: within this share of the head's size
+LIT_GROW = 3               # pixels the version before's marks are grown by, so a rebuilt face moving a little is no new mark
+LIT_NEW_LIMIT = 0.0035     # a patch the version before did not have, over this share of a view's skin, fails: the first
+                           # Nachtschwinge v19h's grey chin 0.92 %, the later v19h's grey fleck at the jaw 0.65 %,
+                           # skin_sorcerer_c's jaw patches 1.86 %; six approved rebuilds against their versions before 0
+                           # to 0.26 % (round 29)
+LIT_CREASE_LIMIT = 40      # ... and so does a new crease line longer than this many pixels in a 320 px view
+
+
+def lit_views(figure: Figure, head: Head, size: int = 320) -> dict:
+    """The head's close views for the light: front, both three-quarter fronts, both sides and from below, each shaded
+    with the figure's own (smooth) normals as a game shades it."""
+    return {name: draw(figure, name, d, head.centre, head.half, size, smooth=True) for name, d in LIT_VIEWS}
+
+
+def unlit(view: View) -> View:
+    """VIEW in its base colour alone: its `lit` picture without the light."""
+    flat = np.broadcast_to(view.direction, view.normal.shape).copy()
+    return View(view.name, view.direction, view.rgb, view.covered, view.face, flat, view.point, view.glow, view.scale)
+
+
+def shape_marks(view: View, skin: np.ndarray, head: Head):
+    """(skin, crease, darker, lighter) masks of VIEW (drawn with the figure's own normals, `lit_views`): what the light
+    from the camera shows on the head's skin that the base colour does not, its shape: the light jumping by LIT_STEP
+    between pixels two apart where the surface does not step in depth (a crease), and skin LIT_PATCH darker or lighter
+    in the light than the skin within LIT_AROUND of it (a patch). The paint plays no part."""
+    s = np.clip(view.normal @ view.direction, 0.0, 1.0)
+    on_skin = skin_mask(view, skin, reach=20.0) & (view.point[..., 1] > head.neck_low)
+    on_skin &= view.point[..., 1] < head.chin + head.size
+    depth = view.point @ view.direction
+    crease = np.zeros(s.shape, bool)
+    for axis in (0, 1):
+        a = np.take(s, range(2, s.shape[axis]), axis=axis)
+        b = np.take(s, range(s.shape[axis] - 2), axis=axis)
+        both = np.take(on_skin, range(2, s.shape[axis]), axis=axis) & np.take(on_skin, range(s.shape[axis] - 2),
+                                                                              axis=axis)
+        flat = np.abs(np.take(depth, range(2, s.shape[axis]), axis=axis)
+                      - np.take(depth, range(s.shape[axis] - 2), axis=axis)) < 0.02 * head.size
+        index = [slice(None), slice(None)]
+        index[axis] = slice(0, s.shape[axis] - 2)
+        crease[tuple(index)] |= both & flat & (np.abs(a - b) > LIT_STEP)
+    disc = _disc(max(2, int(round(LIT_AROUND * head.size / view.scale)))).astype(float)
+    around = (ndimage.convolve(np.where(on_skin, s, 0.0), disc, mode="constant")
+              / np.maximum(ndimage.convolve(on_skin.astype(float), disc, mode="constant"), 1e-9))
+    delta = np.where(on_skin, s - around, 0.0)
+    square = np.ones((3, 3), bool)
+    return (on_skin, crease, ndimage.binary_opening(on_skin & (delta < -LIT_PATCH), structure=square),
+            ndimage.binary_opening(on_skin & (delta > LIT_PATCH), structure=square))
+
+
+def light_on_shape(figure: Figure, head: Head, before: Figure | None = None, size: int = 320) -> Result:
+    """What the light shows on the head's skin that the paint does not (`shape_marks`), close up from the front, both
+    three-quarter fronts, the sides and below. Alone it is counted for a person to look at: a face's own nose and
+    cheekbones shade it too, and approved figures show as much as faulty ones (D278 found no absolute measure). Against
+    the version BEFORE (drawn in this figure's frame) a patch or a crease it did not have fails: the first Nachtschwinge
+    v19h's chin turned away from the light and drew a dark grey patch on clean paint, which a person saw and the checks
+    did not (D288)."""
+    skin = skin_colour(draw(figure, "front", FRONT, head.centre, head.half, size), head)
+    name = "light on the shape"
+    if skin is None:
+        return Result(name, "info", "-", "-", "no skin found on the lower face (a mask or a helmet): not checked")
+    views = lit_views(figure, head, size)
+    marks = {view: shape_marks(v, skin, head) for view, v in views.items()}
+    if before is None:
+        share = {view: float((c | d | li).sum() / max(int(s.sum()), 1)) for view, (s, c, d, li) in marks.items()}
+        worst = max(share, key=share.get)
+        creases = sum(int(c.sum()) for _, c, _, _ in marks.values())
+        return Result(name, "info", round(100 * share[worst], 2), "-",
+                      f"the light shows {creases} crease pixels and patches on the skin, most in the {worst} view "
+                      f"({100 * share[worst]:.1f} % of its skin; a face's own nose and cheekbones count too): look at "
+                      "the lit pictures, or check against the version before")
+    old = {view: shape_marks(draw(before, view, d, head.centre, head.half, size, smooth=True), skin, head)
+           for view, d in LIT_VIEWS}
+    grow = np.ones((2 * LIT_GROW + 1, 2 * LIT_GROW + 1), bool)
+    worst, found, spots = (0.0, "", ""), [], []
+    longest = (0, "")
+    for view, (on_skin, crease, dark, light) in marks.items():
+        was_skin, was_crease, was_dark, was_light = old[view]
+        was = ndimage.binary_dilation(was_skin, structure=grow)
+        base = max(int(on_skin.sum()), 1)
+        for kind, now, then in (("darker", dark, was_dark), ("lighter", light, was_light)):
+            for box, area in _boxes(now & was & ~ndimage.binary_dilation(then, structure=grow), 6):
+                if area / base > worst[0]:
+                    worst = (area / base, view, kind)
+                if area / base > LIT_NEW_LIMIT:
+                    spots.append((view, box))
+                    found.append(f"a patch {kind} than the skin round it in the {view} view ({area / base:.2%} of "
+                                 "its skin)")
+        fresh = ndimage.binary_dilation(crease & was & ~ndimage.binary_dilation(was_crease, structure=grow))
+        for box, area in _boxes(fresh, 6):
+            length = max(box[2] - box[0], box[3] - box[1])
+            if length > longest[0]:
+                longest = (length, view)
+            if length > LIT_CREASE_LIMIT:
+                spots.append((view, box))
+                found.append(f"a crease {length} px long in the {view} view")
+    text = (f"new against the version before: the largest patch {worst[0]:.2%} of a view's skin"
+            + (f" ({worst[2]}, {worst[1]})" if worst[1] else "") + f", the longest crease {longest[0]} px"
+            + (f" ({longest[1]})" if longest[1] else ""))
+    listed = "; ".join(found[:4]) + (f" (and {len(found) - 4} more)" if len(found) > 4 else "")
+    return Result(name, "fail" if found else "pass", round(100 * worst[0], 2),
+                  f"{LIT_NEW_LIMIT:.2%} of a view's skin, {LIT_CREASE_LIMIT} px of crease",
+                  (listed + "; " if found else "") + text, spots)
+
+
 # --- hands -------------------------------------------------------------------------------------
 
 def _welded(model: cc.Model):
@@ -1029,11 +1161,12 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None, 
     figure = read_figure(path)
     head = find_head(figure)
     views = head_views(figure, head, size)
+    old = read_figure(Path(before)) if before is not None else None
     results = [fingers(figure)]
     results += _head_checks(figure, head, views)
-    results += [face_seam(figure, head, size), open_edges(figure), pose_holes(report)]
-    if before is not None:
-        old = read_figure(Path(before))
+    results += [face_seam(figure, head, size), light_on_shape(figure, head, old, size), open_edges(figure),
+                pose_holes(report)]
+    if old is not None:
         old_head = find_head(old)
         was_all = {r.name: r for r in _head_checks(old, old_head, head_views(old, old_head, size))}
         results.append(feet_against(old, figure))
@@ -1050,7 +1183,9 @@ def check(path, before=None, report=None, size: int = 320, colour_picture=None, 
         results.append(colour_against(old, figure, colour_picture, same_look))
     else:
         results.append(feet(figure))
+    lit = lit_views(figure, head, size)
     return Checked(path, results, {"head": views, "head close": close_head_views(figure, head, size),
+                                   "head lit": lit, "head unlit": {name: unlit(v) for name, v in lit.items()},
                                    "whole": whole_views(figure, size),
                                    "hands": hand_views(figure)})
 
@@ -1128,7 +1263,7 @@ def write_report(checked: list, out, title: str = "Figure check", preface: str =
             if not views:
                 continue
             file = f"{c.path.stem}_{group.replace(' ', '_')}.jpg"
-            sheet(views, spots if group == "head" else []).save(out / file, quality=90)
+            sheet(views, spots if group in ("head", "head lit") else []).save(out / file, quality=90)
             parts.append(f"<p>{group}</p><img src='{file}'>")
         for r in c.results:
             if r.picture:

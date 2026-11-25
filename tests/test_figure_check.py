@@ -515,3 +515,73 @@ def test_a_hole_in_the_face_showing_the_head_behind_it_fails():
     holed = faced_figure(0.099, face_hole=True)
     result = fc.face_seam(holed, fc.find_head(holed))
     assert result.status == "fail" and "hole" in result.message
+
+
+# --- the shape in the light: lit against unlit (TODO 211) ----------------------------------------------------------
+
+def ball(radius, centre, rings=40, segments=60):
+    """A closed UV sphere, faces out, with its own smooth normals."""
+    v = [[0.0, radius, 0.0]]
+    for i in range(1, rings):
+        t = np.pi * i / rings
+        for j in range(segments):
+            ph = 2 * np.pi * j / segments
+            v.append([radius * np.sin(t) * np.sin(ph), radius * np.cos(t), radius * np.sin(t) * np.cos(ph)])
+    v.append([0.0, -radius, 0.0])
+    f = [[0, 1 + j, 1 + (j + 1) % segments] for j in range(segments)]
+    for i in range(rings - 2):
+        a, b = 1 + i * segments, 1 + (i + 1) * segments
+        for j in range(segments):
+            j1 = (j + 1) % segments
+            f += [[a + j, b + j, b + j1], [a + j, b + j1, a + j1]]
+    last, end = 1 + (rings - 2) * segments, len(v) - 1
+    f += [[last + j, end, last + (j + 1) % segments] for j in range(segments)]
+    v = np.asarray(v)
+    return v + np.asarray(centre), np.asarray(f), v / radius
+
+
+def lit_figure(tilt_degrees: float = 0.0) -> fc.Figure:
+    """A body and a ball head (0.1 round, its middle at 1.65), painted skin, drawn with its smooth normals; TILT turns
+    the normals on the chin's front down by that much, as the first Nachtschwinge v19h's coarse chin, pulled back by
+    the seam's target, tilted away from the light and drew a dark grey patch the paint did not have (D288)."""
+    head_p, head_f, head_n = ball(0.1, (0.0, 1.65, 0.0))
+    body_p, body_f = box((-0.2, 0.0, -0.1), (0.2, 1.5, 0.1))
+    body_n = np.tile([0.0, 0.0, 1.0], (len(body_p), 1))
+    if tilt_degrees:
+        chin = (head_p[:, 1] < 1.65 - 0.035) & (head_p[:, 1] > 1.65 - 0.075) & (np.abs(head_p[:, 0]) < 0.03) & \
+               (head_p[:, 2] > 0)
+        a = np.radians(tilt_degrees)
+        turn = np.array([[1, 0, 0], [0, np.cos(a), np.sin(a)], [0, -np.sin(a), np.cos(a)]])
+        head_n = head_n.copy()
+        head_n[chin] = head_n[chin] @ turn.T
+    p, f = join((head_p, head_f), (body_p, body_f))
+    weights = np.zeros((len(p), 2))
+    weights[:len(head_p), 1] = 1.0
+    weights[len(head_p):, 0] = 1.0
+    figure = fc.Figure(model_of(p, f, colour=(225, 185, 155)),
+                       {"Neck": np.array([0.0, 1.5, 0.0]), "Head": np.array([0.0, 1.56, 0.0])}, ["Neck", "Head"],
+                       weights)
+    figure.normals = np.concatenate([head_n, body_n])
+    return figure
+
+
+def test_the_light_finds_a_patch_the_paint_does_not_have_against_the_version_before():
+    smooth, tilted = lit_figure(), lit_figure(tilt_degrees=50.0)
+    head = fc.find_head(tilted)
+    found = fc.light_on_shape(tilted, head, before=smooth)
+    assert found.status == "fail" and "darker" in found.message
+    assert found.spots and all(view in dict(fc.LIT_VIEWS) for view, _ in found.spots)
+    assert fc.light_on_shape(smooth, fc.find_head(smooth), before=smooth).status == "pass"
+    alone = fc.light_on_shape(tilted, head)
+    assert alone.status in ("info", "look") and alone.value > 0                # without a version before: counted
+
+
+def test_a_glb_is_drawn_with_its_own_normals_and_smooth_ones_where_it_has_none(tmp_path):
+    p, f = box((-0.2, 0.0, -0.1), (0.2, 1.8, 0.1))
+    path = tmp_path / "figure.glb"
+    path.write_bytes(skinned_glb(p, f, {"Hips": (0, 1.0, 0), "Head": (0, 1.6, 0)}, weight_to=1))
+    figure = fc.read_figure(path)
+    assert figure.normals.shape == (len(p), 3)
+    assert np.allclose(np.linalg.norm(figure.normals, axis=1), 1.0)
+    corner = figure.normals[np.argmax(p @ [1.0, 1.0, 1.0])]            # a box's corner: shared by three faces
+    assert (corner > 0.01).all()                                       # ... mixed from all three, not one face's

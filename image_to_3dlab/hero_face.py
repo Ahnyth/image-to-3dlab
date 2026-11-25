@@ -10,8 +10,10 @@ tight collar the overlapping skins of issue #229.
 So only the face is swapped: what the front view shows of it, between the things that stand in front of it (a brim
 above, a collar below) and the sides where the head turns away. That outline is found on the figure's front depth
 map as the area round the nose the surface reaches without a jump in depth (`face_window`); the seam runs a little
-inside it, through skin and hair, where the old and the new face nearly agree. Hat, collar and the rest of the head
-stay the figure's own. The figure is cut along that outline (`hero_hands.clip_values`). The new face is put where
+inside it, through skin and hair, where the old and the new face nearly agree, and at the face's sides out over the
+figure's own skin to the old cheek's edge, where its paint turns to hair, a hood or a collar (`skin_seam`): a strip of
+the old cheek left inside it showed as a hard line. Hat, collar and the rest of the head stay the figure's own. The
+figure is cut along that outline (`hero_hands.clip_values`). The new face is put where
 the picture has it through its build's own camera, taken as the build's skin seen from the front (`relief`), its
 creases rounded a little (`round_relief`), and painted by the crop moved to the figure's own paint at the seam
 (`match_face_paint`, read at every pixel just outside the seam); it rises to meet the figure's surface at the seam
@@ -46,7 +48,23 @@ FACING = 0.2           # the face faces the camera at least this much (the cosin
 SIDE_SHARE = 0.45      # the face reaches at most this share of the head's width either side of the nose
 CHIN_SHARE = 0.6       # and at most this share of it below the nose (the Zauberer's chin: 0.42) ...
 BROW_SHARE = 0.55      # ... and above it (his brim: 0.43); without a brim the seam then runs through the hairline
-MARGIN_SHARE = 0.06    # the seam runs this share of the head's width inside the outline
+MARGIN_SHARE = 0.06    # the seam runs this share of the head's width inside the outline ...
+SIDE_MARGIN_SHARE = 0.015  # ... but over the figure's own skin only this share at the face's sides (`skin_seam`): the
+                           # 0.06 left a strip of the old cheek between the seam and the side hair, one flat facet of the
+                           # coarse head with its own paint, a hard line down both of the Nachtschwinge's cheeks (round 29)
+CHIN_CONE = 35.0       # toward the chin (the outline's nearest edge below, within this many degrees of straight down) the
+                       # whole MARGIN_SHARE stays: run out there, the seam reached the neck, and from the side the picture's
+                       # jaw shadow showed as a zigzag on it
+SKIN_HUE = 25.0        # the figure's paint is skin within this many degrees of the face's own skin hue (a*, b*) ...
+SKIN_LIGHT = 35.0      # ... and lighter than this L*: a hair lock, a hood or a collar is not, and the seam never runs out
+                       # over it (run out over the Nachtschwinge's side lock, the cut took it: see-through from the side
+                       # 12 -> 939 px) ...
+HAIR_MARGIN_SHARE = 0.03   # ... nor nearer it than this share of the head's width: the picture's lock reaches a few mm
+                           # further than the figure's paint has it, and run up to the paint's edge, the face's own edge
+                           # carried the picture's dark lock onto the figure's skin as jagged notches at the jaw
+BESIDE_ROWS = 0.1      # a row of the window where the figure shows skin over this share of the window's width is the
+                       # face's: hair or a hood reached from the window's side edge in such rows hangs beside the face ...
+BESIDE_REACH_SHARE = 0.035   # ... and the face rises to it in full there and this share of the head's width round it
 SMOOTH_SHARE = 0.04    # the seam's line is smoothed over this share of the head's width
 BEHIND_SHARE = 0.15    # what of the figure lies less than this share of the head's width behind the new face goes: the
                        # old eye under a strand, an inner skin; a collar hidden behind the jaw lies deeper and stays
@@ -79,6 +97,10 @@ ROUND_SHARE = 0.0125   # the new face's relief is rounded over this share of the
 COARSEST_STEP = 4      # a model's new face is laid out at most this many of the window's pixels apart (`relief_step`)
 RING_PIXELS = 4        # the figure's paint is read in a band this many pixels wide just outside the seam ...
 PAINT_LIMIT = 60.0     # ... and the crop's moved toward it by at most this many levels (0..255) a channel
+PAINT_AGREE = 45.0     # a pair of that band whose offset lies further than this (levels, in any channel) from the band's
+                       # median is no one surface (a hair lock in the figure against skin in the crop) and is left out:
+                       # a third of the Nachtschwinge's pairs, up to 196 levels apart, and clipped to PAINT_LIMIT they lit
+                       # the jaw corners up (round 29)
 CROP_PAD = 2.0         # the face's crop is this many times the window's size: hair, brim and collar round the face, so
                        # Pixal3D builds a head and not a mask (the Zauberer's 174 px crop round an 85 px face)
 SOFT_EDGE_PX = 2       # the face crop's cut-out keeps its soft alpha only this close to its outline (`solid_cutout`)
@@ -354,11 +376,125 @@ def signed_distance(mask: np.ndarray, pixel: float) -> np.ndarray:
     return np.where(mask, inside, -outside) * pixel
 
 
-def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray) -> dict:
+def side_mask(outline: np.ndarray, margin: float, side: float, cone: float = CHIN_CONE) -> np.ndarray:
+    """OUTLINE shrunk by SIDE pixels, but by MARGIN where its nearest edge lies below a pixel within CONE degrees of
+    straight down (the chin)."""
+    distance, (r, c) = ndimage.distance_transform_edt(outline, return_indices=True)
+    rows, cols = np.mgrid[0:outline.shape[0], 0:outline.shape[1]]
+    down = (r - rows) > np.cos(np.radians(cone)) * np.hypot(r - rows, c - cols)
+    return outline & (distance > np.where(down, margin, side))
+
+
+def front_paint(part: dict, box, pixel: float, shape: tuple[int, int]) -> np.ndarray:
+    """PART's paint seen straight from the front over BOX: RGB (0..255) per pixel of a picture of SHAPE where PART is
+    the nearest surface, NaN elsewhere (and all NaN when PART carries no paint)."""
+    out = np.full(tuple(shape) + (3,), np.nan)
+    paint = part_paint(part)
+    if paint is None:
+        return out
+    p = np.asarray(part["positions"], dtype=np.float64)
+    _, owner = depth_map(p, part["faces"], box, pixel)
+    rows, cols = np.nonzero(owner >= 0)
+    if len(rows):
+        _, uv = front_uvs(p, part["faces"], part["uvs"], owner[rows, cols], rows, cols, box, pixel)
+        out[rows, cols] = paint_at(paint, uv)
+    return out
+
+
+def skin_tone(lab: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
+    """The face's skin (CIE Lab): the most common colour of LAB (a picture, NaN where unknown) in MASK's middle band
+    (45 to 80 % of its height down, its middle 60 % across: cheeks, nose, mouth). None when too little is known."""
+    rows, cols = np.nonzero(mask)
+    if not len(rows):
+        return None
+    r0, r1, c0, c1 = rows.min(), rows.max(), cols.min(), cols.max()
+    band = np.zeros(mask.shape, bool)
+    band[int(r0 + 0.45 * (r1 - r0)):int(r0 + 0.8 * (r1 - r0)) + 1,
+         int(c0 + 0.2 * (c1 - c0)):int(c0 + 0.8 * (c1 - c0)) + 1] = True
+    band &= mask & np.isfinite(lab).all(axis=-1)
+    if band.sum() < 30:
+        return None
+    centre = np.median(lab[band], axis=0)
+    for _ in range(4):           # settle on the main cluster: brows, lips and shadows drop out
+        near = band & (np.linalg.norm(np.nan_to_num(lab - centre, nan=1e3), axis=-1) < 10)
+        if near.sum() < 20:
+            break
+        centre = np.median(lab[near], axis=0)
+    return centre
+
+
+def skin_paint(lab: np.ndarray, skin: np.ndarray, hue: float = SKIN_HUE, light: float = SKIN_LIGHT) -> np.ndarray:
+    """Where LAB (a picture, NaN where unknown) is skin: lighter than LIGHT, of a colour (not grey) within HUE degrees
+    of SKIN's hue, lit or shaded."""
+    known = np.isfinite(lab).all(axis=-1)
+    lab = np.nan_to_num(lab)
+    turn = np.degrees(np.arctan2(lab[..., 2], lab[..., 1]) - np.arctan2(skin[2], skin[1]))
+    turn = np.abs((turn + 180) % 360 - 180)
+    return known & (lab[..., 0] > light) & (turn < hue) & (np.hypot(lab[..., 1], lab[..., 2]) > 5)
+
+
+def beside_face(mask: np.ndarray, skin: np.ndarray, reach: float) -> np.ndarray:
+    """The figure's hair or hood hanging beside the face inside the window MASK: pixels not SKIN, reached from the
+    window's side edges (its outer 20 % across) through such pixels, in the rows where the figure shows skin over
+    BESIDE_ROWS of the window's width; grown by REACH pixels (for the band round the seam)."""
+    on_skin = skin & mask
+    rows = on_skin.sum(axis=1) >= BESIDE_ROWS * mask.sum(axis=1).clip(min=1)
+    other = mask & ~on_skin & rows[:, None]
+    label, _ = ndimage.label(other)
+    cols = np.nonzero(mask.any(axis=0))[0]
+    if not len(cols):
+        return np.zeros(mask.shape, bool)
+    centre, span = (cols.min() + cols.max()) / 2, cols.max() - cols.min()
+    edge = mask & ~ndimage.binary_erosion(mask)
+    side = edge & (np.abs(np.arange(mask.shape[1])[None, :] - centre) > 0.3 * span)
+    touching = np.unique(label[side & other])
+    beside = np.isin(label, touching[touching > 0])
+    if reach >= 1 and beside.any():
+        beside = ndimage.binary_dilation(beside, iterations=int(round(reach)))
+    return beside
+
+
+def skin_seam(window: dict, part: dict) -> dict:
+    """WINDOW with its seam run out to the old cheek's edge over the figure's own skin (PART's paint): the seam keeps
+    MARGIN_SHARE inside the outline only toward the chin; at the face's sides it runs SIDE_MARGIN_SHARE inside the
+    outline, and that only over skin, HAIR_MARGIN_SHARE away from anything else (`side_mask`, `skin_paint`). The window
+    only grows; "core" keeps the window as it was, for the crop and the depth fit. WINDOW as it is without paint.
+
+    Run 0.06 of the head's width inside the outline, the seam left a strip of the old cheek between itself and the side
+    hair or the face's own edge: on the Nachtschwinge one flat facet of the coarse head, at another angle and in its own
+    paint, a hard line from the cheekbone down to the jaw seen from the front and from three quarters (round 29 of the
+    AssetFurnace Support notes)."""
+    from image_to_3dlab import hero_hands as hh_
+
+    mask, width, pixel = window["mask"], window["width"], window["pixel"]
+    rgb = front_paint(part, window["box"], pixel, mask.shape)
+    known = np.isfinite(rgb).all(axis=-1)
+    if not known.any():
+        return window
+    lab = np.full(rgb.shape, np.nan)
+    lab[known] = hh_.to_lab(rgb[known])
+    skin = skin_tone(lab, mask)
+    if skin is None or np.hypot(skin[1], skin[2]) <= 5:
+        return window
+    side = SIDE_MARGIN_SHARE * width / pixel
+    wide = side_mask(window["outline"], MARGIN_SHARE * width / pixel, side)
+    is_skin = skin_paint(lab, skin)
+    room = ndimage.distance_transform_edt(is_skin | mask) > HAIR_MARGIN_SHARE * width / pixel
+    grown = ndimage.gaussian_filter((mask | (wide & room)).astype(np.float64), SMOOTH_SHARE * width / pixel / 2) > 0.5
+    label, _ = ndimage.label(grown)
+    seed = window["seed"]
+    grown = (ndimage.binary_fill_holes(label == label[seed]) if label[seed] else grown) | mask
+    return {**window, "mask": grown, "field": signed_distance(grown, pixel), "core": mask, "skin": skin,
+            "grown_share": float((grown & ~mask).sum() / max(int(mask.sum()), 1)),
+            "beside": beside_face(grown, is_skin, BESIDE_REACH_SHARE * width / pixel)}
+
+
+def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray, part: dict | None = None) -> dict:
     """Where the face lies and where its seam runs, measured on a figure (its mesh and which vertices are its head,
     from the rig's head bones): {"box", "pixel", "field" (signed distance to the seam, positive inside), "depth" and
     "outline" (the figure's front depth and the face's reach on it, for a picture), "seed" (the nose), "width" (the
-    head's), "floor" (the brim's underside or None), "axis_z" (the head's middle depth)}."""
+    head's), "floor" (the brim's underside or None), "axis_z" (the head's middle depth)}. With PART (the figure's part
+    those are, painted) the seam runs out over its own skin to the old cheek's edge (`skin_seam`)."""
     v = np.asarray(vertices, dtype=np.float64)
     hv = v[np.asarray(head, dtype=bool)]
     if len(hv) < 2 * MIN_SLICE_POINTS:
@@ -386,9 +522,10 @@ def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray) -> di
     chin = min(chin, seed[0] + int(round(CHIN_SHARE * width / pixel)))
     outline = reach & face_shape(depth.shape, seed, top, chin, SIDE_SHARE * width / pixel)
     mask = window_mask(outline, MARGIN_SHARE * width / pixel, SMOOTH_SHARE * width / pixel, seed)
-    return {"box": box, "pixel": pixel, "field": signed_distance(mask, pixel), "depth": depth, "outline": outline,
-            "mask": mask, "seed": seed, "width": width, "floor": floor, "rows": (top, chin),
-            "axis_z": float(np.median(hv[below, 2])), "centre_x": centre_x}
+    window = {"box": box, "pixel": pixel, "field": signed_distance(mask, pixel), "depth": depth, "outline": outline,
+              "mask": mask, "seed": seed, "width": width, "floor": floor, "rows": (top, chin),
+              "axis_z": float(np.median(hv[below, 2])), "centre_x": centre_x}
+    return window if part is None else skin_seam(window, part)
 
 
 FAR = 1e6                  # how far outside the window a point off its picture counts: finite, so a cut between it
@@ -433,8 +570,9 @@ def window_values(window: dict, points: np.ndarray) -> np.ndarray:
 
 
 def window_bounds(window: dict) -> tuple[float, float, float, float]:
-    """(x0, x1, y0, y1) of the window, in model units."""
-    rows, cols = np.nonzero(window["mask"])
+    """(x0, x1, y0, y1) of the window, in model units: of its core where the seam was run out (`skin_seam`), so the
+    face's crop stays where it was."""
+    rows, cols = np.nonzero(window.get("core", window["mask"]))
     box, pixel = window["box"], window["pixel"]
     return (box[0] + cols.min() * pixel, box[0] + (cols.max() + 1) * pixel,
             box[3] - (rows.max() + 1) * pixel, box[3] - rows.min() * pixel)
@@ -529,7 +667,7 @@ def depth_fit(window: dict, part: dict, keep: float = ICP_KEEP, rounds: int = 3)
     them."""
     box, pixel = window["box"], window["pixel"]
     own, _ = depth_map(part["positions"], part["faces"], box, pixel)
-    both = window["mask"] & np.isfinite(own) & np.isfinite(window["depth"])
+    both = window.get("core", window["mask"]) & np.isfinite(own) & np.isfinite(window["depth"])
     if not both.any():
         raise ValueError("the new face does not reach into the window: check its placement")
     rows, cols = np.nonzero(both)
@@ -660,7 +798,7 @@ def seam_target(surface: np.ndarray, field: np.ndarray, reach: int, pixel: float
 
 
 def rise_target(own: np.ndarray, surface: np.ndarray, carried: np.ndarray, new: np.ndarray,
-                over: float) -> np.ndarray:
+                over: float, beside: np.ndarray | None = None) -> np.ndarray:
     """What the new face eases into near its seam (`tuck`), pixel by pixel. Where the figure's own front OWN lies
     behind the face (NEW, the face's own depth): that front, so the face sinks just behind it. Where it stands in
     front: no higher than the front without its strands (SURFACE, `seam_surface`) nor than OVER above that front
@@ -668,12 +806,17 @@ def rise_target(own: np.ndarray, surface: np.ndarray, carried: np.ndarray, new: 
     under a thin hood's edge to the surface beside it. Used where the figure lies behind the face too, the strand-free
     front pulled the Nachtschwinge's chin back: it took the old chin for a strand and dropped to the neck 7 cm behind
     it, and the new chin's coarse triangles, pulled back by up to 3.4 cm, tilted away and drew a dark grey patch
-    (round 28 of the AssetFurnace Support notes). -inf where OWN has nothing."""
+    (round 28 of the AssetFurnace Support notes). Where BESIDE (a mask: the figure's hair or hood beside the face,
+    `beside_face`) the face rises to the figure's front in full: no strand across the face there, but what the face's
+    relief stands in for; held under it, skin_sorcerer_c's face lay up to 2.7 cm under the hair it replaced, and from
+    three quarters one looked over it into the hood (round 29). -inf where OWN has nothing."""
     own = np.asarray(own, dtype=np.float64)
     new = np.asarray(new, dtype=np.float64)
     out = own.copy()
     with np.errstate(invalid="ignore"):
         up = np.isfinite(own) & np.isfinite(new) & (own > new)
+        if beside is not None:
+            up &= ~np.asarray(beside, dtype=bool)
         limit = np.fmin(np.asarray(surface, dtype=np.float64), np.asarray(carried, dtype=np.float64) + over)
         out[up] = np.fmin(own[up], limit[up])
     return out
@@ -954,7 +1097,8 @@ def seam_paint(parts: list[dict], window: dict, crop_rgb: np.ndarray, crop: tupl
     darker (the Zauberer's was 12 to 36 levels lighter all round the seam), so the new face's outline showed. Read at
     every pixel of the band the figure shows there (`front_uvs`) as well as at its points: on the Nachtschwinge's 8k
     rigged model a few points lay in the band, and its cheek, lighter than the crop by 5 L*, still drew a line down the
-    seam (round 28 of the AssetFurnace Support notes)."""
+    seam (round 28 of the AssetFurnace Support notes). A pair whose offset lies further than PAINT_AGREE from the band's
+    median in any channel is left out: no one surface (a hair lock in the figure, skin in the crop)."""
     pixel, box = window["pixel"], window["box"]
     points, offsets = [], []
     ring_px = (window["field"] <= 0) & (window["field"] > -ring * pixel)
@@ -981,7 +1125,9 @@ def seam_paint(parts: list[dict], window: dict, crop_rgb: np.ndarray, crop: tupl
             offsets.append(paint_at(paint, uv) - new)
     if not points:
         return np.zeros((0, 2)), np.zeros((0, 3))
-    return np.concatenate(points), np.concatenate(offsets)
+    points, offsets = np.concatenate(points), np.concatenate(offsets)
+    agree = np.abs(offsets - np.median(offsets, axis=0)).max(axis=1) <= PAINT_AGREE
+    return points[agree], offsets[agree]
 
 
 def offset_field(window: dict, points: np.ndarray, offsets: np.ndarray, limit: float = PAINT_LIMIT) -> np.ndarray:
@@ -1248,7 +1394,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             # without its strands, nor than a little over it carried in from the seam along its slope
             surface = spread(seam_surface(own, STRAND_SHARE * width / pixel, TUCK_SHARE * width), NEAR_PIXELS)
             carried = seam_target(surface, window["field"], int(np.ceil(blend / pixel)) + 1, pixel)
-            target = rise_target(spread(own, NEAR_PIXELS), surface, carried, new_depth, OVER_SHARE * width)
+            target = rise_target(spread(own, NEAR_PIXELS), surface, carried, new_depth, OVER_SHARE * width,
+                                 window.get("beside"))
         out_parts.append(cut)
         rims.append(rim)
     if target is None:

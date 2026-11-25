@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **figure_check looks at the shape in the light.** A new check draws the head close up from the front, both
+  three-quarter fronts, the sides and below with the figure's own (smooth) normals, lit from the camera as a game
+  shades it, and beside it unlit (the base colour): what the light shows on the skin that the paint does not, a crease
+  (the light jumping with no step in depth) or a patch clearly darker or lighter than the skin round it. Against the
+  version before (`--before`) a new patch over 0.35 % of a view's skin or a new crease over 40 px fails: the first
+  Nachtschwinge v19h's grey chin, made again (0.92 %), the later v19h's grey fleck at the jaw (0.65 %) and
+  skin_sorcerer_c's jaw patches (1.86 %) fail, six approved rebuilds against their versions before pass (0 to 0.26 %). Alone it only counts, for a person to look at: a face's
+  own nose and cheekbones shade it too, and approved figures show as much as faulty ones. The report gains "head lit"
+  and "head unlit" sheets; a figure whose GLB has no normals is drawn smooth, as a game imports it.
 - **The Hero chain counts see-through holes in each shape stage's own models, before the game step.** A stage's hole
   showed only in the game figure ten minutes later (skin_sorcerer_c's face stage: 223 pixels one sees through from
   behind in its shape model, 145 in its rigged one). `figure_check.see_through` counts, from the front, back, left and
@@ -276,7 +285,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over it; the Nachtschwinge v19b 14.7 %, rebuilt 7 %), holes in the face that show the head behind it, and
   see-through beside it close up from the sides and below. Not yet closed: a faint line where the old cheek's own
   facet meets the face (seen from three quarters), and more see-through beside skin_sorcerer_c's face from three
-  quarters after the pits are filled.
+  quarters after the pits are filled (both taken up in the next entry).
+- **Hero face: the seam runs along the old cheek's edge, and no see-through beside a face framed by hair.** The
+  Nachtschwinge's hard diagonal lines down both cheeks were the seam itself: it ran 0.06 of the head's width inside
+  the face's reach, and the strip of old cheek it left (one flat facet of the coarse head, at another angle, in its own
+  paint) showed between it and the side hair, from the front and from three quarters. `hero_face.face_window` now takes
+  the figure's part and reads its paint: over the figure's own skin the seam runs only 0.015 of the head's width
+  inside the reach at the face's sides (toward the chin the old margin stays: run out there, the seam reached the neck),
+  never out over hair, a hood or a collar (run out over the Nachtschwinge's side lock, the cut took it: see-through
+  from the side 12 -> 939 px), nor nearer it than 0.03 of the head's width (the picture's lock reaches a few mm
+  further than the figure's paint has it; run up to the paint's edge, the face's edge carried the dark lock onto the
+  skin as jagged notches at the jaw). The window only grows; the crop and the depth fit keep the old one, so a kept build still
+  fits. Where hair or a hood hangs beside the face inside the window, the face now rises to it in full (inside the face
+  the strand rule stays): held under it, skin_sorcerer_c's face lay up to 2.7 cm under the hair it replaced and from
+  three quarters one looked over it into the hood (see-through 433 and 356 px in the face stage, now 5 and 0; in the
+  game figure 161 and 9, now 11 and 0). The paint match leaves
+  out the seam's pairs that are no one surface (hair in the figure against skin in the crop, a third of the
+  Nachtschwinge's pairs, up to 196 levels apart), which lit its jaw corners up. face.json gives `seam_grown_share` and
+  the skin colour found. Not closed: on the Nachtschwinge the line stays from three quarters on the cheek where only
+  about 5 mm of the old cheek lie between the seam and a hair lock (the seam keeps 4 mm from the lock); there its paint
+  (the old Pixel Match paint, lighter, on a facet turned toward that view) makes it, not its shape.
 - **Add-ons on Windows: installing a new version over an old one works**, and an install leaves no temporary clone
   behind in `addons/`. Git keeps a clone's objects read-only on Windows, so replacing an installed add-on stopped with
   "Access is denied", and each planned or failed install kept its `.<id>-install-*` folder; every removal of a cloned

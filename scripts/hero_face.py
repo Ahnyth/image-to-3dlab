@@ -11,8 +11,9 @@ head at the neck, which a big hat or a high collar does not survive; this swaps 
 
   1. measure  the rig's head bones say where the head is; the figure's front depth map shows how far the face
               reaches from the nose before something stands in front of it (a brim above, a collar below) or it
-              turns away (its sides, the chin). The seam runs a little inside that, through skin and hair.
-              window.png shows it.
+              turns away (its sides, the chin). The seam runs a little inside that, through skin and hair, and at
+              the face's sides out over the figure's own skin to the old cheek's edge (where its paint turns to
+              hair, a hood or a collar), so no strip of the old cheek shows beside the new face. window.png shows it.
   2. crop     the face with the hair, brim and collar round it, from the picture, upscaled 4x with Real-ESRGAN;
               what the background remover cut out inside the face (glowing eyes) is put back.
   3. build    Pixal3D on the crop (--seed).
@@ -322,12 +323,17 @@ def main(argv: list[str] | None = None) -> int:
     rig_parts = hf.read_parts(args.rig.read_bytes())[2] if args.rig else None
     index, head, picked = head_of(parts, rig_parts)
     body = parts[index]
-    window = hf.face_window(body["positions"], body["faces"], head)
+    window = hf.face_window(body["positions"], body["faces"], head, part=body)
     hf.window_picture(window).save(out / "window.png")
     bounds = hf.window_bounds(window)
     run.say(f"measure: head bones {picked}, head {window['width']:.4f} wide, brim underside "
             f"{'none' if window['floor'] is None else round(window['floor'], 4)}, seam inside x {bounds[0]:.4f}.."
             f"{bounds[1]:.4f}, y {bounds[2]:.4f}..{bounds[3]:.4f} (window.png)")
+    if "core" in window:
+        run.say(f"measure: the seam runs out to the old cheek's edge over the figure's own skin: the window grew "
+                f"{window['grown_share']:.0%} (never over hair, a hood or a collar; toward the chin as it was)")
+    else:
+        run.say("measure: the figure carries no paint to tell its skin by: the seam keeps its margin all round")
     if window["floor"] is None:
         run.flag("no hat brim found above the face: the seam's top follows the hairline's reach; check window.png")
     for doubt in hf.window_doubts(window):
@@ -452,7 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     face_record = read_model_record(raw)
     summary = {"model": str(args.model), "picture": str(args.picture), "crop": list(box),
                "window": {"bounds": [round(b, 5) for b in bounds], "head_width": window["width"],
-                          "brim_underside": window["floor"], "seed_pixel": list(window["seed"])},
+                          "brim_underside": window["floor"], "seed_pixel": list(window["seed"]),
+                          "seam_grown_share": window.get("grown_share", 0.0),
+                          "skin_lab": None if window.get("skin") is None else [round(float(v), 1)
+                                                                              for v in window["skin"]]},
                "placement": {"apart_from_old_face": cost, "scale": scale, "transform": tf.tolist()}, "models": {}}
     crop_rgb = np.asarray(Image.open(up).convert("RGB"), dtype=np.float64)
     for model in [args.model, *args.also]:
