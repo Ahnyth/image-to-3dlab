@@ -476,6 +476,47 @@ def test_thin_glow_keeps_a_light_line_and_skips_a_plate_of_the_same_colour():
     assert emission_all[20, 14].max() > 0.5  # without the limit the plate glows too
 
 
+def _hair_trim_and_plate():
+    """Three islands of one red hue (TODO 208 of the AssetFurnace Support notes, the Daemonenhexer): a thin island
+    of red hair beside a broad one (cut into many islands, the hair's slivers pass the width gate as lines), a red trim
+    on black cloth, and a bright red line on a dark plate of a faint match of the same hue (the Purpur-Samurai)."""
+    n = 64
+    alb = np.zeros((n, n, 3))
+    cov = np.zeros((n, n))
+    hair = gr.to_linear(np.array((0.45, 0.13, 0.17)))
+    alb[4:20, 4:30] = hair                     # a broad island of hair
+    cov[4:20, 4:30] = 1
+    alb[21:23, 4:30] = hair                    # a sliver of hair, its own thin island one texel below
+    cov[21:23, 4:30] = 1
+    alb[34:46, 4:30] = gr.to_linear(np.array((0.08, 0.08, 0.09)))   # black cloth
+    alb[40, 6:28] = hair                       # a trim of the same red on it
+    cov[34:46, 4:30] = 1
+    alb[34:46, 36:60] = gr.to_linear(np.array((0.32, 0.17, 0.18)))  # a dark plate, a faint match of the hue
+    alb[40, 38:58] = gr.to_linear(np.array((0.90, 0.22, 0.27)))     # a bright line on it
+    cov[34:46, 36:60] = 1
+    return alb, np.full((n, n), 0.5), cov
+
+
+def test_a_sliver_of_hair_in_the_glow_colour_does_not_glow_and_trims_and_lines_still_do():
+    alb, lit, cov = _hair_trim_and_plate()
+    s = gr.settings(["--no-shade", "--glow", "#ff2448", "--glow-max-width", "4", "--glow-width", "0",
+                     "--glow-max-area", "1"])
+    _, emission, _ = gr.compose(alb, lit, cov, s)
+    assert emission[21, 16].max() < 0.05     # the hair's sliver: the same red all round, no brighter
+    assert emission[40, 16].max() > 0.5      # the trim on black cloth
+    assert emission[40, 48].max() > 0.5      # the bright line on the dark plate of the same hue
+
+
+def test_the_glow_inside_its_own_hue_is_found_without_scipy():
+    # game_ready's colour step runs inside Blender's own Python, which has numpy and no scipy
+    import ast
+    tree = ast.parse((HERE.parent / "scripts" / "game_ready.py").read_text(encoding="utf-8"))
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree)
+                                             if isinstance(node, ast.ImportFrom) and node.module}
+    assert "scipy" not in imported
+
+
 def test_the_atlas_margin_is_two_texels_at_any_size():
     assert gr.settings([])["uv_margin_px"] == 2
     assert gr.uv_margin(gr.settings(["--atlas", "512"])) == pytest.approx(2 / 512)

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`game_ready.py --glow` no longer lights slivers of hair in the glow's own colour.** A red glow meant for a coat's
+  trims lit the brightest bits of the figure's red hair as scattered flecks: the hair is cut into many thin islands
+  in the atlas, and a thin island of hair passes the width gate as if it were a painted line. A glowing bit whose
+  ring (one to three texels out) is mostly the glow's own hue and that is no brighter than that ring now stays paint;
+  a trim on black cloth and a bright line on a dark plate of the same hue glow as before.
+
 ### Added
 - **`prop_ready.py --glow`: a glow for a model without a rig.** `game_ready.py --glow` needs a skeleton, so a slime,
   a rock creature with ember cracks or a pet before its rig left Finish with base colour and normals alone, and a game

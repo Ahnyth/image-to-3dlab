@@ -136,6 +136,11 @@ FIXED = {
                                    # would put their facets into the normal map (AssetFurnace Support D214)
     "feet_plate_rise": 0.015,      # a cleared plate takes along what lies on it lower than this (its top and rims, a tip
                                    # tilted up off the floor)
+    "glow_ring_same": 0.9,         # a glowing bit with at least this share of its ring (1-3 texels out at 1024) in
+    "glow_ring_contrast": 0.1,     # the glow's own hue and less than this brighter than that ring stays paint: a
+                                   # sliver of red hair (the hair cut into many thin islands passes the width gate),
+                                   # not a trim on black cloth or a bright line on a dark plate of the same hue
+                                   # (the Daemonenhexer's back hair; AssetFurnace Support TODO 208)
     "glow_paint_bright_share": 0.25,  # a glow hue whose bright group is at most this share of its texels ...
     "glow_paint_gap": 0.30,           # ... and this much brighter than the rest is mostly paint: only the bright
                                       # group glows (the Purpur-Samurai's crimson plates: 20 %, 0.42; 25 figures
@@ -622,6 +627,30 @@ def glow_only_bright(mask, srgb, inside, s: dict | None = None):
     return mask * smoothstep(split["at"] - 0.05, split["at"] + 0.05, v), split
 
 
+def glow_off_its_own_hue(mask, srgb, colour, inside, scale: float, s: dict | None = None):
+    """`mask` without the glowing bits that sit in paint of the glow's own hue and are no brighter than it: the
+    bit's ring (`scale` to 3 x `scale` texels out, inside the islands) mostly that hue (`glow_ring_same`) and the bit
+    less than `glow_ring_contrast` brighter than the ring. A trim on black cloth (another colour round it) and a bright
+    line on a dark plate of the same hue (clearly brighter) stay. Numpy only: it runs in Blender's own Python."""
+    s = s or FIXED
+    core = (np.asarray(mask) > 0.5).astype(float)
+    if not core.any():
+        return mask
+    inner = max(1, int(round(scale)))
+    outer = max(inner + 1, int(round(3 * scale)))
+    ring = np.clip(dilate(core, outer) - dilate(core, inner), 0.0, 1.0) * np.asarray(inside, float)
+    same = (accent_mask(srgb, colour) >= 0.3) * ring
+    v = np.asarray(srgb, dtype=np.float64).max(-1)
+    reach = outer + 1  # each texel weighs the ring round its own stretch of the bit
+    ring_n = box_blur(ring, reach)
+    share = box_blur(same, reach) / np.maximum(ring_n, 1e-9)
+    ring_v = box_blur(v * ring, reach) / np.maximum(ring_n, 1e-9)
+    own = (ring_n > 1e-6) & (share >= s["glow_ring_same"]) & (v - ring_v < s["glow_ring_contrast"])
+    vote = box_blur(own * core, inner) / np.maximum(box_blur(core, inner), 1e-9)  # a bit decides as one
+    drop = ((vote > 0.5) & (core > 0)).astype(float)
+    return mask * (1.0 - dilate(drop, 1))
+
+
 def thin_only(mask, max_width: float):
     """`mask` without its parts wider than `max_width` texels (0 keeps everything).
 
@@ -668,7 +697,7 @@ def glow_masks(a_s, inside, keep, s: dict, thin_scale: float, steps: list[int]):
         m, split = glow_only_bright(thin_only(raw, width) * keep, a_s, inside, s)
         if split is not None:
             splits[_hex(c)] = split
-        masks.append(m)
+        masks.append(glow_off_its_own_hue(m, a_s, c, inside, thin_scale, s))
     return masks, splits
 
 
