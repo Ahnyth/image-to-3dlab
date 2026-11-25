@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`game_ready.py --glow` no longer lights slivers of hair in the glow's own colour.** A red glow meant for a coat's
+  trims lit the brightest bits of the figure's red hair as scattered flecks: the hair is cut into many thin islands
+  in the atlas, and a thin island of hair passes the width gate as if it were a painted line. A glowing bit whose
+  ring (one to three texels out) is mostly the glow's own hue and that is no brighter than that ring now stays paint;
+  a trim on black cloth and a bright line on a dark plate of the same hue glow as before.
+
 ### Added
 - **figure_check looks at the shape in the light.** A new check draws the head close up from the front, both
   three-quarter fronts, the sides and below with the figure's own (smooth) normals, lit from the camera as a game
@@ -322,6 +329,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cut), the same figure after Hero hands 4 and 4. A thumb whose tip reaches down among the fingers (Hero hands draw it
   long and spread) is told from a sixth finger by standing apart from their row; on the Sorcerer's grafted hands the
   cut there showed five pieces and the hand was failed for a digit too many it did not have.
+- **`prop_ready.py --glow`: a glow for a model without a rig.** `game_ready.py --glow` needs a skeleton, so a slime,
+  a rock creature with ember cracks or a pet before its rig left Finish with base colour and normals alone, and a game
+  had to key the glow itself. `prop_ready.py --glow COLOUR` (repeatable, with `--glow-strength`, `--glow-width`,
+  `--glow-max-width` and `--glow-max-area`) applies game_ready's body rules to the model's own paint inside its UV
+  islands (the hue, the width gate, the bright split, the 8 % cap and its ladder; any width by default, so eyes glow)
+  and writes the emission map into every LOD, each from its own paint; the record gives each LOD's glowing share and
+  names a glow that lit nothing.
 - **`game_ready.py --hand-protect`: the hands keep their fingers when the figure is thinned.** Thinned evenly to 14,000
   triangles, a figure's built five-finger hands kept about 200 triangles each and read as thin flat claws. Like
   `--head-protect` for the head, the hand and finger bones' skin now resists `--decimate-to` at the strength given
