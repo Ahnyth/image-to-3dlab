@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero face: no ledge where hair beside the face ends at the seam.** The face rises in full to the figure's hair
+  beside it, and where that hair ended at the seam (the tip of a side lock) the face dropped back to the cheek at once:
+  a ledge along the lock's underside, painted with the picture's dark hair and in shadow, drew a black stroke from the
+  Nachtschwinge's eye toward its ear seen from three quarters. That rise now grows at most 63 degrees (`TAPER_SLOPE`) from where
+  the face rises less at the seam (`hero_face.taper_rise`), so the lock's end slopes into the face; face.json reports
+  `seam_tapered_max`.
+- **Hero face: a lighter face spends its triangles on the face, not on its hidden edge.** The decimation kept every
+  point of the face's outline, the skirt hidden under the figure's cut edge: on the Nachtschwinge 392 points, where
+  523 of its 1,500 triangles went, and its cheeks and nose came out in large flat facets. The outline is now first
+  thinned where it runs straight, within a pixel of its line (`hero_face.thin_border`); the same 1,500 triangles
+  leave 202 at the edge, and the face's shading strays from the fine face's by more than 0.05 on 12 % of it instead
+  of 21 %.
 - **Hero face: the seam keeps off the head's own edge.** Where the figure's front falls away behind the head's edge
   (the jaw over the neck), a seam run out to that edge carried the depth behind it in as the surface the new face
   meets: on one figure the face lay up to 1.4 cm under the jaw's cut edge at the jaw's corner, the jaw's coarse facets

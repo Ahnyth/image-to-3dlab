@@ -1201,3 +1201,62 @@ def test_the_seam_keeps_off_the_heads_own_edge_where_the_figure_falls_away_behin
     strand[lower & (r >= 0.025) & (r <= 0.0285)] = 0.04            # a strand 2 cm in front, just inside the seam
     same = hf.keep_off_steps({**window, "depth": strand})
     assert same["step_cut_share"] == 0.0 and np.array_equal(same["mask"], window["mask"])
+
+
+def outline_points(part):
+    """PART's points on its outline (edges of one triangle only) and those edges."""
+    f = np.asarray(part["faces"])
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    found, counts = np.unique(edges, axis=0, return_counts=True)
+    return np.unique(found[counts == 1]), found[counts == 1]
+
+
+def test_a_face_made_lighter_spends_its_triangles_inside_and_keeps_its_outline_within_the_tolerance():
+    # the Nachtschwinge's face as set in: 392 of its points lay on its outline, the skirt hidden under the figure's cut
+    # edge, and the decimation kept every one, so 523 of its 1,500 triangles touched that hidden edge and its cheeks and
+    # nose came out in large flat facets (round 31 of the AssetFurnace Support notes). Thinned along its straight runs
+    # first, the outline stays within the tolerance of its line and gives its triangles to the face.
+    v, f = strand_step(half=0.035, step=0.0002)
+    window = disk_window(0.03, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    pixel = window["pixel"]
+    relief = hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME, rounding=0.0)
+    fine, _ = hh.cut_part_values(relief, -(hf.window_values(window, relief["positions"]) + hf.SKIRT_PIXELS * pixel))
+    plain = hf.lighter(fine, 0.1)
+    thin = hf.lighter(fine, 0.1, border=pixel)
+    assert len(thin["faces"]) == pytest.approx(len(plain["faces"]), rel=0.02)
+    old, _ = outline_points(fine)
+    kept, edges = outline_points(thin)
+    assert len(kept) < 0.5 * len(outline_points(plain)[0])
+    a, b = thin["positions"][edges[:, 0], :2], thin["positions"][edges[:, 1], :2]
+    q = fine["positions"][old, :2][:, None, :]
+    t = np.clip(((q - a) * (b - a)).sum(-1) / np.maximum(((b - a) ** 2).sum(-1), 1e-20), 0.0, 1.0)
+    apart = np.linalg.norm(q - (a + t[..., None] * (b - a)), axis=-1).min(axis=1)
+    assert apart.max() <= pixel * 1.01                                          # the outline where it was
+    inside = ~np.isin(thin["faces"], kept).any(axis=1)
+    assert inside.sum() > 1.2 * (~np.isin(plain["faces"], outline_points(plain)[0]).any(axis=1)).sum()
+    assert thin["uvs"].shape == (len(thin["positions"]), 2)
+
+
+def test_the_face_rising_in_full_to_hair_beside_it_tapers_where_that_hair_ends_at_the_seam():
+    # the Nachtschwinge's left temple: the face rose in full to the side lock it stands in for (`beside`, round 29),
+    # 8 mm at the seam, and just below the lock's tip, where the seam meets the cheek, not at all: a ledge of the face
+    # along the lock's underside, painted with the picture's dark hair and in shadow, a black stroke from the eye's
+    # outer corner seen from three quarters (round 31 of the AssetFurnace Support notes). Tapered at 45 degrees from
+    # where the face rises less at the seam, no ledge; away from the lock's end and off the hair nothing changes.
+    pixel = 0.001
+    rows, cols = np.mgrid[0:60, 0:60]
+    field = (29.5 - cols) * pixel                    # the seam between columns 29 and 30, the face to its left
+    new = np.zeros((60, 60))
+    target = np.where(rows < 30, 0.008, 0.0)         # the lock beside the face above row 30, the cheek below ...
+    target[40:46] = 0.008                            # ... and a cheek standing in front further down: not hair
+    beside = rows < 30
+    out = hf.taper_rise(target, new, beside, field, pixel, 20)
+    slope = hf.TAPER_SLOPE * pixel
+    assert np.abs(np.diff(out[:36, 29])).max() <= slope * (1 + 1e-6)           # along the seam at most the slope
+    assert np.abs(np.diff(out[:30, 29])).max() == pytest.approx(slope)
+    calm = int(30 - np.ceil(0.008 / slope))
+    assert np.array_equal(out[:calm], target[:calm])                           # away from the lock's end as it was
+    assert np.array_equal(out[30:], target[30:])                               # off the hair as it was
+    assert (out <= target).all()
+    assert np.array_equal(hf.taper_rise(target, new, np.zeros_like(beside), field, pixel, 20), target)
+

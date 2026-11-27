@@ -875,6 +875,49 @@ def rise_target(own: np.ndarray, surface: np.ndarray, carried: np.ndarray, new: 
     return out
 
 
+TAPER_SLOPE = 2.0      # where the face rises in full to hair beside it, that rise grows by at most this much depth per
+                       # unit of way from where it rises less at the seam (63 degrees, `taper_rise`): at 1 (45 degrees)
+                       # the Nachtschwinge's side locks' cut edges stood over the tapered face along 14 % of its seam
+
+
+def taper_rise(target: np.ndarray, new: np.ndarray, beside: np.ndarray, field: np.ndarray, pixel: float,
+               reach: int) -> np.ndarray:
+    """TARGET (`rise_target`) where BESIDE (the figure's hair beside the face) with the face's rise over NEW (its own
+    depth) grown at most TAPER_SLOPE per unit of way from the seam band (FIELD, the signed distance to the seam, within
+    SKIRT_PIXELS of it) wherever it rises less there: a lower envelope of 45 degree cones, out to REACH pixels inside
+    the seam. Elsewhere TARGET as it is.
+
+    The face rose in full to the Nachtschwinge's left side lock it stands in for, 8 mm at the seam, and just below the
+    lock's tip, where the seam meets the cheek, not at all: a ledge of the face along the lock's underside, painted
+    with the picture's dark hair and in shadow, a black stroke from the eye's outer corner seen from three quarters
+    (round 31 of the AssetFurnace Support notes). Tapered, the lock's end slopes into the face."""
+    target = np.asarray(target, dtype=np.float64)
+    beside = np.asarray(beside, dtype=bool)
+    if not beside.any():
+        return target
+    new = np.asarray(new, dtype=np.float64)
+    field = np.asarray(field, dtype=np.float64) / pixel
+    with np.errstate(invalid="ignore"):
+        band = (field > -(SKIRT_PIXELS + NEAR_PIXELS)) & (field <= reach) & np.isfinite(new) & np.isfinite(target)
+        rise = np.where(band, np.maximum(target - new, 0.0), np.inf)
+    env = np.where(band & (np.abs(field) <= SKIRT_PIXELS), rise, np.inf)
+    step = TAPER_SLOPE * pixel
+    rows, cols = env.shape
+    for _ in range(int(reach) + SKIRT_PIXELS + NEAR_PIXELS):
+        grown = env.copy()
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            to_r, from_r = slice(max(dr, 0), rows + min(dr, 0)), slice(max(-dr, 0), rows + min(-dr, 0))
+            to_c, from_c = slice(max(dc, 0), cols + min(dc, 0)), slice(max(-dc, 0), cols + min(-dc, 0))
+            np.minimum(grown[to_r, to_c], env[from_r, from_c] + step * np.hypot(dr, dc), out=grown[to_r, to_c])
+        if np.array_equal(grown, env):
+            break
+        env = grown
+    lower = band & beside & (rise > env)
+    out = target.copy()
+    out[lower] = new[lower] + env[lower]
+    return out
+
+
 def seam_surface(own: np.ndarray, across: float, least: float = 0.0) -> np.ndarray:
     """OWN (the figure's front depth map) with what stands off it narrower than ACROSS pixels, and more than LEAST in
     front of the surface round it, replaced by that surface: such a strand is found where the depth stands above its
@@ -1404,7 +1447,88 @@ LIGHT_AGG = 3            # how hard `lighter` decimates (fast_simplification's a
                          # stopped at 3,321 of 4,778 triangles where 1,500 were asked; at 3 it reached 1,493, smooth
 
 
-def lighter(part: dict, keep: float, agg: float = LIGHT_AGG) -> dict:
+def thin_border(points: np.ndarray, faces: np.ndarray, tolerance: float) -> tuple[np.ndarray, np.ndarray]:
+    """(POINTS, FACES) with each outline loop thinned where it runs straight: walking the loop, a point is merged into
+    the last point kept while the line from that point to the next stays within TOLERANCE of every outline point merged
+    on the way (in 3D, so the outline keeps its depth too). A merge that would turn a triangle over or join two points
+    sharing more than the triangle between them is left out. Points no face uses any more are dropped.
+
+    The decimation keeps every outline point (`lighter`): on the Nachtschwinge's face as set in, 392 points along its
+    skirt, the edge hidden under the figure's cut edge, where 523 of its 1,500 triangles went, and its cheeks and nose
+    came out in large flat facets (round 31 of the AssetFurnace Support notes)."""
+    p = np.asarray(points, dtype=np.float64)
+    f = np.array(faces, dtype=np.int64)
+    directed = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    key = directed[:, 0] * len(p) + directed[:, 1]
+    outline = directed[~np.isin(key, directed[:, 1] * len(p) + directed[:, 0])]
+    _, counts = np.unique(outline[:, 0], return_counts=True)
+    if not len(outline) or (counts > 1).any():          # no outline, or one pinched into a figure eight: as it is
+        return p, f
+    nxt = dict(zip(outline[:, 0].tolist(), outline[:, 1].tolist()))
+    owner = [set() for _ in range(len(p))]               # each point's triangles
+    for index, tri in enumerate(f.tolist()):
+        for corner in tri:
+            owner[corner].add(index)
+    alive = np.ones(len(f), bool)
+
+    def apart(q, a, b):
+        ab = b - a
+        t = np.clip(((q - a) @ ab) / max(float(ab @ ab), 1e-30), 0.0, 1.0)
+        return np.linalg.norm(q - (a + t[:, None] * ab), axis=1)
+
+    seen = set()
+    for start in nxt:
+        if start in seen:
+            continue
+        loop = [start]
+        while nxt[loop[-1]] != start and len(loop) <= len(nxt):
+            loop.append(nxt[loop[-1]])
+        seen.update(loop)
+        if len(loop) < 4:
+            continue
+        anchor, merged = loop[0], []
+        for v in loop[1:]:
+            after = nxt.get(v)
+            if after is None or after == anchor:
+                break
+            on_way = np.array([p[u] for u in merged + [v]])
+            if apart(on_way, p[anchor], p[after]).max() > tolerance:
+                anchor, merged = v, []
+                continue
+            ring = [t for t in owner[v] if alive[t]]
+            gone = [t for t in ring if anchor in f[t]]
+            near_v = {c for t in ring for c in f[t]} - {v}
+            near_a = {c for t in owner[anchor] if alive[t] for c in f[t]} - {anchor}
+            if len(gone) != 1 or len(near_v & near_a) != 1:
+                anchor, merged = v, []
+                continue
+            moved = [t for t in ring if t != gone[0]]
+            ok = True
+            for t in moved:
+                tri = p[f[t]]
+                n0 = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+                tri = p[np.where(f[t] == v, anchor, f[t])]
+                n1 = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+                if n0 @ n1 <= 0.05 * float(n0 @ n0):
+                    ok = False
+                    break
+            if not ok:
+                anchor, merged = v, []
+                continue
+            alive[gone[0]] = False
+            for t in moved:
+                f[t][f[t] == v] = anchor
+                owner[anchor].add(t)
+            nxt[anchor] = after
+            merged.append(v)
+    f = f[alive]
+    used = np.unique(f)
+    index = np.full(len(p), -1, dtype=np.int64)
+    index[used] = np.arange(len(used))
+    return p[used], index[f]
+
+
+def lighter(part: dict, keep: float, agg: float = LIGHT_AGG, border: float | None = None) -> dict:
     """PART (a relief, two triangles on every square of its grid) with about KEEP of its triangles, given up where
     the surface is flat: a quadric decimation (`fast_simplification`) that leaves the outline's points where they are,
     folds flat skin into large triangles and keeps the fine layout's points along an edge in the surface (a crease,
@@ -1419,7 +1543,10 @@ def lighter(part: dict, keep: float, agg: float = LIGHT_AGG) -> dict:
 
     The decimation moves the points it keeps, so what each point carries is carried along: texture coordinates that
     follow the points' place across the front (a picture painting the face, `picture_uvs`) are worked out again for
-    the new points, anything else (normals, skin weights) is taken from the nearest point it had."""
+    the new points, anything else (normals, skin weights) is taken from the nearest point it had.
+
+    With BORDER (a length) the outline is first thinned where it runs straight, staying within BORDER of its line
+    (`thin_border`): kept point for point, it took a third of the Nachtschwinge's triangles along an edge nobody sees."""
     faces = np.asarray(part["faces"], dtype=np.int64)
     count = int(round(keep * len(faces)))
     if count >= len(faces) or count < 2:
@@ -1427,7 +1554,12 @@ def lighter(part: dict, keep: float, agg: float = LIGHT_AGG) -> dict:
     import fast_simplification
 
     before = np.asarray(part["positions"], dtype=np.float64)
-    points, faces = fast_simplification.simplify(before, faces, target_count=count, agg=agg, preserve_border=True)
+    points = before
+    if border is not None and border > 0:
+        points, faces = thin_border(before, faces, border)
+    if count < len(faces):
+        points, faces = fast_simplification.simplify(points, faces, target_count=count, agg=agg,
+                                                     preserve_border=True)
     points = np.asarray(points, dtype=np.float64)
     out = {**part, "positions": points, "faces": np.asarray(faces, dtype=np.int64)}
     carried = [key for key in ("uvs", "normals", "dense") if part.get(key) is not None
@@ -1552,6 +1684,13 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             carried = seam_target(surface, window["field"], int(np.ceil(blend / pixel)) + 1, pixel)
             target = rise_target(spread(own, NEAR_PIXELS), surface, carried, new_depth, OVER_SHARE * width,
                                  window.get("beside"))
+            if window.get("beside") is not None:      # no ledge where hair beside the face ends at the seam
+                full = target
+                target = taper_rise(full, new_depth, window["beside"], window["field"], pixel,
+                                    int(np.ceil(blend / pixel)))
+                with np.errstate(invalid="ignore"):
+                    lowered = np.where(np.isfinite(full), full - target, np.nan)
+                    report["seam_tapered_max"] = float(np.nanmax(lowered, initial=0.0))
         out_parts.append(cut)
         rims.append(rim)
     if target is None:
@@ -1569,8 +1708,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     continued = sample(np.where(np.isfinite(continued), continued, np.nan), box, pixel, new["positions"],
                        outside=np.nan)
     new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap)}
-    if keep is not None:      # lighter where the face, as it now lies in the figure, is flat; the seam stays fine
-        new = lighter(new, keep)
+    if keep is not None:      # lighter where the face, as it now lies in the figure, is flat; the seam stays fine,
+        new = lighter(new, keep, border=pixel)      # its hidden skirt's edge within a pixel of its line
     # the seam closed: where the figure's cut edge still stands in front of the face (a strand's cut end, a rise past
     # the cap), its own surface eases back onto the face
     under, _ = depth_map(new["positions"], new["faces"], box, pixel)

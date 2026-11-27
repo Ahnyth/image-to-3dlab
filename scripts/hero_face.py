@@ -490,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             cut_parts, face_out, report, offset = set_in(step, target / finer)
             run.say(f"graft: {model.name}: the new face made lighter to match the head round it: "
                     f"{len(face_out['faces'])} triangles for {finer} (the head's density allows {target}), its "
-                    "outline and the edges where hair crosses it as fine as before")
+                    "outline thinned within a pixel where it runs straight, the edges where hair crosses it as fine as before")
         report["face_faces_target"] = target
         report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]
         report["relief_step_pixels"] = round(step / window["pixel"], 2)
