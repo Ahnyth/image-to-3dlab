@@ -82,6 +82,10 @@ STRAND_SHARE = 0.08    # a ridge of the figure's front narrower than this share 
                        # (a strand): the face goes on into the surface beside it, not up to it (`seam_surface`)
 SKIRT_PIXELS = 3       # the new face reaches this many pixels past the seam, under the figure's cut edge ...
 TUCK_SHARE = 0.005     # ... and lies this share of the head's width behind the figure's surface there
+STEP_SHARE = 0.1       # the figure's front falling away outward by this share of the head's width within two pixels is
+                       # the head's own edge over what lies behind it, the jaw over the neck: the seam keeps off it
+                       # (`keep_off_steps`); the Nachtschwinge's jaw stood 1.2 to 3.3 cm over its neck, its cheeks over
+                       # their side locks 0.6 to 1 cm, where the seam runs out to the old cheek's edge (round 31)
 SEAM_BAND_SHARE = 0.12  # where the figure still stands in front of the new face at the seam (a strand's cut end, or a
                         # rise past EASE_SHARE), its own surface eases back onto the face over this share of the head's
                         # width outside the seam (`ease_onto`)
@@ -489,12 +493,61 @@ def skin_seam(window: dict, part: dict) -> dict:
             "beside": beside_face(grown, is_skin, BESIDE_REACH_SHARE * width / pixel)}
 
 
+def keep_off_steps(window: dict) -> dict:
+    """WINDOW with its seam kept SKIRT_PIXELS + NEAR_PIXELS inside every step near it where the figure's front falls
+    away outward by STEP_SHARE of the head's width or more within two pixels, both as it is and without its strands
+    (`seam_surface`): the head's own edge over what lies behind it. "step_cut_share" says how much of the window went.
+
+    A seam on such an edge (the jaw's, over the neck) carried the neck's depth in (`seam_target`): at the
+    Nachtschwinge's jaw corner the new face lay up to 1.4 cm under the jaw's cut edge, the jaw's coarse facets were
+    eased back onto it by up to 4.6 mm (`ease_onto`), and the face showed through that dent from the side and from three
+    quarters as a pale patch with a hard edge (round 31 of the AssetFurnace Support notes). Kept inside the edge, the
+    seam has the jaw's own surface outside it to carry in, as it has toward the chin. A strand's edge (no step once the
+    strands are gone), a step up outward (a lock, a hood or a brim in front of the face) and the figure's outline
+    against nothing stay as they are, and so does a step shorter than the band it would cut (2 * (SKIRT_PIXELS +
+    NEAR_PIXELS) pixels): a gap between a side lock and the cheek, where the seam bit a round notch into the
+    Nachtschwinge's cheek and the lock's cut end beside it was eased back 5.5 mm."""
+    mask, pixel, width = window["mask"], window["pixel"], window["width"]
+    reach = SKIRT_PIXELS + NEAR_PIXELS
+    field = window["field"] / pixel
+    depth = np.asarray(window["depth"], dtype=np.float64)
+    surface = seam_surface(depth, STRAND_SHARE * width / pixel)
+    rows, cols = mask.shape
+    drop = np.zeros(mask.shape)
+    with np.errstate(invalid="ignore"):
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if not (dr or dc):
+                    continue
+                at = (slice(max(-dr, 0), rows - max(dr, 0)), slice(max(-dc, 0), cols - max(dc, 0)))
+                by = (slice(max(dr, 0), rows - max(-dr, 0)), slice(max(dc, 0), cols - max(-dc, 0)))
+                # how far the neighbour (dr, dc) lies behind, as the front is and without its strands
+                step = np.minimum(surface[at] - surface[by], depth[at] - depth[by])
+                out = (field[by] < field[at]) & np.isfinite(step)    # ... where it lies further out
+                drop[at] = np.maximum(drop[at], np.where(out, step, 0.0))
+    steps = (np.abs(field) < reach) & (drop >= STEP_SHARE * width)
+    label, count = ndimage.label(steps, structure=np.ones((3, 3)))
+    size = ndimage.sum(steps, label, range(1, count + 1))
+    steps = np.isin(label, 1 + np.flatnonzero(size >= 2 * reach))     # an edge, not a gap between a lock and a cheek
+    if not steps.any():
+        return {**window, "step_cut_share": 0.0}
+    cut = ndimage.distance_transform_edt(~steps) <= reach
+    cut = ndimage.gaussian_filter(cut.astype(np.float64), SMOOTH_SHARE * width / pixel / 2) > 0.5
+    label, _ = ndimage.label(mask & ~cut)
+    if not label[window["seed"]]:
+        return {**window, "step_cut_share": 0.0}
+    kept = ndimage.binary_fill_holes(label == label[window["seed"]])
+    return {**window, "mask": kept, "field": signed_distance(kept, pixel),
+            "step_cut_share": float((mask & ~kept).sum() / max(int(mask.sum()), 1))}
+
+
 def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray, part: dict | None = None) -> dict:
     """Where the face lies and where its seam runs, measured on a figure (its mesh and which vertices are its head,
     from the rig's head bones): {"box", "pixel", "field" (signed distance to the seam, positive inside), "depth" and
     "outline" (the figure's front depth and the face's reach on it, for a picture), "seed" (the nose), "width" (the
     head's), "floor" (the brim's underside or None), "axis_z" (the head's middle depth)}. With PART (the figure's part
-    those are, painted) the seam runs out over its own skin to the old cheek's edge (`skin_seam`)."""
+    those are, painted) the seam runs out over its own skin to the old cheek's edge (`skin_seam`); either
+    way it keeps off the head's own edge where the figure falls away behind it, the jaw over the neck (`keep_off_steps`)."""
     v = np.asarray(vertices, dtype=np.float64)
     hv = v[np.asarray(head, dtype=bool)]
     if len(hv) < 2 * MIN_SLICE_POINTS:
@@ -525,7 +578,7 @@ def face_window(vertices: np.ndarray, faces: np.ndarray, head: np.ndarray, part:
     window = {"box": box, "pixel": pixel, "field": signed_distance(mask, pixel), "depth": depth, "outline": outline,
               "mask": mask, "seed": seed, "width": width, "floor": floor, "rows": (top, chin),
               "axis_z": float(np.median(hv[below, 2])), "centre_x": centre_x}
-    return window if part is None else skin_seam(window, part)
+    return keep_off_steps(window if part is None else skin_seam(window, part))
 
 
 FAR = 1e6                  # how far outside the window a point off its picture counts: finite, so a cut between it

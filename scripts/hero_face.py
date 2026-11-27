@@ -334,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"{window['grown_share']:.0%} (never over hair, a hood or a collar; toward the chin as it was)")
     else:
         run.say("measure: the figure carries no paint to tell its skin by: the seam keeps its margin all round")
+    if window.get("step_cut_share"):
+        run.say(f"measure: the seam keeps {hf.SKIRT_PIXELS + hf.NEAR_PIXELS} pixels inside the head's own edge where the "
+                f"figure falls away behind it (the jaw over the neck): {window['step_cut_share']:.1%} of the window")
     if window["floor"] is None:
         run.flag("no hat brim found above the face: the seam's top follows the hairline's reach; check window.png")
     for doubt in hf.window_doubts(window):
@@ -460,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                "window": {"bounds": [round(b, 5) for b in bounds], "head_width": window["width"],
                           "brim_underside": window["floor"], "seed_pixel": list(window["seed"]),
                           "seam_grown_share": window.get("grown_share", 0.0),
+                          "seam_step_cut_share": window.get("step_cut_share", 0.0),
                           "skin_lab": None if window.get("skin") is None else [round(float(v), 1)
                                                                               for v in window["skin"]]},
                "placement": {"apart_from_old_face": cost, "scale": scale, "transform": tf.tolist()}, "models": {}}

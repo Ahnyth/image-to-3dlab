@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero face: the seam keeps off the head's own edge.** Where the figure's front falls away behind the head's edge
+  (the jaw over the neck), a seam run out to that edge carried the depth behind it in as the surface the new face
+  meets: on one figure the face lay up to 1.4 cm under the jaw's cut edge at the jaw's corner, the jaw's coarse facets
+  were laid back onto it by up to 4.6 mm, and the face showed through that dent from the side and from three quarters
+  as a pale patch with a hard edge, with ragged bits at the jaw from the front. The seam now keeps six pixels inside
+  every such step near it (a fall of a tenth of the head's width within two pixels, both as the front is and without
+  its strands, at least twelve pixels long); a lock, a hood or a brim in front of the face, a strand's edge and the
+  outline against nothing leave it where it was. The same figure's game model: the old cut edge over the face 11.4 %
+  of the seam -> 0 %, the longest new crease in the light 44 -> 19 px (limit 40), the patch gone.
 - **Hero face: a face made lighter keeps its seam.** The face was made lighter before it was cut along its seam and
   laid under the figure's cut edge, so large flat triangles crossed the seam: the cut followed their edges and the
   tuck up to the figure moved only their few points. On one figure the old cut edge hung over the face along 17.5 %

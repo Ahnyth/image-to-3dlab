@@ -1173,3 +1173,31 @@ def test_the_face_rises_fully_to_the_hair_beside_it_and_not_to_a_strand_across_i
     _, cols = np.nonzero(window["beside"])
     assert len(cols) and x[cols].min() > 0.02 - reach - window["pixel"]       # the hair beside the face, nothing else
     assert window["beside"][window["mask"] & (x[None, :] > 0.021)].mean() > 0.9
+
+
+def test_the_seam_keeps_off_the_heads_own_edge_where_the_figure_falls_away_behind_it():
+    # a seam on the jaw's edge over the neck carried the neck's depth in: the Nachtschwinge's face lay up to 1.4 cm
+    # under the jaw's cut edge, the jaw's facets were eased back onto it, and the face showed through the dent from the
+    # side as a pale patch with a hard edge (round 31 of the AssetFurnace Support notes)
+    window = disk_window(0.029, width=0.1, pixel=0.001)          # the seam one pixel inside the jaw's edge all round
+    rows, cols = window["mask"].shape
+    x = window["box"][0] + (np.arange(cols) + 0.5) * window["pixel"]
+    y = window["box"][3] - (np.arange(rows) + 0.5) * window["pixel"]
+    r = np.hypot(x[None, :], y[:, None])
+    lower = np.broadcast_to(y[:, None] < -0.005, (rows, cols))
+    depth = np.where(r <= 0.03, 0.02, 0.02 - 0.3 * (r - 0.03))   # above: the surface runs on, gently turning away
+    depth[lower & (r > 0.03)] = 0.0                               # below: the neck 2 cm behind the jaw's edge
+    reach = hf.SKIRT_PIXELS + hf.NEAR_PIXELS
+    out = hf.keep_off_steps({**window, "depth": depth})
+    assert out["step_cut_share"] > 0
+    assert not (out["mask"] & lower & (0.03 - r < reach * window["pixel"])).any()   # kept off the jaw's edge
+    upper = np.broadcast_to(y[:, None] > 0.01, (rows, cols))
+    assert np.array_equal(out["mask"] & upper, window["mask"] & upper)              # no step above: as it was
+    assert np.array_equal(out["field"], hf.signed_distance(out["mask"], window["pixel"]))
+    for outside in (0.04, 0.016):        # a lock or a hood in front of the face's edge, or a small step: as it was
+        same = hf.keep_off_steps({**window, "depth": np.where(r <= 0.03, 0.02, outside)})
+        assert same["step_cut_share"] == 0.0 and np.array_equal(same["mask"], window["mask"])
+    strand = np.where(r <= 0.03, 0.02, 0.02 - 0.3 * (r - 0.03))
+    strand[lower & (r >= 0.025) & (r <= 0.0285)] = 0.04            # a strand 2 cm in front, just inside the seam
+    same = hf.keep_off_steps({**window, "depth": strand})
+    assert same["step_cut_share"] == 0.0 and np.array_equal(same["mask"], window["mask"])
