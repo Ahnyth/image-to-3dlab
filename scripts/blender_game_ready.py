@@ -1354,6 +1354,22 @@ def emit_base_colour(objs, white: bool = False) -> None:
             nt.links.new(emit.outputs[0], out.inputs["Surface"])
 
 
+def atlas_surface(ob, size: int) -> dict:
+    """The surface as compose's glow sees it (`gr.atlas_surface`): each atlas texel's triangle and the triangles'
+    corners joined across the UV seams, so a glowing bit's ring is measured on the figure, not in the atlas."""
+    me = ob.data
+    me.calc_loop_triangles()
+    n = len(me.loop_triangles)
+    loops, verts = np.empty(n * 3, np.int32), np.empty(n * 3, np.int32)
+    me.loop_triangles.foreach_get("loops", loops)
+    me.loop_triangles.foreach_get("vertices", verts)
+    uv = np.empty(len(me.loops) * 2, np.float32)
+    me.uv_layers["UVMap"].data.foreach_get("uv", uv)
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    return gr.atlas_surface(uv.reshape(-1, 2)[loops].reshape(n, 3, 2), co.reshape(-1, 3), verts.reshape(n, 3), size)
+
+
 def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None,
                colour_objs: list | None = None, normal_objs: list | None = None,
                glow_head: list[str] | None = None) -> tuple[dict, bool]:
@@ -1577,7 +1593,8 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
         exclude = gr.downsample(head_bake[..., 0:1] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
     if head_bake is not None and glow_head:
         on_head = gr.downsample(head_bake[..., 1:2] * inside, k)[..., 0] / np.maximum(cov, 1e-6)
-    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude, head=on_head)
+    surface = atlas_surface(ob, s["atlas"]) if s["glow"] else None
+    colour, emission, stats = gr.compose(alb, lit, cov, s, exclude=exclude, head=on_head, surface=surface)
     log("colour:", stats)
     p_alb = work / f"{name}_albedo.png"
     gr.write_png(p_alb, colour)

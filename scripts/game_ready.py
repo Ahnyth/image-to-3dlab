@@ -141,6 +141,9 @@ FIXED = {
                                    # sliver of red hair (the hair cut into many thin islands passes the width gate),
                                    # not a trim on black cloth or a bright line on a dark plate of the same hue
                                    # (the Daemonenhexer's back hair; AssetFurnace Support TODO 208)
+    "glow_surface_same": 0.8,      # ... or at least this share of its ring on the surface (its own and neighbouring
+                                   # triangles, across the UV seams): wider, it takes in the hair's dark shadows, which
+                                   # carry too little hue to match (round 31 of the AssetFurnace Support notes)
     "glow_paint_bright_share": 0.25,  # a glow hue whose bright group is at most this share of its texels ...
     "glow_paint_gap": 0.30,           # ... and this much brighter than the rest is mostly paint: only the bright
                                       # group glows (the Purpur-Samurai's crimson plates: 20 %, 0.42; 25 figures
@@ -627,25 +630,103 @@ def glow_only_bright(mask, srgb, inside, s: dict | None = None):
     return mask * smoothstep(split["at"] - 0.05, split["at"] + 0.05, v), split
 
 
-def glow_off_its_own_hue(mask, srgb, colour, inside, scale: float, s: dict | None = None):
+def face_map(uv_tris, size: int, grow: int = 1):
+    """Which triangle covers each texel of a `size` atlas, rows from the bottom as Blender bakes them (-1: none).
+    `uv_tris` is (n, 3, 2) in 0..1. A texel whose centre lies in no triangle takes a neighbour's, up to `grow` texels
+    out (a part-covered texel at an island's rim); a triangle too small to hold a texel centre marks the one at its
+    middle."""
+    faces = np.full((size, size), -1, np.int64)
+    pts = np.asarray(uv_tris, dtype=np.float64) * size - 0.5  # texel centres at whole numbers
+    for i, (a, b, c) in enumerate(pts):
+        lo = np.maximum(np.ceil(np.minimum(np.minimum(a, b), c) - 1e-9), 0).astype(int)
+        hi = np.minimum(np.floor(np.maximum(np.maximum(a, b), c) + 1e-9), size - 1).astype(int)
+        d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+        if (hi >= lo).all() and abs(d) > 1e-12:
+            ys, xs = np.mgrid[lo[1]:hi[1] + 1, lo[0]:hi[0] + 1]
+            w0 = ((b[1] - c[1]) * (xs - c[0]) + (c[0] - b[0]) * (ys - c[1])) / d
+            w1 = ((c[1] - a[1]) * (xs - c[0]) + (a[0] - c[0]) * (ys - c[1])) / d
+            hit = (w0 >= -1e-6) & (w1 >= -1e-6) & (1.0 - w0 - w1 >= -1e-6)
+            if hit.any():
+                faces[ys[hit], xs[hit]] = i
+                continue
+        x, y = np.clip(np.round((a + b + c) / 3).astype(int), 0, size - 1)
+        if faces[y, x] < 0:
+            faces[y, x] = i
+    for _ in range(grow):
+        plus = faces + 1  # 0 is "none", which _shift brings in at the edges
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            near = _shift(plus, dy, dx)
+            take = (faces < 0) & (near > 0)
+            faces[take] = near[take] - 1
+    return faces
+
+
+def weld(positions, tris, tol: float = 1e-5):
+    """`tris` (n, 3 vertex indices) with the vertices at one place (within `tol`) made one: a mesh split along its UV
+    seams joined again, so the triangles on both sides of a seam share their corners."""
+    key = np.round(np.asarray(positions, dtype=np.float64) / tol).astype(np.int64)
+    _, inverse = np.unique(key, axis=0, return_inverse=True)
+    return inverse.reshape(-1)[np.asarray(tris)]
+
+
+def atlas_surface(uv_tris, positions, tris, size: int) -> dict:
+    """What the glow needs to know of the surface (`glow_off_its_own_hue`): each texel's triangle in a `size` atlas
+    (`face_map`) and the triangles' corners joined across the UV seams (`weld`)."""
+    return {"faces": face_map(uv_tris, size), "tris": weld(positions, tris)}
+
+
+def surface_ring(ring, same, v, surface: dict):
+    """Per texel, over the `ring` texels of its own triangle and of the triangles that share a corner with it on the
+    surface (`atlas_surface`), wherever in the atlas they lie: (their number, the share of `same` among them, their
+    mean `v`). A triangle's own texels weigh three times, an edge neighbour's twice, a corner neighbour's once."""
+    faces, tris = np.asarray(surface["faces"]), np.asarray(surface["tris"])
+    if faces.shape != np.shape(v):
+        raise ValueError(f"the face map is {faces.shape}, the atlas {np.shape(v)}")
+    f = faces.ravel()
+    sel = (np.asarray(ring).ravel() > 0) & (f >= 0)
+    n_tri = len(tris)
+    sums = np.stack([np.bincount(f[sel], weights=np.asarray(w, dtype=np.float64).ravel()[sel], minlength=n_tri)
+                     for w in (np.ones(np.shape(v)), same, v)], axis=1)
+    corners = np.zeros((int(tris.max()) + 1 if n_tri else 0, 3))
+    for k in range(3):
+        for j in range(3):
+            corners[:, j] += np.bincount(tris[:, k], weights=sums[:, j], minlength=len(corners))
+    near = corners[tris].sum(axis=1)
+    out = np.zeros(faces.shape + (3,))
+    hit = faces >= 0
+    out[hit] = near[faces[hit]]
+    n = out[..., 0]
+    return n, out[..., 1] / np.maximum(n, 1e-9), out[..., 2] / np.maximum(n, 1e-9)
+
+
+def glow_off_its_own_hue(mask, srgb, colour, inside, scale: float, s: dict | None = None, surface: dict | None = None):
     """`mask` without the glowing bits that sit in paint of the glow's own hue and are no brighter than it: the
-    bit's ring (`scale` to 3 x `scale` texels out, inside the islands) mostly that hue (`glow_ring_same`) and the bit
-    less than `glow_ring_contrast` brighter than the ring. A trim on black cloth (another colour round it) and a bright
-    line on a dark plate of the same hue (clearly brighter) stay. Numpy only: it runs in Blender's own Python."""
+    bit's ring mostly that hue (`glow_ring_same`) and the bit less than `glow_ring_contrast` brighter than the ring.
+    A trim on black cloth (another colour round it) and a bright line on a dark plate of the same hue (clearly
+    brighter) stay. The ring is `scale` to 3 x `scale` texels out in the atlas; with `surface` (`atlas_surface`) a
+    second ring is measured on the surface, the texels from `scale` out in the bit's own triangles and the triangles
+    round them, across the UV seams, judged at `glow_surface_same`; a bit either ring finds in its own hue stays paint.
+    Hair is cut into many thin islands, and next to a sliver of it the atlas holds whatever was packed there, or
+    nothing at all (TODO 208 of the AssetFurnace Support notes). Numpy only: it runs in Blender's own Python."""
     s = s or FIXED
     core = (np.asarray(mask) > 0.5).astype(float)
     if not core.any():
         return mask
     inner = max(1, int(round(scale)))
     outer = max(inner + 1, int(round(3 * scale)))
-    ring = np.clip(dilate(core, outer) - dilate(core, inner), 0.0, 1.0) * np.asarray(inside, float)
-    same = (accent_mask(srgb, colour) >= 0.3) * ring
     v = np.asarray(srgb, dtype=np.float64).max(-1)
+    hue = accent_mask(srgb, colour) >= 0.3
+    near = dilate(core, inner)
+    ring = np.clip(dilate(core, outer) - near, 0.0, 1.0) * np.asarray(inside, float)
     reach = outer + 1  # each texel weighs the ring round its own stretch of the bit
     ring_n = box_blur(ring, reach)
-    share = box_blur(same, reach) / np.maximum(ring_n, 1e-9)
+    share = box_blur(hue * ring, reach) / np.maximum(ring_n, 1e-9)
     ring_v = box_blur(v * ring, reach) / np.maximum(ring_n, 1e-9)
     own = (ring_n > 1e-6) & (share >= s["glow_ring_same"]) & (v - ring_v < s["glow_ring_contrast"])
+    if surface is not None:
+        ring = (1.0 - near) * np.asarray(inside, float)
+        ring_n, share, ring_v = surface_ring(ring, hue * ring, v, surface)
+        own |= (ring_n > 1e-6) & (share >= s.get("glow_surface_same", FIXED["glow_surface_same"])) & (v - ring_v < s["glow_ring_contrast"])
     vote = box_blur(own * core, inner) / np.maximum(box_blur(core, inner), 1e-9)  # a bit decides as one
     drop = ((vote > 0.5) & (core > 0)).astype(float)
     return mask * (1.0 - dilate(drop, 1))
@@ -676,7 +757,7 @@ def _hex(colour) -> str:
     return "#" + "".join(f"{round(x * 255):02x}" for x in colour)
 
 
-def glow_masks(a_s, inside, keep, s: dict, thin_scale: float, steps: list[int]):
+def glow_masks(a_s, inside, keep, s: dict, thin_scale: float, steps: list[int], surface: dict | None = None):
     """One glow mask per `--glow` colour, each narrowed as far as its step on the cap's ladder (0: as asked;
     see GLOW_CAP_STEPS), and the bright/dark splits for the report."""
     masks, splits = [], {}
@@ -697,7 +778,7 @@ def glow_masks(a_s, inside, keep, s: dict, thin_scale: float, steps: list[int]):
         m, split = glow_only_bright(thin_only(raw, width) * keep, a_s, inside, s)
         if split is not None:
             splits[_hex(c)] = split
-        masks.append(glow_off_its_own_hue(m, a_s, c, inside, thin_scale, s))
+        masks.append(glow_off_its_own_hue(m, a_s, c, inside, thin_scale, s, surface))
     return masks, splits
 
 
@@ -720,11 +801,12 @@ def glow_share(masks, grow: int, keep, inside) -> float:
     return float((weight[inside] > GLOW_SEEN).mean())
 
 
-def narrowed_glow(a_s, inside, keep, s: dict, thin_scale: float, grow: int, cap: float) -> dict:
+def narrowed_glow(a_s, inside, keep, s: dict, thin_scale: float, grow: int, cap: float,
+                  surface: dict | None = None) -> dict:
     """The glow masks inside `keep`, the colour that lights most narrowed one step at a time while more than `cap`
     of the figure glows: {masks, splits, steps, share, before, first (the masks as asked)}."""
     steps = [0] * len(s["glow"])
-    masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps)
+    masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps, surface)
     first = masks
     share = before = glow_share(masks, grow, keep, inside)
     while cap < 1.0 and share > cap:
@@ -733,12 +815,13 @@ def narrowed_glow(a_s, inside, keep, s: dict, thin_scale: float, grow: int, cap:
             break
         worst = max(live, key=lambda i: glow_share([masks[i]], grow, keep, inside))
         steps[worst] += 1
-        masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps)
+        masks, splits = glow_masks(a_s, inside, keep, s, thin_scale, steps, surface)
         share = glow_share(masks, grow, keep, inside)
     return {"masks": masks, "splits": splits, "steps": steps, "share": share, "before": before, "first": first}
 
 
-def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap: float) -> dict:
+def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap: float,
+              surface: dict | None = None) -> dict:
     """The glow on the head alone, as `narrowed_glow` gives it: each colour's solid core in the closer hue, of any
     width. Eyes and a visor slit are compact patches of the glow's own colour, not lines: the width gate took the
     warden's eyes for plates and the soft match lit his cheeks and nape (skin 0.3-0.75 like his eye orange; 19 of
@@ -750,7 +833,7 @@ def head_glow(a_s, inside, head_keep, s: dict, thin_scale: float, grow: int, cap
         masks.append(close * dilate((close > 0.5).astype(float), GLOW_FAINT_REACH) * head_keep)
     share = glow_share(masks, grow, head_keep, inside)
     if cap < 1.0 and share > cap:
-        return narrowed_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+        return narrowed_glow(a_s, inside, head_keep, s, thin_scale, grow, cap, surface)
     return {"masks": masks, "splits": {}, "steps": [0] * len(s["glow"]), "share": share, "before": share,
             "first": masks}
 
@@ -768,7 +851,7 @@ def glow_paint(v, masks, s: dict, grow: int, keep=1.0):
     return v, emission
 
 
-def flat_glow(srgb, inside, s: dict):
+def flat_glow(srgb, inside, s: dict, surface: dict | None = None):
     """The glow of a model without a rig (a prop, a slime, a rock creature) from its own painted atlas (sRGB 0..1)
     and the texels inside its UV islands: (colours, emission or None, numbers). The body's rules: the hue, the
     width gate, the bright split and the cap's ladder; nothing of the head's, which needs bones to find."""
@@ -777,7 +860,7 @@ def flat_glow(srgb, inside, s: dict):
     scale = srgb.shape[1] / 1024  # widths are given in texels at 1024
     grow = int(round(s["glow_grow"] * scale))
     cap = s.get("glow_max_area", 1.0)
-    glow = narrowed_glow(srgb, inside, 1.0, s, scale, grow, cap)
+    glow = narrowed_glow(srgb, inside, 1.0, s, scale, grow, cap, surface)
     stats = {"glow_share": glow["share"], "glow_split": glow["splits"]}
     if any(glow["steps"]):
         stats["glow_cap"] = {"before": glow["before"], "after": glow["share"], "cap": cap,
@@ -798,14 +881,15 @@ def head_solid(masks, head_keep, inside) -> float:
     return float((np.max(masks, axis=0)[on_head] > 0.5).mean())
 
 
-def compose(alb_lin, lit, cov, s: dict, exclude=None, head=None):
+def compose(alb_lin, lit, cov, s: dict, exclude=None, head=None, surface=None):
     """The atlas colours from the bakes: (albedo sRGB, emission sRGB or None, numbers).
 
     `alb_lin` is the painted colour (linear), `lit` the sky light on the normal-mapped surface,
     `cov` the share of each texel inside an island, all at atlas size. `exclude` (optional, 0..1)
     marks where nothing may glow (the head with --glow-not-on-head, the hands with --glow-not-on-hands), `head`
     (optional, 0..1) the head's skin weights, where the glow stays with --glow-where head and where it goes by
-    itself with --glow-where auto when the cap fires and the glow's colour lies on the head (TODO 198).
+    itself with --glow-where auto when the cap fires and the glow's colour lies on the head (TODO 198). `surface`
+    (optional, `atlas_surface`) lets the glow measure what lies round a glowing bit on the surface, across the seams.
     """
     inside = cov > 0
     a_s = to_srgb(alb_lin)
@@ -822,14 +906,14 @@ def compose(alb_lin, lit, cov, s: dict, exclude=None, head=None):
     grow = int(round(s["glow_grow"] * scale))
     cap = s.get("glow_max_area", 1.0)
     if where == "head" and head_keep is not None:
-        glow = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+        glow = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap, surface)
     else:
-        glow = narrowed_glow(a_s, inside, keep, s, thin_scale, grow, cap)
+        glow = narrowed_glow(a_s, inside, keep, s, thin_scale, grow, cap, surface)
     auto = None
     if where == "auto" and glow["before"] > cap and head_keep is not None and s["glow"]:
         # the colour lit more than the cap: if it lies on the head too (eyes, a visor), the head alone glows; colour
         # cannot tell a red eye slit from the same red on the trims, the skin weights can (the black knight, D276)
-        on_head = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap)
+        on_head = head_glow(a_s, inside, head_keep, s, thin_scale, grow, cap, surface)
         solid = head_solid(on_head["first"], head_keep, inside)
         if solid >= s["glow_auto_head_solid"] and on_head["share"] > 0:
             auto = {"before": glow["before"], "body": glow["share"], "head": on_head["share"], "cap": cap,

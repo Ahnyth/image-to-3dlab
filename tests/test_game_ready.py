@@ -507,6 +507,87 @@ def test_a_sliver_of_hair_in_the_glow_colour_does_not_glow_and_trims_and_lines_s
     assert emission[40, 48].max() > 0.5      # the bright line on the dark plate of the same hue
 
 
+def test_the_face_map_marks_each_texel_with_its_triangle_rows_from_the_bottom():
+    # Blender bakes row 0 at v = 0: a triangle along the bottom edge of the UV square lies in the first rows
+    faces = gr.face_map(np.array([[[0.0, 0.0], [1.0, 0.0], [1.0, 0.25]]]), 8, grow=0)
+    assert faces[0, 7] == 0 and faces[1, 7] == 0
+    assert faces[7, 7] == -1 and faces[0, 0] == -1 and faces[3, 7] == -1
+
+
+def test_weld_joins_the_vertices_a_uv_seam_split():
+    co = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], float)
+    welded = gr.weld(co, np.array([[0, 1, 2], [3, 4, 5]]))
+    assert len(set(welded.ravel())) == 4
+    assert set(welded[0]) & set(welded[1]) == {welded[0][1], welded[0][2]}
+
+
+def _quad(rows, cols, n, corner, along, up, first):
+    """Two triangles covering atlas rows `rows` and columns `cols` (an island), lying in 3D from `corner` along the
+    two vectors; each island has its own vertices `first`..`first`+3, as a mesh split at its UV seams has."""
+    (r0, r1), (c0, c1) = rows, cols
+    uv = np.array([[c0, r0], [c1, r0], [c1, r1], [c0, r1]], float) / n
+    co = np.array([corner, np.add(corner, along), np.add(np.add(corner, along), up), np.add(corner, up)], float)
+    tris = np.array([[0, 1, 2], [0, 2, 3]])
+    return uv[tris], co, tris + first
+
+
+def _sliver_beside_cloth_in_the_atlas():
+    """TODO 208's rest (the AssetFurnace Support notes): a sliver of red hair packed in the atlas right above an island
+    of black cloth with a red trim, while on the surface it hangs on the broad hair (it shares an edge with it); and a
+    bright red line on a dark plate of the same hue. The ring in the atlas sees the black cloth next to the sliver;
+    the ring on the surface sees the hair it belongs to."""
+    n = 64
+    alb = np.zeros((n, n, 3))
+    cov = np.zeros((n, n))
+    hair = gr.to_linear(np.array((0.45, 0.13, 0.17)))
+    alb[4:6, 4:30] = hair                      # the sliver, two texels thick
+    alb[7:23, 4:30] = gr.to_linear(np.array((0.08, 0.08, 0.09)))    # black cloth, a texel below it in the atlas
+    alb[15, 6:28] = hair                       # a trim of the same red on the cloth
+    alb[40:56, 4:30] = hair                    # the broad hair, far away in the atlas
+    alb[40:52, 36:60] = gr.to_linear(np.array((0.32, 0.17, 0.18)))  # a dark plate, a faint match of the hue
+    alb[46, 38:58] = gr.to_linear(np.array((0.90, 0.22, 0.27)))     # a bright line on it
+    for r0, r1, c0, c1 in ((4, 6, 4, 30), (7, 23, 4, 30), (40, 56, 4, 30), (40, 52, 36, 60)):
+        cov[r0:r1, c0:c1] = 1
+    parts = [_quad((4, 6), (4, 30), n, (0, 16, 0), (26, 0, 0), (0, 2, 0), 0),       # the sliver: y 16..18 ...
+             _quad((40, 56), (4, 30), n, (0, 0, 0), (26, 0, 0), (0, 16, 0), 4),     # ... on the hair's edge y = 16
+             _quad((7, 23), (4, 30), n, (0, 0, 10), (26, 0, 0), (0, 16, 0), 8),     # the cloth: elsewhere
+             _quad((40, 52), (36, 60), n, (0, 0, 20), (24, 0, 0), (0, 12, 0), 12)]  # the plate: elsewhere
+    surface = gr.atlas_surface(np.concatenate([p[0] for p in parts]), np.concatenate([p[1] for p in parts]),
+                               np.concatenate([p[2] for p in parts]), n)
+    return alb, np.full((n, n), 0.5), cov, surface
+
+
+def test_the_own_hue_ring_is_measured_on_the_surface_across_the_uv_seams():
+    alb, lit, cov, surface = _sliver_beside_cloth_in_the_atlas()
+    s = gr.settings(["--no-shade", "--glow", "#ff2448", "--glow-max-width", "4", "--glow-width", "0",
+                     "--glow-max-area", "1"])
+    _, in_atlas, _ = gr.compose(alb, lit, cov, s)
+    assert in_atlas[4, 16].max() > 0.5         # measured in the atlas, the cloth next to it lets the sliver glow
+    _, emission, _ = gr.compose(alb, lit, cov, s, surface=surface)
+    assert emission[4, 16].max() < 0.05 and emission[5, 16].max() < 0.05   # on the surface: hair all round
+    assert emission[15, 16].max() > 0.5        # the trim on black cloth
+    assert emission[46, 48].max() > 0.5        # the bright line on the dark plate of the same hue
+
+
+def test_a_bit_whose_ring_in_the_atlas_is_its_own_hue_stays_paint_whatever_the_surface_says():
+    # the two rings add up: the surface's neighbourhood is wider and mixes in the hair's dark shadows, so it judges at
+    # glow_surface_same; a sliver the atlas ring already found inside its own hue stays paint (round 31's measure)
+    alb, lit, cov = _hair_trim_and_plate()
+    n = 64
+    parts = [_quad((21, 23), (4, 30), n, (0, 0, 0), (26, 0, 0), (0, 2, 0), 0),       # the sliver: on the cloth's edge
+             _quad((34, 46), (4, 30), n, (0, 2, 0), (26, 0, 0), (0, 12, 0), 4),      # the cloth
+             _quad((4, 20), (4, 30), n, (0, 0, 10), (26, 0, 0), (0, 16, 0), 8),      # the broad hair: elsewhere
+             _quad((34, 46), (36, 60), n, (0, 0, 20), (24, 0, 0), (0, 12, 0), 12)]   # the plate: elsewhere
+    surface = gr.atlas_surface(np.concatenate([p[0] for p in parts]), np.concatenate([p[1] for p in parts]),
+                               np.concatenate([p[2] for p in parts]), n)
+    s = gr.settings(["--no-shade", "--glow", "#ff2448", "--glow-max-width", "4", "--glow-width", "0",
+                     "--glow-max-area", "1"])
+    assert 0.0 < s["glow_surface_same"] < s["glow_ring_same"]
+    _, emission, _ = gr.compose(alb, lit, cov, s, surface=surface)
+    assert emission[21, 16].max() < 0.05     # the atlas ring: hair all round
+    assert emission[40, 16].max() > 0.5 and emission[40, 48].max() > 0.5
+
+
 def test_the_glow_inside_its_own_hue_is_found_without_scipy():
     # game_ready's colour step runs inside Blender's own Python, which has numpy and no scipy
     import ast
