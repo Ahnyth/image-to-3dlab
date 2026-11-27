@@ -1185,10 +1185,63 @@ def offset_field(window: dict, points: np.ndarray, offsets: np.ndarray, limit: f
     return out
 
 
+def seam_hair(parts: list[dict], window: dict, crop_rgb: np.ndarray, crop: tuple[int, int, int, int],
+              frame) -> tuple[np.ndarray, np.ndarray] | None:
+    """(weight, colour) on the window's picture, or None: where the crop shows hair (anything not skin, `skin_paint`)
+    within HAIR_MARGIN_SHARE of the head's width inside the seam, or on the face's skirt past it (SKIRT_PIXELS),
+    while the figure's own front paint (PARTS, the nearest of them) is skin there, the weight is 1, softened over a
+    pixel; the colour is that paint. The skirt counts too: seen from the side it shows past the cut edge.
+
+    The new face lies on the figure's own shape at its seam (`tuck`), and the picture's hair lock reached a few mm
+    further than the figure's: there the face carried the lock's paint onto the old cheek's shape, black notches at
+    the Nachtschwinge's right jaw corner and temple from the front and a black wedge from the side (round 31 of the
+    AssetFurnace Support notes). Painted as the figure is there, the face meets the lock where the figure has it."""
+    from image_to_3dlab import hero_hands as hh_
+
+    field, box, pixel = window["field"], window["box"], window["pixel"]
+    shape = field.shape
+    reach = field > -(SKIRT_PIXELS + NEAR_PIXELS) * pixel          # the face and its skirt
+    band = reach & (field <= HAIR_MARGIN_SHARE * window["width"])
+    if not band.any():
+        return None
+    own = np.full(shape + (3,), np.nan)
+    nearest = np.full(shape, -np.inf)
+    for part in parts:
+        paint = front_paint(part, box, pixel, shape)
+        known = np.isfinite(paint).all(axis=-1)
+        if not known.any():
+            continue
+        depth, _ = depth_map(np.asarray(part["positions"], dtype=np.float64), part["faces"], box, pixel)
+        nearer = known & (depth > nearest)
+        own[nearer], nearest[nearer] = paint[nearer], depth[nearer]
+    known = np.isfinite(own).all(axis=-1)
+    if not (known & band).any():
+        return None
+    lab = np.full(own.shape, np.nan)
+    lab[known] = hh_.to_lab(own[known])
+    skin = window.get("skin")
+    if skin is None:
+        skin = skin_tone(lab, window["mask"])
+    if skin is None or np.hypot(skin[1], skin[2]) <= 5:
+        return None
+    rows, cols = np.nonzero(band)
+    xy = np.stack([box[0] + (cols + 0.5) * pixel, box[3] - (rows + 0.5) * pixel, np.zeros(len(rows))], axis=1)
+    seen = np.full(own.shape, np.nan)
+    seen[rows, cols] = hh_.to_lab(paint_at(crop_rgb, picture_uvs(xy, crop, crop_rgb.shape[1], frame)))
+    clash = band & skin_paint(lab, skin) & ~skin_paint(seen, skin) & np.isfinite(seen).all(axis=-1)
+    if not clash.any():
+        return None
+    weight = ndimage.gaussian_filter(ndimage.binary_dilation(clash).astype(np.float64), 1.0)
+    weight = np.where(reach, np.clip(weight / max(float(weight[clash].min()), 1e-6), 0.0, 1.0), 0.0)
+    _, (nr, nc) = ndimage.distance_transform_edt(~known, return_indices=True)
+    return weight, own[nr, nc]
+
+
 def matched_picture(crop_rgb: np.ndarray, window: dict, offsets: np.ndarray, crop: tuple[int, int, int, int],
-                    frame) -> np.ndarray:
+                    frame, cover: tuple[np.ndarray, np.ndarray] | None = None) -> np.ndarray:
     """CROP_RGB (the upscaled crop, as the face's paint) with OFFSETS (`offset_field`) added where each of its pixels
-    lands on the figure (`crop_to_figure`): the crop's paint meets the figure's at the seam."""
+    lands on the figure (`crop_to_figure`): the crop's paint meets the figure's at the seam. COVER (`seam_hair`):
+    where its weight is, the figure's own paint instead."""
     h, w = crop_rgb.shape[:2]
     v, u = np.mgrid[0:h, 0:w]
     xy = crop_to_figure(np.stack([u.ravel() + 0.5, v.ravel() + 0.5], axis=1), crop, w, frame)
@@ -1196,6 +1249,12 @@ def matched_picture(crop_rgb: np.ndarray, window: dict, offsets: np.ndarray, cro
     shift = np.stack([sample(offsets[..., k], window["box"], window["pixel"], points, outside=0.0)
                       for k in range(3)], axis=1)
     out = np.asarray(crop_rgb, dtype=np.float64).reshape(-1, 3) + shift
+    if cover is not None:
+        weight = sample(cover[0], window["box"], window["pixel"], points, outside=0.0)[:, None]
+        if (weight > 0).any():
+            own = np.stack([sample(cover[1][..., k], window["box"], window["pixel"], points, outside=0.0)
+                            for k in range(3)], axis=1)
+            out = (1.0 - weight) * out + weight * own
     return np.clip(np.round(out), 0, 255).astype(np.uint8).reshape(h, w, 3)
 
 
@@ -1203,7 +1262,8 @@ def match_face_paint(face: dict, parts: list[dict], window: dict, crop_rgb: np.n
                      crop: tuple[int, int, int, int], frame) -> tuple[dict, list[float] | None]:
     """(FACE painted by the crop moved to the figure's own paint at the seam, the median offset the seam asked for in
     levels per channel): `seam_paint` on PARTS (the figure before the graft), `offset_field`, `matched_picture`. FACE
-    as it is and None when the figure carries no paint there."""
+    as it is and None when the figure carries no paint there. Where the crop shows hair just inside the seam over the
+    figure's own skin, the face takes the figure's paint (`seam_hair`)."""
     import io
 
     from PIL import Image
@@ -1211,7 +1271,8 @@ def match_face_paint(face: dict, parts: list[dict], window: dict, crop_rgb: np.n
     points, offsets = seam_paint(parts, window, crop_rgb, crop, frame)
     if not len(points):
         return face, None
-    picture = matched_picture(crop_rgb, window, offset_field(window, points, offsets), crop, frame)
+    picture = matched_picture(crop_rgb, window, offset_field(window, points, offsets), crop, frame,
+                              seam_hair(parts, window, crop_rgb, crop, frame))
     buffer = io.BytesIO()
     Image.fromarray(picture, "RGB").save(buffer, format="PNG")
     median = np.median(np.clip(offsets, -PAINT_LIMIT, PAINT_LIMIT), axis=0)
@@ -1301,16 +1362,35 @@ def lighter(part: dict, keep: float, agg: float = LIGHT_AGG) -> dict:
     keeping them, thinned the body about 30 % harder (round 27 of the AssetFurnace Support notes). Laid out on a
     coarser grid to meet it (round 28), every edge across the face became a staircase of the grid's squares: square
     notches round the Nachtschwinge's eyes, brows and nose root (1.78 times coarser), gone in a rerun with the fine
-    layout (round 30)."""
+    layout (round 30).
+
+    The decimation moves the points it keeps, so what each point carries is carried along: texture coordinates that
+    follow the points' place across the front (a picture painting the face, `picture_uvs`) are worked out again for
+    the new points, anything else (normals, skin weights) is taken from the nearest point it had."""
     faces = np.asarray(part["faces"], dtype=np.int64)
     count = int(round(keep * len(faces)))
     if count >= len(faces) or count < 2:
         return part
     import fast_simplification
 
-    points, faces = fast_simplification.simplify(np.asarray(part["positions"], dtype=np.float64), faces,
-                                                 target_count=count, agg=agg, preserve_border=True)
-    return {**part, "positions": np.asarray(points, dtype=np.float64), "faces": np.asarray(faces, dtype=np.int64)}
+    before = np.asarray(part["positions"], dtype=np.float64)
+    points, faces = fast_simplification.simplify(before, faces, target_count=count, agg=agg, preserve_border=True)
+    points = np.asarray(points, dtype=np.float64)
+    out = {**part, "positions": points, "faces": np.asarray(faces, dtype=np.int64)}
+    carried = [key for key in ("uvs", "normals", "dense") if part.get(key) is not None
+               and len(part[key]) == len(before)]
+    if not carried:
+        return out
+    _, nearest = cKDTree(before).query(points, workers=-1)
+    for key in carried:
+        values = np.asarray(part[key], dtype=np.float64)
+        out[key] = values[nearest]
+        if key == "uvs":       # a picture's front projection: an affine map of (x, y), worked out exactly again
+            plane = np.c_[before[:, :2], np.ones(len(before))]
+            fit, *_ = np.linalg.lstsq(plane, values, rcond=None)
+            if np.abs(plane @ fit - values).max() <= 1e-9 * max(float(np.ptp(values)), 1.0):
+                out[key] = np.c_[points[:, :2], np.ones(len(points))] @ fit
+    return out
 
 
 def place_face(face: dict, tf: np.ndarray) -> dict:
@@ -1332,7 +1412,7 @@ def cut_face(face: dict, window: dict) -> tuple[dict, np.ndarray]:
 
 def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None = None,
                blend: float | None = None, ease: float | None = None,
-               band: float | None = None) -> tuple[list[dict], dict, dict]:
+               band: float | None = None, keep: float | None = None) -> tuple[list[dict], dict, dict]:
     """PARTS (one model of the figure, part by part, in the figure's frame) with their face cut out along the
     window's seam and the placed new FACE set in. Returns (the model's parts cut, the new face part, report).
 
@@ -1350,7 +1430,14 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     how far the face rose (seam_rise_max) and the figure was eased (seam_eased_max). Not stitched: Pixal3D builds skin
     and inner wall as one surface joined all over (the Zauberer's figure and face both), so neither side's cut gives
     one clean rim, and a stitch between two such rims tore across the face. With skin weights (dense) the new face
-    takes the weights of the nearest old face point."""
+    takes the weights of the nearest old face point.
+
+    With KEEP the face is made lighter to about that share of its triangles (`lighter`) once it is cut, tucked and
+    laid under the cut edge, so its flat skin gives up triangles where its final shape is flat and the seam keeps the
+    fine layout's points: made lighter before (round 30), its large triangles crossed the seam and followed neither the
+    seam's line nor the tuck, the Nachtschwinge's old cut edge hung over the face along 17.5 % of the seam at the face
+    stage (10.3 % fine) and a wedge of the face's hair paint stood out beside its eye (round 31 of the AssetFurnace
+    Support notes)."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
@@ -1429,6 +1516,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     continued = sample(np.where(np.isfinite(continued), continued, np.nan), box, pixel, new["positions"],
                        outside=np.nan)
     new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap)}
+    if keep is not None:      # lighter where the face, as it now lies in the figure, is flat; the seam stays fine
+        new = lighter(new, keep)
     # the seam closed: where the figure's cut edge still stands in front of the face (a strand's cut end, a rise past
     # the cap), its own surface eases back onto the face
     under, _ = depth_map(new["positions"], new["faces"], box, pixel)

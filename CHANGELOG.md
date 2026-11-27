@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero face: a face made lighter keeps its seam.** The face was made lighter before it was cut along its seam and
+  laid under the figure's cut edge, so large flat triangles crossed the seam: the cut followed their edges and the
+  tuck up to the figure moved only their few points. On one figure the old cut edge hung over the face along 17.5 %
+  of the seam (10.3 % with the fine face; figure_check's limit 12 %) and a block of the face, painted with the
+  picture's hair, stood out beside an eye as a dark wedge. The face is now cut, tucked and laid under the edge fine and
+  made lighter afterwards, where its final shape is flat (its texture coordinates worked out again for the points the
+  decimation moved): the game figure's seam 11.4 %, the wedge gone, the triangle count as before.
+- **Hero face: no hair from the picture on the face's edge where the figure shows skin.** The picture's hair lock may
+  reach a few millimetres further than the figure's own, and just inside the seam the face lies on the figure's own
+  shape: one figure's face carried the lock's paint onto its jaw corner and temple, black notches from the front and
+  a black wedge from the side. Within the hair margin inside the seam, and on the face's skirt past it, the face now
+  takes the figure's own paint where the picture shows hair and the figure skin.
 - **Hero face: a face matched to its head's density has no stair steps.** A new face finer than the head it replaces
   was laid out on a coarser grid, and every edge across it (where the fringe crosses the face, round the eyes, the
   nose's root) became a staircase of the grid's squares: on one figure 1.78 times coarser, square notches a second

@@ -1002,6 +1002,73 @@ def test_a_face_made_lighter_keeps_its_outline_and_the_strands_edge_fine_and_thi
         hf.face_relief({"positions": v, "faces": f}, window, CROP, 1024, FRAME)["faces"].shape   # nothing to take
 
 
+def rim_over(cut, new, window):
+    """How far each point of the figure's cut edge (CUT's open edges at the seam) stands in front of the new face."""
+    edges = np.sort(np.concatenate([cut["faces"][:, [0, 1]], cut["faces"][:, [1, 2]], cut["faces"][:, [2, 0]]]), axis=1)
+    found, counts = np.unique(edges, axis=0, return_counts=True)
+    rim = np.unique(found[counts == 1])
+    rim = rim[np.abs(hf.window_values(window, cut["positions"][rim])) < 2 * window["pixel"]]
+    face_depth, _ = hf.depth_map(new["positions"], new["faces"], window["box"], window["pixel"] / 2)
+    under = hf.sample(face_depth, window["box"], window["pixel"] / 2, cut["positions"][rim], outside=np.nan)
+    return cut["positions"][rim, 2] - under
+
+
+def test_a_face_made_lighter_after_it_is_set_in_still_meets_the_figure_all_along_its_seam():
+    # made lighter before it was cut and tucked (round 30), the Nachtschwinge's face crossed its seam in large flat
+    # triangles: they could follow neither the seam's line nor the tuck up to the figure, the old cut edge hung over
+    # the face along 17.5 % of the seam at the face stage (10.3 % with the fine face) and a wedge of the face's hair
+    # paint stood out beside the eye (round 31 of the AssetFurnace Support notes). Set in fine and made lighter after,
+    # where its final shape is flat, the face keeps the seam as close as the fine one
+    v, f = hollow_head()
+    uvs = np.zeros((len(v), 2))
+    uvs[len(v) // 2:, 0] = 1.0
+    body = {"positions": v, "faces": f, "uvs": uvs}
+    window = disk_window(0.035, width=0.1)
+    gap = hf.TUCK_SHARE * 0.1
+    built = deep_face()
+    built["uvs"] = hf.picture_uvs(built["positions"], CROP, 1024, FRAME)
+    fine_parts, fine, _ = hf.graft_face([body], window, built)
+    parts, light, report = hf.graft_face([body], window, built, keep=0.1)
+    assert len(light["faces"]) <= 0.12 * len(fine["faces"]) and report["face_faces"] == len(light["faces"])
+    over = rim_over(parts[0], light, window)
+    assert np.isfinite(over).mean() > 0.95 and np.nanmax(over) < 2 * gap        # as the fine face: just in front
+    assert np.nanmax(rim_over(fine_parts[0], fine, window)) < 2 * gap
+    early_parts, early, _ = hf.graft_face([body], window, hf.lighter(built, 0.1))
+    assert np.nanmax(rim_over(early_parts[0], early, window)) > 2 * gap         # made lighter first: it hangs over
+    # its paint still where the picture shows it: the texture coordinates follow the points it kept
+    assert np.allclose(light["uvs"], hf.picture_uvs(light["positions"], CROP, 1024, FRAME), atol=1e-9)
+    normals = hf.face_normals(light["positions"], light["faces"])
+    assert (normals[:, 2] > 0).mean() > 0.99                                     # facing the camera, none flipped
+
+
+def test_the_faces_paint_takes_the_figures_skin_where_the_picture_shows_hair_just_inside_the_seam():
+    # the picture's hair lock reached a few mm further than the figure's: just inside the seam at the Nachtschwinge's
+    # right jaw corner and temple the new face, laid onto the old cheek's shape there, carried the lock's paint, black
+    # notches from the front and a black wedge from the side (round 31 of the AssetFurnace Support notes)
+    import io
+
+    from PIL import Image
+
+    window = disk_window(0.02, width=0.1, pixel=0.1 / hf.PIXELS_PER_HEAD)
+    skin, hair = (200, 160, 140), (20, 40, 30)
+    figure = two_tone_plane(skin, hair, 0.017)                # its own hair only at the right edge, past x = 0.017
+    crop = np.empty((1024, 1024, 3))
+    crop[:] = skin
+    crop[:, 404:451] = hair                                   # the picture's locks: x -0.021 .. -0.012 ...
+    crop[:, 573:620] = hair                                   # ... and 0.012 .. 0.021
+    matched, _ = hf.match_face_paint({"positions": np.zeros((3, 3)), "faces": np.array([[0, 1, 2]])}, [figure],
+                                     window, crop, CROP, FRAME)
+    doc, binary, _ = matched["material"]
+    view = doc["bufferViews"][doc["images"][0]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    picture = np.asarray(Image.open(io.BytesIO(binary[start:start + view["byteLength"]])).convert("RGB"), float)
+    assert np.allclose(picture[512, 412], skin, atol=12)      # 0.5 mm inside the seam on the figure's skin: skin
+    assert np.allclose(picture[512, 405], skin, atol=12)      # and on the skirt under the cut edge, which a side shows
+    assert picture[512, 448].max() < 60                       # 7.5 mm inside: the picture's own lock stays
+    assert picture[512, 612].max() < 60                       # where the figure has hair there too, the lock stays
+    assert np.allclose(picture[300, 512], skin, atol=2)       # the skin round it as it was
+
+
 # --- the seam along the old cheek's edge (round 29) ----------------------------------------------------------------
 
 def texture_material(texture):

@@ -471,10 +471,11 @@ def main(argv: list[str] | None = None) -> int:
         step = hf.relief_step(model_parts, window)   # a coarse model gets a face as coarse as its old one
 
         def set_in(step, keep=None, model_parts=model_parts):
-            model_face = face if step <= window["pixel"] and keep is None else hf.face_relief(
-                placed, window, box, face_picture.width, full_frame, material, step=step, keep=keep)
+            # made lighter (KEEP) only once it is set in: before, its large triangles crossed the seam (round 31)
+            model_face = face if step <= window["pixel"] else hf.face_relief(
+                placed, window, box, face_picture.width, full_frame, material, step=step)
             model_face, offset = hf.match_face_paint(model_face, model_parts, window, crop_rgb, box, full_frame)
-            return (*hf.graft_face(model_parts, window, model_face), offset)
+            return (*hf.graft_face(model_parts, window, model_face, keep=keep), offset)
 
         cut_parts, face_out, report, offset = set_in(step)
         # no finer than the head it replaces, by the rule every Hero part takes (hero_parts.matched_faces): the flat
