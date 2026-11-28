@@ -149,6 +149,37 @@ def test_a_hard_level_step_around_the_neck_fails_and_an_even_neck_passes():
         assert r.status == status, r.message
 
 
+def chin_figure(step: bool) -> fc.Figure:
+    """A head on a neck on a body, 1.8 tall, facing +z, the Head joint low in the face and the Neck
+    joint low in the neck. With STEP the chin's underside slopes down and back in sight of the front
+    and runs into a neck that stands as far forward as the slope's foot: the chin step, a dark band
+    on a lit neck. Without it the chin's underside is flat and the neck stands back, hidden behind it."""
+    body = box((-0.25, 0.0, -0.12), (0.25, 1.40, 0.12))
+    if step:
+        face = box((-0.08, 1.60, -0.08), (0.08, 1.80, 0.10))
+        under = box((-0.08, 1.58, -0.08), (0.08, 1.60, 0.10))
+        under[0][[4, 5], 2] = 0.05            # the front's lower edge pulled back: a slope facing down and forward
+        neck = box((-0.05, 1.40, -0.03), (0.05, 1.58, 0.05))
+        p, f = join(body, neck, under, face)
+    else:
+        face = box((-0.08, 1.58, -0.08), (0.08, 1.80, 0.10))
+        neck = box((-0.05, 1.40, -0.06), (0.05, 1.58, 0.02))
+        p, f = join(body, neck, face)
+    joints = {"Head": np.array([0.0, 1.62, 0.0]), "Neck": np.array([0.0, 1.45, 0.0])}
+    return fc.Figure(model_of(p, f), joints, [], None)
+
+
+def test_a_chin_underside_seen_as_a_band_on_a_forward_neck_fails_and_a_chin_over_its_neck_passes():
+    for step, status in ((True, "fail"), (False, "pass")):
+        figure = chin_figure(step)
+        head = fc.find_head(figure)
+        front = fc.draw(figure, "front", (0, 0, 1), head.centre, head.half, 320)
+        r = fc.chin_step(figure, head, front)
+        assert r.status == status, r.message
+        assert len(r.spots) == (1 if step else 0)
+        json.dumps(r.as_dict())                  # the report writes it as JSON
+
+
 def test_holes_in_motion_come_from_game_readys_report(tmp_path):
     report = tmp_path / "fig.report.json"
     report.write_text(json.dumps({"pose_check": {"poses": 4, "hole_px": 20, "hole_px_left": 0}}))

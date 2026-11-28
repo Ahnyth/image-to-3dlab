@@ -2,10 +2,11 @@
 """Check a finished game figure the way a second reviewer would, and write a report with pictures.
 
 It draws the figure's head, neck and hands up close (found from its skeleton) and measures the
-faults a person sees at once: the fingers per hand, a neck that reads as a pale ring, dark
-strokes under the jaw, saw teeth along the head's outline, loose flakes, open edges, holes in
-motion (from game_ready's report beside the model) and, given the version it replaces, where
-its colour changed. Fingers, the neck ring and holes are verdicts; strokes, teeth, flakes and
+faults a person sees at once: the fingers per hand, a neck that reads as a pale ring, a chin
+whose underside shows from the front as a band on a lit neck (a chin step), dark strokes under
+the jaw, saw teeth along the head's outline, loose flakes, open edges, holes in motion (from
+game_ready's report beside the model) and, given the version it replaces, where its colour
+changed. Fingers, the neck ring, the chin step and holes are verdicts; strokes, teeth, flakes and
 colour changes are hints ("look here", circled), because drawn lines, spiky hair and a new part
 look the same to a measure. A hint fails when it got clearly worse than in the version before,
 and a colour change fails with --same-look (a rebuild that should only lose faults).

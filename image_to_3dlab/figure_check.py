@@ -2,7 +2,8 @@
 
 A figure can pass every step of the pipeline and still show a fault a person sees at once up
 close: a hand with six fingers, a second eye painted on a temple, a dark stroke along the jaw,
-a neck that reads as a pale ring, hair at the nape cut into saw teeth, a stray bright flake.
+a neck that reads as a pale ring, a chin that sits on its neck like a shelf, hair at the nape
+cut into saw teeth, a stray bright flake.
 This draws the figure from fixed views around its head, neck and hands (found from its
 skeleton), in its own base colour, and measures each of those faults:
 
@@ -10,15 +11,17 @@ skeleton), in its own base colour, and measures each of those faults:
 * dark marks: thin dark lines or dots on skin that does not face the front (a jaw stroke from
   below, a lash line or eye on a temple), the face's own eyes, brows and mouth left out;
 * neck ring: a hard, level colour step running around the neck's skin;
+* chin step: the chin's underside seen from the front as a broad band that ends on a lit,
+  forward-facing neck in a hard level edge, where a good chin hides the top of its neck;
 * jagged outline: small saw teeth along the head's outline seen from the sides and the back;
 * flakes: tiny separate bits of the model, and small bright specks on the head;
 * colour (with a version before): the patches that changed colour (`colour_compare`).
 
-Some of these a number can judge (fingers, the neck ring, colour, holes in motion); others it can
-only point at, because a drawn neck line or spiky hair looks like a fault to a measure: those
-come back as "look", with the spot circled. Given the version before, a "look" that got worse
-than it was there is a failure. It only reports. `check()` returns one result per check, each
-with its number, its limit and the views and boxes where it found something; `write_report()`
+Some of these a number can judge (fingers, the neck ring, the chin step, colour, holes in motion);
+others it can only point at, because a drawn neck line or spiky hair looks like a fault to a
+measure: those come back as "look", with the spot circled. Given the version before, a "look" that
+got worse than it was there is a failure. It only reports. `check()` returns one result per check,
+each with its number, its limit and the views and boxes where it found something; `write_report()`
 turns that into an HTML page with every view and the spots circled.
 """
 
@@ -413,6 +416,81 @@ def neck_ring(views: dict, skin: np.ndarray, head: Head) -> Result:
                   "neck's width", spots if status == "fail" else [])
 
 
+CHIN_COLUMNS = 0.25        # share of the head each side of its middle: the chin's own columns
+CHIN_LOW = 0.03            # share of the figure's height below the neck joint where the search ends
+CHIN_DROP = 0.04           # share of the head the chin's lower edge falls back in all
+CHIN_SLOPE = 1.5           # pixels a surface falls back per pixel row where it turns under
+CHIN_JUMP = 7.0            # ... and above this many per row it is a jump: the chin hides the neck
+CHIN_BAND = 0.004          # share of the figure's height an underside seen from the front is a band
+CHIN_LIMIT = 0.028         # share of the figure's height such a band may run wide (approved 0-0.014, stepped 0.047)
+
+
+def chin_step(figure: Figure, head: Head, front: View) -> Result:
+    """A chin whose underside shows from the front as a broad band ending on a forward neck.
+
+    A good chin hides the top of its neck: straight from the front, its lower edge is a jump in
+    depth. On a stepped chin the underside turns under in sight, a band of steeply receding surface
+    (dark under a light from the camera) that runs into a forward-facing, lit neck in a hard level
+    edge. Column by column across the chin, from the head joint down to just below the neck joint,
+    this takes the lowest run where the surface falls back steeply below a pixel of the head, and
+    counts the rows where it recedes continuously instead of jumping; the columns where that band
+    is at least CHIN_BAND tall, laid side by side, are the number."""
+    h, px = figure.height, front.scale
+    size = front.covered.shape[0]
+    z = np.where(front.covered, front.point @ front.direction, np.nan)     # nearer the camera is larger
+    if figure.weights is not None and "Head" in figure.names:
+        own = figure.owned_by("Head")[figure.model.faces].mean(axis=1)
+        of_head = front.covered & (own[np.maximum(front.face, 0)] > 0.25)
+    else:
+        of_head = front.covered
+    if not front.covered.any():
+        return Result("chin step", "pass", 0.0, f"a band at most {CHIN_LIMIT:g} of the height wide",
+                      "nothing in the front view")
+    # the view's frame from what it shows: each row's height and each column's side (orthographic)
+    rows = np.arange(size)
+    yy, xx = np.nonzero(front.covered)
+    top_y = float(np.median(front.point[yy, xx, 1] + (yy + 0.5) * px))
+    left_x = float(np.median(front.point[yy, xx, 0] - (xx + 0.5) * px))
+    height = top_y - (rows + 0.5) * px
+    side = left_x + (rows + 0.5) * px
+    r0 = int(np.searchsorted(-height, -head.chin))
+    r1 = min(size - 2, int(np.searchsorted(-height, -(head.neck_low - CHIN_LOW * h))))
+    found, banded, jumps, box = 0, 0, [], None
+    for c in np.flatnonzero(np.abs(side - head.centre[0]) < CHIN_COLUMNS * head.size):
+        col = z[:, c]
+        fall = col[r0:r1] - col[r0 + 1:r1 + 1]
+        steep = np.isfinite(fall) & (fall > CHIN_SLOPE * px)
+        edge = None
+        start = None
+        for i, s in enumerate(np.append(steep, False)):
+            if s and start is None:
+                start = i
+            elif not s and start is not None:
+                a, b = r0 + start, r0 + i
+                if col[a] - col[b] > CHIN_DROP * head.size and of_head[max(0, a - 2), c]:
+                    edge = (a, b)          # keep the lowest
+                start = None
+        if edge is None:
+            continue
+        a, b, c = int(edge[0]), int(edge[1]), int(c)     # plain ints: the report writes the spot as JSON
+        falls = col[a:b] - col[a + 1:b + 1]
+        found += 1
+        jumps.append(float(falls.max()))
+        if np.sum(falls < CHIN_JUMP * px) * px >= CHIN_BAND * h:
+            banded += 1
+            box = (c, a, c + 1, b + 1) if box is None else (min(box[0], c), min(box[1], a), c + 1, max(box[3], b + 1))
+    width = banded * px / h
+    if not found:
+        return Result("chin step", "pass", 0.0, f"a band at most {CHIN_LIMIT:g} of the height wide",
+                      "no lower edge of a chin found in front of a neck")
+    status = "fail" if width > CHIN_LIMIT else "pass"
+    return Result("chin step", status, round(width, 4), f"a band at most {CHIN_LIMIT:g} of the height wide",
+                  f"the chin's underside shows from the front as a band {width:.4f} of the figure's height wide "
+                  f"({banded} of {found} columns across the chin; the median jump at its lower edge is "
+                  f"{np.median(jumps) / head.size:.3f} of the head)",
+                  [("front", box)] if status == "fail" and box is not None else [])
+
+
 def _merge(spots):
     out = []
     for name, box in spots:
@@ -727,7 +805,7 @@ def _head_checks(figure: Figure, head: Head, views: dict) -> list:
                           "and neck checks are skipped"))
     else:
         out += [neck_ring(views, skin, head), dark_marks(views, skin, head, face_front(figure, head))]
-    out += [jagged_outline(views, head), flakes(figure, views)]
+    out += [chin_step(figure, head, views["front"]), jagged_outline(views, head), flakes(figure, views)]
     return out
 
 

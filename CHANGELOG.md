@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `scripts/figure_check.py` checks a finished game figure the way a second reviewer would: it
   draws the head, neck and hands up close (found from the skeleton) and counts the fingers per
-  hand, finds a neck that reads as a pale ring, holes in motion (from game_ready's report) and,
+  hand, finds a neck that reads as a pale ring, a chin whose underside shows from the front as a
+  broad band ending on a lit neck in a hard level edge (a chin step: a good chin hides the top of
+  its neck), holes in motion (from game_ready's report) and,
   against the version it replaces, where the colour changed; dark strokes under the jaw, saw
   teeth along the head's outline, loose flakes and colour changes come back as "look here" with
   the spot circled, and fail only when they got clearly worse than before (or, with `--same-look`,
