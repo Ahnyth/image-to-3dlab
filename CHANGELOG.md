@@ -201,9 +201,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `game_ready.py --colour-from` takes no paint from another layer standing off the surface. A collar
   flap 8-11 mm off a wizard's jaw, facing the same way, lay inside the full cage, so the long rays met
   it first and drew dark strokes along the jaw. A texel whose full-cage paint lies far from the
-  model's own paint there, where a shorter cage's lies close to it, now takes the shorter cage; a
-  hair spike the thinning sank keeps the long ray's paint, since its own paint is hair too. The
-  report counts it (`colour_transfer_guard.other_layer`).
+  paint at its surface, where a shorter cage's lies close to it, now takes the shorter cage. The
+  paint at the surface is the colour model's own, from the shortest cage whose ray met a surface
+  facing the texel: the mesh's own paint, which it used to be, comes with `--mesh-from` from a
+  second model whose new head is tinted to that model's tone on purpose, and 16 delta E off the
+  colour model on a new jaw it let a collar flap 2.5-2.9 cm off leave a dark blot at the jaw's
+  corner. A hair spike the thinning sank keeps the long ray's paint, since the shorter cages start
+  inside it and meet no surface facing them. The report counts it
+  (`colour_transfer_guard.other_layer`).
 - `game_ready.py --drop-hidden` never opens an edge a camera sees. Where two surfaces cross (hair going up
   into a hat's brim), each lost its part inside the other, and the thinned mesh's wide triangles left two
   jagged rims with slits between them that showed the hat's inside from below: ten such edges on a wizard's

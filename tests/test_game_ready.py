@@ -1423,6 +1423,38 @@ def test_a_texel_whose_long_ray_met_another_layer_first_takes_the_shorter_cage()
     assert gr.pick_transfer(tries)[2].tolist() == [0, 0, 0]          # without the model's own paint, as before
 
 
+def test_a_layer_in_front_is_judged_against_the_colour_models_paint_at_the_surface():
+    """With --mesh-from the model's own paint is a second model's, which the head stage tints to that model's tone
+    on purpose: on a wizard's new jaw it sat about 16 delta E off the colour model's skin, just over the guard's
+    agree limit, so three texels kept the long ray's dark from a collar flap 2.5-2.9 cm off the jaw (AssetFurnace
+    Support D302). The guard now asks the colour model itself: the paint the shortest cage's ray met on a surface
+    facing the texel."""
+    skin, flap = [0.25, 0.20, 0.19], [0.012, 0.010, 0.020]
+    own = np.array([[0.50, 0.36, 0.31]])                              # the mesh's own skin, tinted lighter
+    assert 15.0 < np.linalg.norm(gr.linear_lab(own[0]) - gr.linear_lab(np.array(skin))) < 18.0
+    ones = np.ones(1)
+    tries = [(np.array([flap]), ones, ones), (np.array([skin]), ones, ones), (np.array([skin]), ones, ones)]
+    colour, hit, step = gr.pick_transfer(tries, own=own)
+    assert step.tolist() == [1] and hit[0] == 1.0
+    assert colour[0] == pytest.approx(skin)
+
+
+def test_a_sunk_part_whose_shorter_rays_meet_no_surface_facing_it_keeps_the_long_rays_paint():
+    """A hair spike the thinning sank: the shorter cages start inside it, so their rays meet nothing or the spike's
+    own inside (facing away). Whatever the model's own paint, nothing shorter met the surface, so the long ray's
+    paint (the spike's) stays."""
+    hair, other = [0.30, 0.32, 0.40], [0.60, 0.45, 0.40]
+    own = np.array([other, other])
+    long_colour = np.array([hair, hair])
+    short_colour = np.array([other, other])
+    tries = [(long_colour, np.ones(2), np.ones(2)),
+             (short_colour, np.array([0.0, 1.0]), np.array([0.0, -0.9])),
+             (short_colour, np.array([0.0, 1.0]), np.array([0.0, -0.8]))]
+    colour, hit, step = gr.pick_transfer(tries, own=own)
+    assert step.tolist() == [0, 0] and hit.tolist() == [1.0, 1.0]
+    assert colour[0] == pytest.approx(hair) and colour[1] == pytest.approx(hair)
+
+
 def test_the_cage_steps_start_at_the_cage_and_shrink():
     steps = gr.FIXED["transfer_cage_steps"]
     assert steps[0] == 1.0 and all(a > b > 0 for a, b in itertools.pairwise(steps))

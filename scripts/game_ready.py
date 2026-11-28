@@ -101,8 +101,9 @@ FIXED = {
                                # --transfer-cage, the longest that meets a surface facing it; with none it keeps its
                                # own paint (a wizard's neck took his collar's dark inside at 3 cm, AssetFurnace
                                # Support D261)
-    "transfer_layer_delta": 30.0,  # a texel whose full-cage paint lies this far (CIE76 delta E) from the model's own
-                               # paint there ...
+    "transfer_layer_delta": 30.0,  # a texel whose full-cage paint lies this far (CIE76 delta E) from the paint at
+                               # its surface (the shortest cage's that met a surface facing it; the model's own
+                               # paint where none did, AssetFurnace Support D302) ...
     "transfer_layer_agree": 15.0,  # ... while a shorter cage's lies within this of it met another layer first (a
                                # collar flap standing off the jaw, facing the same way): it takes the shorter cage's
                                # paint (dark strokes along a wizard's jaw, AssetFurnace Support D266)
@@ -1568,10 +1569,14 @@ def pick_transfer(tries, least: float = FIXED["transfer_facing"], own=None,
     wizard's game figure wore its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261).
 
     With OWN (the model's own paint per texel, linear RGB like the bakes) a texel the full cage painted more than
-    DELTA (delta E) away from its own paint, where a shorter cage's ray met a facing surface within AGREE of it, takes
-    that shorter cage: the long ray met another layer first, standing off the surface with air between and facing the
-    same way (a collar flap 8-11 mm off a wizard's jaw drew dark strokes along it, AssetFurnace Support D266). A part
-    the thinning sank (a hair spike) keeps the long ray's paint, since its own paint is that part's too."""
+    DELTA (delta E) away from the paint at its surface, where a shorter cage's ray met a facing surface within AGREE
+    of it, takes that shorter cage: the long ray met another layer first, standing off the surface with air between
+    and facing the same way (a collar flap 8-11 mm off a wizard's jaw drew dark strokes along it, AssetFurnace
+    Support D266). The paint at the surface is the finer model's, from the shortest cage whose ray met a facing
+    surface, and OWN only where none did: with --mesh-from the own paint is a second model's, tinted to that model's
+    tone on purpose, and 16 delta E off on a new jaw it kept a flap's dark at three texels (D302). A part the thinning
+    sank (a hair spike) keeps the long ray's paint: the shorter cages start inside it and meet no surface facing
+    them, so there is nothing to swap in."""
     first = tries[0]
     shape = np.asarray(first[1], float).shape
     colour = np.zeros(shape + (np.asarray(first[0]).shape[-1],))
@@ -1584,7 +1589,11 @@ def pick_transfer(tries, least: float = FIXED["transfer_facing"], own=None,
         hit[take] = h[take]
         step[take] = k
     if own is not None and len(tries) > 1:
-        own_lab = linear_lab(own)
+        surface = np.array(own, float)[..., :3]
+        for c, h, facing in tries[1:]:   # the shortest cage that met a facing surface wins, so later ones overwrite
+            met = (np.clip(np.asarray(h, float), 0.0, 1.0) > 0.0) & (np.asarray(facing, float) >= least)
+            surface[met] = np.asarray(c, float)[..., :3][met]
+        own_lab = linear_lab(surface)
         far = (step == 0) & (np.linalg.norm(linear_lab(colour) - own_lab, axis=-1) > delta)
         for k, (c, h, facing) in enumerate(tries[1:], start=1):
             h = np.clip(np.asarray(h, float), 0.0, 1.0)
