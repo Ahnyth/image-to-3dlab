@@ -1111,3 +1111,69 @@ def test_drawing_paint_reads_the_subject_from_the_kept_cut_out(tmp_path):
     paint = hh.drawing_paint(tmp_path / "d.png")
     assert paint.shape == (16, 3) and np.allclose(paint, [190, 163, 145])      # the grey around it left out
     assert hh.drawing_paint(tmp_path / "gone.png") is None
+
+
+# --- the drawn hand's colour against the picture's (round 32) ---------------------------------------------------
+# The Arkan-Duellant's picture shows a black glove; every drawing the picture editor made of it showed a bare hand, the
+# stage kept them by their finger count alone, and the finished figure got skin-coloured hands (D300).
+
+SKIN = (224, 172, 140)       # a stylized skin tone
+GLOVE = (28, 28, 32)         # a black glove
+
+
+def pixels(*colours):
+    """RGB rows: COLOURS as (rgb, count) pairs."""
+    return np.concatenate([np.tile(np.array(c, float), (n, 1)) for c, n in colours])
+
+
+def test_hand_colour_tells_a_black_glove_from_bare_skin():
+    glove = hh.hand_colour(pixels((GLOVE, 900), ((70, 70, 80), 100)))           # with its sheen
+    skin = hh.hand_colour(pixels((SKIN, 950), ((140, 90, 70), 50)))             # with the shade between the fingers
+    assert glove["skin"] < hh.GLOVE_SKIN <= skin["skin"]
+    verdict = hh.colour_check(glove, skin)
+    assert not verdict["ok"] and verdict["de"] > hh.HAND_DE_LIMIT and "black" in verdict["why"]
+    assert hh.colour_check(glove, hh.hand_colour(pixels(((45, 45, 52), 1000))))["ok"]     # the same glove, lit flat
+    assert hh.colour_check(skin, hh.hand_colour(pixels(((240, 196, 168), 1000))))["ok"]   # the same skin, lighter
+    assert hh.hand_colour(pixels((SKIN, 5))) is None                                     # too few pixels to tell
+
+
+def test_without_the_pictures_hand_the_colour_check_passes_every_drawing():
+    assert hh.colour_check(None, hh.hand_colour(pixels((SKIN, 500))))["ok"]
+
+
+def test_colour_words_name_a_glove_plainly():
+    def words(rgb):
+        return hh.colour_words(hh.to_lab([rgb])[0])
+
+    assert words(GLOVE) == "black"
+    assert words((120, 20, 25)) == "dark red"
+    assert words((110, 70, 40)) == "brown"
+    assert words((235, 235, 235)) == "white"
+    assert words((40, 70, 170)) == "dark blue"
+    assert words((70, 120, 230)) == "blue"
+
+
+def test_the_prompt_asks_to_keep_a_glove_and_never_says_skin():
+    gloved = hh.hand_prompt("right", glove="black")
+    assert "black glove" in gloved and "no bare skin" in gloved and "skin like in the reference" not in gloved
+    assert "thumb on the right side" in gloved
+    assert hh.hand_prompt("right", "red mittens.", glove="black").count("red mittens.") == 1   # the caller's words
+    assert hh.hand_prompt("left") == hh.HAND_PROMPT.format(side="left", thumb="left", other="right",
+                                                           surface=hh.BARE_SURFACE, look=hh.DEFAULT_LOOK)
+
+
+def test_the_pictures_hand_is_the_figures_hand_projected_and_cut_to_the_subject():
+    subject = np.zeros((100, 100), bool)
+    subject[10:90, 30:70] = True                                   # the sleeve above, the hand below
+    ys, xs = np.mgrid[50:80, 35:60]                                # the old hand's points past the wrist, projected
+    mask = hh.picture_hand_mask(xs.ravel()[::5].astype(float), ys.ravel()[::5].astype(float), subject)
+    assert mask[52:78, 37:56].mean() > 0.95                        # sparse points fill the hand ...
+    assert not mask[:48].any() and not mask[:, :33].any()          # ... and it grows no farther: not the sleeve
+    assert not mask[:, 70:].any()                                  # nothing off the subject
+
+
+def test_a_drawings_hand_is_below_its_sleeve():
+    mask = hand_mask().astype(bool)                                # sleeve rows 0-60, palm to 200, fingers to 320
+    rows = np.nonzero(hh.drawing_hand_mask(mask).any(axis=1))[0]
+    assert rows.min() >= 140 and rows.max() == 320
+    assert (hh.drawing_hand_mask(mask) <= mask).all()

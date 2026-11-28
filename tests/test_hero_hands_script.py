@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from scripts import hero_hands
 
@@ -181,3 +182,75 @@ def test_hands_without_paint_to_match_are_kept(tmp_path):
 def test_a_build_names_its_drawing():
     assert hero_hands.drawing_of(Path("hands/right_draw_s2_b42.glb")) == Path("hands/right_draw_s2.png")
     assert hero_hands.drawing_of(Path("hands/left_draw_s10_b7_clean6500.glb")).name.startswith("left_draw_s10")
+
+
+def test_a_drawing_is_kept_only_when_its_hand_has_the_pictures_colour(tmp_path, monkeypatch):
+    # the Arkan-Duellant's black glove came back as a bare hand from every drawing, and the finger count kept them;
+    # the colour of each drawing's hand is now held against the picture's (round 32)
+    from types import SimpleNamespace
+
+    import image_api
+
+    from image_to_3dlab import hero_hands as hh
+
+    for name in ("resolve_weights", "resolve_vision"):
+        monkeypatch.setattr(image_api, name, lambda engine: None)
+    glove = {"lab": [15.3, 0.5, -1.3], "skin": 0.0, "pixels": 1732}
+    skin = {"lab": [70.0, 14.0, 22.0], "skin": 0.9, "pixels": 9000}
+    prompt = hh.hand_prompt("right", None, "black")
+    (tmp_path / "right_reference.png").write_bytes(b"made before")
+    for seed, colour in ((1, skin), (2, {**glove, "lab": [24.0, 1.0, -2.0]}), (3, skin)):
+        drawing = tmp_path / f"right_draw_s{seed}.png"
+        drawing.write_bytes(b"drawn before")
+        drawing.with_suffix(".provenance.json").write_text(json.dumps({"prompt": prompt}))
+        drawing.with_suffix(".count.json").write_text(json.dumps(
+            {"digits": 5, "thumbs": 1, "ok": True, "rule": "cleft", "colour": colour}))
+    said = []
+    run = SimpleNamespace(say=said.append, flag=said.append)
+    args = SimpleNamespace(look=None, tries=3, keep=2)
+    kept, missed = hero_hands.draw_hands(run, "right", tmp_path / "up.png", tmp_path, args, None, glove)
+    assert [p.name for p in kept] == ["right_draw_s2.png"]
+    assert [p.name for p in missed] == ["right_draw_s1.png", "right_draw_s3.png"]
+    assert any("black glove" in line for line in said)
+
+
+def test_a_drawing_made_with_another_prompt_is_stale(tmp_path):
+    # a rerun after the prompt changed (a glove asked for) must not keep the bare hands drawn before
+    drawing = tmp_path / "right_draw_s1.png"
+    drawing.write_bytes(b"drawn")
+    assert not hero_hands.stale(drawing, "any")                      # no licence record: nothing to compare
+    drawing.with_suffix(".provenance.json").write_text(json.dumps({"prompt": "bare hand"}))
+    assert hero_hands.stale(drawing, "black glove") and not hero_hands.stale(drawing, "bare hand")
+
+
+def test_a_coarse_clean_up_off_its_builds_frame_gives_way_to_a_finer_one(tmp_path, monkeypatch):
+    # the Arkan-Duellant's glove build cleaned up to 3,000 faces sat 3.7 % off its build (allowed 3 %): the thin
+    # fingers shrank under the decimation, and the chain's hands stage stopped (round 32); a finer clean-up is made
+    # instead, and one off at every size up to the reference still stops the stage
+    from types import SimpleNamespace
+
+    from image_to_3dlab import pixal3d_native as native
+
+    asked = []
+
+    def replay_command(dump, replay, faces, atlas):
+        asked.append(faces)
+        return [str(replay), str(faces)]
+
+    def run_command(command, required=True):
+        Path(command[0]).write_bytes(command[1].encode())
+        return True
+
+    monkeypatch.setattr(native, "replay_command", replay_command)
+    monkeypatch.setattr(native, "convert_replay_glb", lambda data: data)
+    monkeypatch.setattr(native, "glb_bounds", lambda data: data)
+    monkeypatch.setattr(native, "frame_problem", lambda built, clean: "3.7% off" if clean == b"3000" else None)
+    run = SimpleNamespace(run=run_command, say=lambda line: None, flag=lambda line: None)
+    raw = tmp_path / "right_draw_s2_b42.glb"
+    raw.write_bytes(b"raw")
+    assert hero_hands.clean_hand(run, raw, 3000).name == "right_draw_s2_b42_clean6k.glb" and asked == [3000, 6000]
+    monkeypatch.setattr(native, "frame_problem", lambda built, clean: "off")
+    other = tmp_path / "right_draw_s3_b42.glb"
+    other.write_bytes(b"raw")
+    with pytest.raises(SystemExit):
+        hero_hands.clean_hand(run, other, 3000)

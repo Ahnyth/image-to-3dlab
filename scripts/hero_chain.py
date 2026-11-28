@@ -11,7 +11,10 @@ after `--`, and every stage changes them too):
 
   1. hands  Hero hands (`hero_hands.py`): the hands built alone from the picture, set in at the wrists the rig shows.
             Kept when the finger count (`figure_check`, the hands found by the skeleton's shape) shows a five-digit
-            hand on both sides.
+            hand on both sides. A drawing whose hand misses the picture's colour (a glove drawn bare) is not built
+            from; when every one misses, the tool paints its build from the picture's hand (or, with its --colour-miss
+            keep, the figure keeps its own hands and the stage is skipped). Once kept, the game step's glow stays off the new hands
+            (`--glow-not-on-hands`; `--glow-on-hands` lets it on).
   2. head   Hero head (`hero_face.py --region auto`): the whole head under a hat's brim, or the face alone without a
             brim, built alone and set in; brim and collar are measured by the tool itself.
   3. boots  Hero parts (`hero_parts.py --boots --top auto`): where the boots end is read in the picture (the boot's
@@ -54,6 +57,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -330,7 +334,7 @@ class Chain:
         command = stage_command(name, models, self.args.picture, folder, given)
         log = folder / "stage.log"
         code = self.call(command, log, name, gpu=name in GPU_STAGES)
-        if code == SKIPPED and name in ("boots", "band"):
+        if code == SKIPPED and name in ("boots", "band", "hands"):
             why = self.skip_reason(name, folder)
             return hc.Stage(name, "skipped", why, self.measure(name, folder)), None
         if code != 0:
@@ -357,6 +361,10 @@ class Chain:
             if found.get("own_boots"):              # the figure's own boots follow the picture: they stay
                 return found.get("skipped") or "the figure's own boots follow the picture"
             return f"no boots in the picture: {found.get('skipped') or 'see stage.log'}"
+        if name == "hands":                         # no drawing kept the picture's hand: the figure keeps its own
+            data = folder / "hands.json"
+            found = json.loads(data.read_text(encoding="utf-8")) if data.is_file() else {}
+            return found.get("skipped") or "the figure keeps its own hands: see stage.log"
         return "no band in the picture whose pattern repeats along it"
 
     def measure(self, name: str, folder: Path) -> dict:
@@ -364,9 +372,13 @@ class Chain:
         try:
             if name == "hands":
                 data = json.loads((folder / "hands.json").read_text(encoding="utf-8"))
-                return {f"{side} hand": {"digits": s["count"]["digits"], "thumbs": s["count"]["thumbs"],
-                                         "scale": s.get("scale"), "wrist eased": s.get("wrist_ratio")}
-                        for side, s in data["sides"].items()} | {"to look at": len(data.get("unsure", []))}
+                out = {f"{side} hand": {"digits": s["count"]["digits"], "thumbs": s["count"]["thumbs"],
+                                        "scale": s.get("scale"), "wrist eased": s.get("wrist_ratio")}
+                       for side, s in data.get("sides", {}).items()}      # none when the figure kept its own hands
+                for side, colour in (data.get("picture_hand") or {}).items():   # what the drawings were held to
+                    if colour:
+                        out[f"{side} hand in the picture"] = f"L*a*b* {colour['lab']}, {colour['skin']:.0%} skin-toned"
+                return out | {"to look at": len(data.get("unsure", []))}
             if name == "head":
                 data = json.loads((folder / "face.json").read_text(encoding="utf-8"))
                 region = json.loads((folder / "region.json").read_text(encoding="utf-8"))
@@ -509,6 +521,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--before", type=Path, default=None,
                         help="the figure's game model before (its version in the game): the finished one is checked "
                              "against it")
+    parser.add_argument("--glow-on-hands", action="store_true",
+                        help="let the game step's glow reach new hands too (a glowing gauntlet or a spell in the hand); "
+                             "by default the chain keeps it off them once its hands stage is kept")
     parser.add_argument("--pose-check", nargs="*", choices=hc.GEOMETRY, default=list(hc.GEOMETRY),
                         help="the stages checked in motion (a game-ready run each; default all that change the shape)")
     parser.add_argument("--gpu-lock", type=Path, action="append", default=[],
@@ -527,7 +542,8 @@ def main(argv: list[str] | None = None) -> int:
     out = (args.out or REPO / "output" / "hero_chain" / args.model.stem[:60]).resolve()
     run = Run(out)
     name = args.name or args.model.stem
-    models = hc.Models(args.model, {flag: path.resolve() for flag, path in hc.game_models(game).items()})
+    models = hc.Models(args.model, {flag: path.resolve() for flag, path in hc.game_models(game).items()},
+                       hand_glow=args.glow_on_hands)
     game = models.game_args(game)
     run.say(f"hero chain: {args.model} + {args.picture} -> {out}; finer models {models.as_dict()}")
     chain = Chain(args, game, run)
@@ -541,8 +557,8 @@ def main(argv: list[str] | None = None) -> int:
         result, after = chain.stage(index, stage_name, models, game)
         stages.append(result)
         run.say(f"{stage_name}: {hc.STATUS_WORDS[result.status]}: {result.why}")
-        if after is not None:
-            models = after
+        if after is not None:                  # a stage kept from a run before reads its models back without the
+            models = replace(after, hand_glow=args.glow_on_hands)   # caller's choice of this run
 
     stage(run, "game", "The game-ready step")
     glb, report = chain.game_run(models, "final", game)

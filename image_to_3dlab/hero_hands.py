@@ -1099,21 +1099,147 @@ def arm_bones(parents: dict[str, str | None], heads: dict[str, np.ndarray]) -> t
 # --- Picture side ---------------------------------------------------------------------------------------------
 
 HAND_PROMPT = (
-    "The same {side} hand as in the reference image, a stylized 3D game character's hand with smooth simple "
-    "skin like in the reference, not a photo. Now seen straight from the back of the hand, the fingers "
+    "The same {side} hand as in the reference image, a stylized 3D game character's hand with {surface}, not a "
+    "photo. Now seen straight from the back of the hand, the fingers "
     "pointing down and slightly apart. A {side} hand seen from its back with the fingers down has its thumb on "
     "the {thumb} side of the picture: one short thumb sticking out to the {thumb} at the height of the knuckles. "
     "Then from {thumb} to {other} the index finger, the middle finger (the longest), the ring finger and the "
     "little finger (the shortest, on the far {other}). Four fingers and one thumb, nothing on the {other} side but "
     "the little finger. {look} Nothing else in the picture. Flat even lighting, plain light grey background.")
 DEFAULT_LOOK = "The same glove or bare skin, the same sleeve and cuff at the top, in the same colours as in the reference."
+BARE_SURFACE = "smooth simple skin like in the reference"
+GLOVE_SURFACE = "a smooth simple {colour} glove like in the reference"
+GLOVE_LOOK = ("The hand wears the same {colour} glove as in the reference, over the palm, the back of the hand and "
+              "every finger: no bare skin on the hand. The same sleeve and cuff at the top, in the same colours as in "
+              "the reference.")
 
 
-def hand_prompt(side: str, look: str | None = None) -> str:
+def hand_prompt(side: str, look: str | None = None, glove: str | None = None) -> str:
     """The picture editor's prompt that redraws a cropped hand flat: naming the thumb's side and the fingers in
-    order is what made it draw five (a prompt without them drew 0 good hands of 4, this one 2 of 8)."""
+    order is what made it draw five (a prompt without them drew 0 good hands of 4, this one 2 of 8). GLOVE (the
+    picture's glove colour in words, `colour_words`) asks for that glove and never says skin: the default prompt's
+    "smooth simple skin" and "glove or bare skin" drew the Arkan-Duellant's black glove as a bare hand 4 times of 4
+    (round 32). LOOK, the caller's words, stands either way."""
     thumb, other = ("right", "left") if side == "right" else ("left", "right")
-    return HAND_PROMPT.format(side=side, thumb=thumb, other=other, look=(look or DEFAULT_LOOK).strip())
+    surface = GLOVE_SURFACE.format(colour=glove) if glove else BARE_SURFACE
+    look = look or (GLOVE_LOOK.format(colour=glove) if glove else DEFAULT_LOOK)
+    return HAND_PROMPT.format(side=side, thumb=thumb, other=other, surface=surface, look=look.strip())
+
+
+# --- the drawn hand's colour against the picture's ----------------------------------------------------------------
+# The picture editor can redraw a gloved hand bare (the Arkan-Duellant's black glove, four drawings of four, D300),
+# and a count of the fingers cannot see it. So the hand is measured in both pictures the same way: the picture's
+# below the wrist (the figure's old hand projected into the crop, `picture_hand_mask`), the drawing's below its sleeve
+# (`drawing_hand_mask`); a drawing whose hand's median colour lies more than HAND_DE_LIMIT from the picture's is
+# dropped like one with the wrong finger count.
+
+HAND_DE_LIMIT = 25.0      # L*a*b* distance of the two hands' median colours a drawing may keep: the same hand
+                          # drawn flat-lit sits within ~15 of its shaded picture, a bare hand for a black glove ~60
+HAND_ROWS = 0.45          # a drawing's hand is its subject below this share of its height: the sleeve and the cuff
+                          # take the top quarter to third (the prompt puts them at the top)
+HAND_LEAST_PIXELS = 50    # fewer hand pixels than this: too few to tell a colour
+GLOVE_SKIN = 0.25         # a picture's hand with less of it skin-toned than this wears a glove (the prompt asks for it)
+SKIN_LIGHTNESS = (45.0, 95.0)   # skin-toned: this light (a dark leather glove is darker) ...
+SKIN_HUE = (20.0, 80.0)         # ... of a warm hue between red and yellow (gold trim lies past 80) ...
+SKIN_CHROMA = (8.0, 55.0)       # ... and neither grey nor a vivid paint
+
+
+def skin_toned(lab: np.ndarray) -> np.ndarray:
+    """Which L*a*b* rows are skin-toned (light, warm, moderately saturated)."""
+    lab = np.asarray(lab, dtype=np.float64).reshape(-1, 3)
+    hue = np.degrees(np.arctan2(lab[:, 2], lab[:, 1])) % 360
+    chroma = np.hypot(lab[:, 1], lab[:, 2])
+    return ((lab[:, 0] >= SKIN_LIGHTNESS[0]) & (lab[:, 0] <= SKIN_LIGHTNESS[1]) & (hue >= SKIN_HUE[0])
+            & (hue <= SKIN_HUE[1]) & (chroma >= SKIN_CHROMA[0]) & (chroma <= SKIN_CHROMA[1]))
+
+
+def hand_colour(rgb: np.ndarray, least: int = HAND_LEAST_PIXELS) -> dict | None:
+    """A hand's colour from its pixels (RGB rows 0-255): the median L*a*b* and the share that is skin-toned; None
+    with fewer than LEAST pixels."""
+    rgb = np.asarray(rgb, dtype=np.float64).reshape(-1, 3)
+    if len(rgb) < least:
+        return None
+    lab = to_lab(rgb)
+    return {"lab": np.round(np.median(lab, axis=0), 1).tolist(), "skin": round(float(skin_toned(lab).mean()), 3),
+            "pixels": int(len(rgb))}
+
+
+def colour_words(lab) -> str:
+    """A plain name for an L*a*b* colour ("black", "dark red", "brown", "white"), for the drawing prompt."""
+    lightness, a, b = (float(v) for v in np.asarray(lab, dtype=np.float64).reshape(3))
+    chroma, hue = float(np.hypot(a, b)), float(np.degrees(np.arctan2(b, a)) % 360)
+    if lightness < 22 or (chroma < 12 and lightness < 30):
+        return "black"
+    if chroma < 12:
+        return "dark grey" if lightness < 50 else "grey" if lightness < 72 else "light grey" if lightness < 88 else "white"
+    if 50 <= hue < 85:
+        name = "brown" if lightness < 55 else "orange"
+    elif 85 <= hue < 115:
+        name = "olive" if lightness < 55 else "yellow"
+    elif 115 <= hue < 170:
+        name = "green"
+    elif 170 <= hue < 235:
+        name = "teal"
+    elif 235 <= hue < 300:
+        name = "blue"
+    elif 300 <= hue < 345:
+        name = "purple"
+    else:
+        name = "pink" if lightness > 70 else "red"
+    return f"dark {name}" if lightness < 40 and name not in ("brown", "olive") else name
+
+
+def hand_words(colour: dict | None) -> str:
+    """What a measured hand shows, in a word or two: "skin", or its glove's colour."""
+    if colour is None:
+        return "unknown"
+    return "skin" if colour["skin"] >= GLOVE_SKIN else f"{colour_words(colour['lab'])} glove"
+
+
+def glove_of(colour: dict | None) -> str | None:
+    """The picture's glove colour in words when its hand is not skin, else None."""
+    return colour_words(colour["lab"]) if colour is not None and colour["skin"] < GLOVE_SKIN else None
+
+
+def colour_check(picture: dict | None, drawing: dict | None, limit: float = HAND_DE_LIMIT) -> dict:
+    """A drawing's hand against the picture's (`hand_colour` of each): ok when their medians lie within LIMIT
+    (L*a*b* distance), or when either is too small to measure."""
+    if picture is None or drawing is None:
+        return {"ok": True, "de": None, "why": "too few hand pixels to compare colours"}
+    de = float(np.linalg.norm(np.subtract(picture["lab"], drawing["lab"])))
+    ok = de <= limit
+    why = (f"its hand ({hand_words(drawing)}) lies {de:.0f} dE from the picture's ({hand_words(picture)})"
+           + ("" if ok else f", past {limit:g}"))
+    return {"ok": ok, "de": round(de, 1), "why": why}
+
+
+def picture_hand_mask(px: np.ndarray, py: np.ndarray, subject: np.ndarray, radius: int | None = None) -> np.ndarray:
+    """The picture's hand: the figure's old hand past the wrist projected into the crop (pixels PX, PY in the crop's
+    frame), its points closed into one area (RADIUS pixels, by default 3 % of the crop), and only where the picture
+    shows the subject (SUBJECT, the cut-out's mask over the crop)."""
+    import cv2
+
+    subject = np.asarray(subject, dtype=bool)
+    h, w = subject.shape
+    radius = radius or max(2, int(round(0.03 * max(h, w))))
+    x, y = np.round(np.asarray(px)).astype(int), np.round(np.asarray(py)).astype(int)
+    keep = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+    marks = np.zeros((h, w), np.uint8)
+    marks[y[keep], x[keep]] = 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    closed = cv2.morphologyEx(marks, cv2.MORPH_CLOSE, kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    return closed.astype(bool) & subject
+
+
+def drawing_hand_mask(mask: np.ndarray, rows: float = HAND_ROWS) -> np.ndarray:
+    """A drawing's hand: its subject (MASK) below ROWS of the subject's height, under the sleeve and the cuff."""
+    mask = np.asarray(mask, dtype=bool)
+    filled = np.nonzero(mask.any(axis=1))[0]
+    out = np.zeros_like(mask)
+    if len(filled):
+        cut = int(np.ceil(filled[0] + rows * (filled[-1] - filled[0])))
+        out[cut:] = mask[cut:]
+    return out
 
 
 def digit_count(mask: np.ndarray, top_band: float = 0.25, prominence: float = 0.06,

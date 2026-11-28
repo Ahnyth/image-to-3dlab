@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero hands: a gloved figure gets gloved hands.** The picture editor drew the Arkan-Duellant's black glove as a
+  bare hand in all eight drawings, the stage kept them by their finger count alone, and the finished figure got
+  skin-coloured hands with gold fingers. The hand stage now measures the picture's hand (the figure's old hand past the
+  wrist, projected into the crop: its median colour and how much of it is skin-toned) and each drawing's hand below its
+  sleeve the same way, and drops a drawing whose hand's median colour lies more than 25 L\*a\*b\* units from the
+  picture's (the bare drawings sat 56 to 62 from the black glove). A hand that is
+  not skin is asked for as a glove of its colour ("black glove", never "skin": three drawings of three then kept the
+  glove, 1 to 8 units from the picture's; the Daemonenhexer's bare drawings sat 3 and 7 from its bare hand). When no
+  drawing keeps the colour, the nearest five-digit drawing is built and the hands painted from the picture's hand
+  (`--colour-miss paint`, the default: five separate black fingers where the figure's own hands were a creased mitten),
+  or with `--colour-miss keep` the figure keeps its own hands (exit code 3, the reason in `hands.json`; the Hero chain
+  then skips the stage, as it does for boots). A hand's clean-up whose bounds stray from its build (a coarse one of a
+  glove's thin fingers sat 3.7 % off, allowed 3 %) is made again finer instead of stopping the stage.
+  A rerun redraws a drawing made with another prompt. The Hero chain passes `--glow-not-on-hands` to the game step once
+  its hands stage is kept and the game options make something glow (the new fingers took the figure's gold glow), unless
+  `--glow-on-hands` asks for glowing hands.
 - **Hero face: no ledge where hair beside the face ends at the seam.** The face rises in full to the figure's hair
   beside it, and where that hair ended at the seam (the tip of a side lock) the face dropped back to the cheek at once:
   a ledge along the lock's underside, painted with the picture's dark hair and in shadow, drew a black stroke from the

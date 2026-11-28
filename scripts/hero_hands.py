@@ -3,7 +3,7 @@
 
     .venv/bin/python scripts/hero_hands.py rigged.glb front.png [--out output/hero_hands/NAME]
         [--also finer.glb ...] [--left mirror|own] [--tries 8] [--keep 2] [--seeds 42 7]
-        [--hand-faces 20000] [--hand-detail 1] [--hand-paint match|keep]
+        [--hand-faces 20000] [--hand-detail 1] [--hand-paint match|keep] [--colour-miss paint|keep]
         [--look "black fingerless gloves, black cuffs with teal stripes"]
 
 A hand that is a few dozen pixels of a full-body picture comes out of Pixal3D as a mitten. Built on its own it
@@ -13,10 +13,16 @@ hangs beside the thigh, seen from the thumb's side with the fingers stacked, and
 
   1. measure  the rig finds both arms by the tree's shape; along each forearm the narrowest section between
               the palm and a cuff (or the forearm) is the wrist. No names, no hand-drawn box.
-  2. crop     the hand and its cuff cut from the picture, upscaled 4x with Real-ESRGAN.
+  2. crop     the hand and its cuff cut from the picture, upscaled 4x with Real-ESRGAN; the picture's hand (the
+              figure's old hand past the wrist, projected into the crop) is measured: its median colour, skin or not.
   3. draw     the picture editor (FLUX.2 klein, edit mode) redraws the crop as the same hand seen flat from its
-              back, fingers down and apart; --tries drawings, kept only when their outline counts five digits
-              and one thumb, up to --keep of them.
+              back, fingers down and apart (a hand that is not skin is asked for as a glove of its colour);
+              --tries drawings, kept only when their outline counts five digits and one thumb and their hand's
+              colour lies near the picture's (the editor drew the Arkan-Duellant's black glove as a bare hand),
+              up to --keep of them. When none keeps the colour, the nearest five-digit drawing is built and the
+              hands painted from the picture's hand (--colour-miss paint: on the Arkan-Duellant five separate black
+              fingers, where its own hands are a creased mitten), or the figure keeps its own hands (--colour-miss
+              keep: exit code 3 and the reason in hands.json).
   4. build    Pixal3D on each kept drawing, --seeds each, kept only when the built hand's outline, seen from
               twelve sides, counts five digits and one thumb, its palm is solid (an armoured hand can come
               out as a plate round an empty inside) and its wrist closes where the figure's cut falls (not open
@@ -108,9 +114,53 @@ def mask_of(picture: Path):
     return np.asarray(cut)[..., 3] > 127
 
 
-def draw_hands(run: Run, side: str, up: Path, folder: Path, args, engine) -> list[Path]:
-    """Up to --keep drawings of the hand seen flat from its back, each with five digits and one thumb."""
+SKIPPED = 3     # the exit code when the figure keeps its own hands (as hero_parts' without boots): the chain skips
+
+
+def picture_hand(run: Run, side: str, crop: Path, box, cutout: Path, px, py, folder: Path) -> dict | None:
+    """The picture's hand colour (`hh.hand_colour`): the crop's pixels inside the figure's old hand past the wrist,
+    projected (PX, PY in the picture's pixels), where the cut-out shows the subject. Written beside the crop:
+    <side>_hand.png (the crop darkened outside the mask, for a look) and <side>_crop_hand.png with its cut-out
+    <side>_crop_hand__matted.png, which `match_paint` takes its tones from with --colour-miss paint."""
+    import numpy as np
+    from PIL import Image
+
+    from image_to_3dlab import hero_hands as hh
+
+    with Image.open(cutout) as opened:
+        subject = np.asarray(opened.convert("RGBA").crop(box))[..., 3] > 127
+    with Image.open(crop) as opened:
+        rgb = np.asarray(opened.convert("RGB"))
+    mask = hh.picture_hand_mask(np.asarray(px) - box[0], np.asarray(py) - box[1], subject)
+    Image.fromarray(np.where(mask[..., None], rgb, rgb // 3).astype(np.uint8)).save(folder / f"{side}_hand.png")
+    Image.fromarray(rgb).save(folder / f"{side}_crop_hand.png")
+    Image.fromarray(np.dstack([rgb, np.where(mask, 255, 0).astype(np.uint8)])).save(
+        folder / f"{side}_crop_hand__matted.png")
+    colour = hh.hand_colour(rgb[mask])
+    if colour is None:
+        run.say(f"colour: the {side} hand shows {int(mask.sum())} pixels in the picture, too few to measure; its "
+                "drawings are kept by their fingers alone")
+    else:
+        run.say(f"colour: the picture's {side} hand ({hh.hand_words(colour)}): L*a*b* median {colour['lab']}, "
+                f"{colour['skin']:.0%} skin-toned, {colour['pixels']} pixels")
+    return colour
+
+
+def stale(drawing: Path, prompt: str) -> bool:
+    """Whether DRAWING was drawn with another prompt (its licence record says which): a rerun after the prompt
+    changed (a glove asked for) must not keep the bare hands drawn before."""
+    record = drawing.with_suffix(".provenance.json")
+    if not drawing.exists() or not record.is_file():
+        return False
+    return json.loads(record.read_text(encoding="utf-8")).get("prompt") != prompt
+
+
+def draw_hands(run: Run, side: str, up: Path, folder: Path, args, engine,
+               picture: dict | None = None) -> tuple[list[Path], list[Path]]:
+    """Up to --keep drawings of the hand seen flat from its back, each with five digits and one thumb and a hand
+    whose colour lies near PICTURE's (`hh.colour_check`); and the five-digit ones whose colour missed, nearest first."""
     import image_api
+    import numpy as np
     from PIL import Image
 
     from image_to_3dlab import back_view
@@ -122,11 +172,18 @@ def draw_hands(run: Run, side: str, up: Path, folder: Path, args, engine) -> lis
         with Image.open(up) as opened:
             back_view.reference_on_grey(opened.convert("RGBA")).save(reference)
     weights, vision = image_api.resolve_weights(engine), image_api.resolve_vision(engine)
-    prompt = hh.hand_prompt(side, args.look)
-    kept = []
+    glove = None if args.look else hh.glove_of(picture)
+    prompt = hh.hand_prompt(side, args.look, glove)
+    if glove:
+        run.say(f"draw: the picture's {side} hand wears a {glove} glove: the drawings are asked to keep it")
+    kept, missed = [], []
     for seed in range(1, args.tries + 1):
         drawing = folder / f"{side}_draw_s{seed}.png"
         counted = drawing.with_suffix(".count.json")
+        if stale(drawing, prompt):            # drawn with another prompt: it, its count and its builds go
+            for old in [*folder.glob(f"{drawing.stem}.*"), *folder.glob(f"{drawing.stem}_*")]:
+                old.unlink()
+            run.say(f"draw: {drawing.name} was drawn with another prompt; it is drawn again")
         if not drawing.exists():
             settings = image_api.clean_settings({"seed": seed, "width": DRAW_SIZE, "height": DRAW_SIZE},
                                                 engine=engine)
@@ -143,17 +200,26 @@ def draw_hands(run: Run, side: str, up: Path, folder: Path, args, engine) -> lis
             record["reference"] = {"picture": str(up), "mode": "edit (hand seen flat from its back)"}
             write_provenance(drawing.with_suffix(".provenance.json"), record)
         count = json.loads(counted.read_text(encoding="utf-8")) if counted.exists() else {}
-        if count.get("rule") != "cleft":       # a count from before the thumb was told by its cleft is redone
-            # the prompt puts a right hand's thumb on the picture's right, a left hand's on its left
-            count = {**hh.digit_count(mask_of(drawing), thumb_side=side), "rule": "cleft"}
+        if count.get("rule") != "cleft" or "colour" not in count:   # a count from before the thumb was told by its
+            mask = mask_of(drawing)                                  # cleft, or before the colour was measured
+            if count.get("rule") != "cleft":
+                # the prompt puts a right hand's thumb on the picture's right, a left hand's on its left
+                count = {**hh.digit_count(mask, thumb_side=side), "rule": "cleft"}
+            with Image.open(drawing) as opened:
+                rgb = np.asarray(opened.convert("RGB"))
+            count["colour"] = hh.hand_colour(rgb[hh.drawing_hand_mask(mask)])
             counted.write_text(json.dumps(count), encoding="utf-8")
-        run.say(f"draw: {drawing.name} {count['digits']} digits, {count['thumbs']} thumb(s)"
-                + (" - kept" if count["ok"] else ""))
-        if count["ok"]:
+        colour = hh.colour_check(picture, count["colour"])
+        ok = count["ok"] and colour["ok"]
+        run.say(f"draw: {drawing.name} {count['digits']} digits, {count['thumbs']} thumb(s); {colour['why']}"
+                + (" - kept" if ok else ""))
+        if ok:
             kept.append(drawing)
             if len(kept) >= args.keep:
                 break
-    return kept
+        elif count["ok"]:
+            missed.append((colour["de"], drawing))
+    return kept, [drawing for _, drawing in sorted(missed)]
 
 
 def build_count(raw: Path) -> dict:
@@ -203,21 +269,31 @@ def build_hand(run: Run, side: str, drawings: list[Path], folder: Path, args, fi
 
 
 def clean_hand(run: Run, raw: Path, faces: int) -> Path:
-    """Pixal3D's own clean-up of the build: a light mesh with one painted atlas, in the build's own frame."""
+    """Pixal3D's own clean-up of the build: a light mesh with one painted atlas, in the build's own frame. A
+    clean-up whose bounds stray from the build's (`frame_problem`) is made again finer, doubling up to HAND_FACES: the
+    Arkan-Duellant's glove build at 3,000 faces sat 3.7 % off (allowed 3 %), its thin fingers shrunk by the decimation
+    (round 32). Off at every size, it is a frame fault and the stage stops."""
     from image_to_3dlab import pixal3d_native as native
 
-    clean = raw.with_name(f"{raw.stem}_clean{faces // 1000}k.glb" if faces % 1000 == 0
-                          else f"{raw.stem}_clean{faces}.glb")
-    if not clean.exists():
+    sizes = [faces]
+    while sizes[-1] < HAND_FACES:
+        sizes.append(min(sizes[-1] * 2, HAND_FACES))
+    for size in sizes:
+        clean = raw.with_name(f"{raw.stem}_clean{size // 1000}k.glb" if size % 1000 == 0
+                              else f"{raw.stem}_clean{size}.glb")
+        if clean.exists():
+            return clean
         replay = raw.with_name(f"{raw.stem}.replay.glb")
-        run.run(native.replay_command(raw.with_suffix(native.DUMP_SUFFIX), replay, faces, 2048))
+        run.run(native.replay_command(raw.with_suffix(native.DUMP_SUFFIX), replay, size, 2048))
         converted = native.convert_replay_glb(replay.read_bytes())
         problem = native.frame_problem(native.glb_bounds(raw.read_bytes()), native.glb_bounds(converted))
-        if problem:
-            raise SystemExit(f"[hero] the hand's clean-up does not sit on its build: {problem}")
-        clean.write_bytes(converted)
         replay.unlink(missing_ok=True)
-    return clean
+        if not problem:
+            clean.write_bytes(converted)
+            return clean
+        run.say(f"clean: {raw.name} at {size} faces does not sit on its build ({problem})"
+                + ("; made again finer" if size != sizes[-1] else ""))
+    raise SystemExit(f"[hero] the hand's clean-up does not sit on its build: {problem}")
 
 
 def place(part: dict, plan: dict):
@@ -298,7 +374,8 @@ def graft_one(run: Run, model: Path, out: Path, bone, plans: dict, hands: dict, 
     if paint == "match":
         first = next(iter(hands))
         figure = hh.part_paint(part, hh.old_hand_faces(part["positions"], part["faces"], model_bone, plans))
-        toned = match_paint(run, out, put[first]["part"], drawing_of(hands[first]["raw"]), both, figure)
+        source = hands[first].get("paint_from") or drawing_of(hands[first]["raw"])   # the picture's hand when
+        toned = match_paint(run, out, put[first]["part"], source, both, figure)        # the drawing missed its colour
     else:
         toned = {"paint": "kept"}
     for side, entry in report.items():         # the build was checked at the reference size; a smaller one may differ
@@ -368,6 +445,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hand-paint", choices=("match", "keep"), default="match",
                         help="match: the new hands' paint brought to the tone of the drawing they were built from "
                              "(Pixal3D's clean-up paints a built hand darker and more saturated); keep: as built")
+    parser.add_argument("--colour-miss", choices=("paint", "keep"), default="paint",
+                        help="when no drawing keeps the picture's hand colour (a glove drawn bare): paint, the nearest "
+                             "five-digit drawing is built and the new hands painted from the picture's hand; keep, the "
+                             "figure keeps its own hands (exit code 3)")
     parser.add_argument("--look", default=None,
                         help="what the hand wears, in words, for the drawing (default: as in the picture)")
     args = parser.parse_args(argv)
@@ -437,18 +518,33 @@ def main(argv: list[str] | None = None) -> int:
         matte.cut_out(Image.open(args.picture).convert("RGB"))[0].save(cutout)
     picture = hero.load_picture(cutout)
     full_frame = hero.frame(figure["positions"], hero.picture_box(picture))
-    built, raws, records = {}, {}, []
+    built, raws, records, colours, painted = {}, {}, [], {}, {}
     for side in sources:
         stage(run, "crop", f"Cropping and upscaling the {side} hand")
-        px, py = hero.project(hh.hand_points(figure["positions"], figure_bone, plans[side]), full_frame)
+        points = hh.hand_points(figure["positions"], figure_bone, plans[side])
+        px, py = hero.project(points, full_frame)
         box = hh.crop_box(px, py, picture.width, picture.height)
         crop, up = folder / f"{side}_crop.png", folder / f"{side}_up.png"
         run.say(f"crop: {side} hand {box} ({box[2] - box[0]} px)")
-        if run.step(f"crop {side}", up):
+        if run.step(f"crop {side}", up) or not crop.exists():
             Image.open(args.picture).convert("RGB").crop(box).save(crop)
+        if not up.exists():
             run.run([PYTHON, UPSCALE, crop, up, "--size", str(DRAW_SIZE)])
+        past = (points - plans[side]["cut"]) @ plans[side]["axis"] > 0       # the old hand below the wrist
+        colours[side] = picture_hand(run, side, crop, box, cutout, px[past], py[past], folder)
         stage(run, "draw", f"Drawing the {side} hand flat, fingers apart")
-        drawings = draw_hands(run, side, up, folder, args, engine)
+        drawings, missed = draw_hands(run, side, up, folder, args, engine, colours[side])
+        if not drawings and missed:
+            why = (f"none of {args.tries} drawings of the {side} hand kept the picture's "
+                   f"{hh.hand_words(colours[side])} (the five-digit ones drew {hh.hand_words(_drawn(missed[0]))})")
+            if args.colour_miss == "keep":
+                run.say(f"hands: skipped: {why}: the figure keeps its own hands")
+                (out / "hands.json").write_text(json.dumps({
+                    "model": str(args.model), "picture": str(args.picture), "skipped": f"{why}: the figure keeps "
+                    "its own hands", "picture_hand": colours, "unsure": run.unsure}, indent=1), encoding="utf-8")
+                return SKIPPED
+            run.flag(f"{why}: the hands are built from {missed[0].name} and painted from the picture's hand")
+            drawings, painted[side] = missed, folder / f"{side}_crop_hand.png"
         if not drawings:
             raise SystemExit(f"[hero] none of {args.tries} drawings of the {side} hand has five digits and one "
                              "thumb: try more (--tries) or describe the hand (--look)")
@@ -486,7 +582,8 @@ def main(argv: list[str] | None = None) -> int:
         area = hh.spread_area(len(below["faces"]), hh.surface_area(below["positions"], below["faces"]),
                               len(clean["faces"]))
         hands[side] = {"tf": tf, "scale": scale, "down": hh.unit(tf[:3, :3] @ hh.DRAWN_DOWN),
-                       "reference": built[source], "raw": raws[source], "mirrored": source != side, "area": area}
+                       "reference": built[source], "raw": raws[source], "mirrored": source != side, "area": area,
+                       "paint_from": painted.get(source)}
         if not own["found"]:
             run.flag(f"the built {source} hand showed no wrist below its cuff; it is cut halfway")
     result = out / f"{args.model.stem}_hands.glb"
@@ -511,7 +608,8 @@ def main(argv: list[str] | None = None) -> int:
     stage(run, "check", "Counting the grafted hands' fingers")
     fresh(run, "check")
     summary = {"model": str(args.model), "picture": str(args.picture), "result": str(result), "sides": {},
-               "hand_detail": args.hand_detail, "sizing": {args.model.name: sizing, **also}}
+               "hand_detail": args.hand_detail, "sizing": {args.model.name: sizing, **also}, "picture_hand": colours,
+               "painted_from_picture": sorted(painted)}
     for index, side in enumerate(plans):
         # framed as its drawing was: the hand with the figure's cuff above it
         hand = hh.merge_parts([hh.side_faces(both, both["side_of_face"], index), hh.arm_stub(body, plans[side])])
@@ -539,6 +637,12 @@ def main(argv: list[str] | None = None) -> int:
     for note in run.unsure:
         run.say(f"  to check: {note}")
     return 0
+
+
+def _drawn(drawing: Path) -> dict | None:
+    """A drawing's hand colour as its count recorded it."""
+    counted = drawing.with_suffix(".count.json")
+    return json.loads(counted.read_text(encoding="utf-8")).get("colour") if counted.is_file() else None
 
 
 def drawing_of(raw: Path) -> Path:

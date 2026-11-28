@@ -352,3 +352,42 @@ def test_a_shape_stage_is_counted_for_see_through_on_the_models_the_game_step_sh
     assert [label for label, _, _ in pairs] == ["rigged model", "shape model"]
     assert pairs[1][1:] == (Path("C:/f/fine.glb"), Path("C:/o/fine_face.glb"))
     assert ch.shape_pairs(models, models) == []
+
+
+def test_after_new_hands_the_game_step_keeps_the_glow_off_them(capsys):
+    # the Arkan-Duellant's new hands came out with gold fingers: the game step's --glow #ffc23a found the drawn hand's
+    # warm highlights (D300); the chain passes --glow-not-on-hands once its hands stage is kept, unless the caller asks
+    # for glowing hands with the chain's --glow-on-hands
+    import hero_chain
+
+    glowing = [*GAME, "--glow", "#ffc23a"]
+    models = ch.Models(Path("C:/f/rig.glb"), ch.game_models(GAME))
+    assert "--glow-not-on-hands" not in models.game_args(glowing)
+    handed = hero_chain.stage_models("hands", models, {models.rig: Path("C:/o/rig_hands.glb")})
+    assert handed.game_args(glowing).count("--glow-not-on-hands") == 1
+    assert handed.game_args([*glowing, "--glow-not-on-hands"]).count("--glow-not-on-hands") == 1
+    assert "--glow-not-on-hands" not in handed.game_args(GAME)                 # nothing glows: nothing to say
+    lit = ch.Models(Path("C:/f/rig.glb"), ch.game_models(GAME), hand_glow=True)
+    lit = hero_chain.stage_models("hands", lit, {lit.rig: Path("C:/o/rig_hands.glb")})
+    assert "--glow-not-on-hands" not in lit.game_args(glowing)
+    with pytest.raises(SystemExit):
+        hero_chain.main(["--help"])
+    assert "--glow-on-hands" in capsys.readouterr().out
+
+
+def test_a_hands_stage_that_keeps_the_figures_own_hands_is_skipped(tmp_path):
+    # no drawing kept the picture's glove: the hand stage keeps the figure's own hands and says why, like the boots gate
+    import hero_chain
+
+    (tmp_path / "hands.json").write_text(json.dumps({"skipped": "no drawing kept the picture's black glove",
+                                                     "picture_hand": {"right": {"lab": [15.3, 0.5, -1.3], "skin": 0.0,
+                                                                                "pixels": 1732}}}))
+    from types import SimpleNamespace
+
+    chain = hero_chain.Chain.__new__(hero_chain.Chain)
+    chain.args = SimpleNamespace(picture=tmp_path / "front.png")
+    chain.call = lambda command, log, what, gpu=False: hero_chain.SKIPPED
+    models = ch.Models(tmp_path / "rig.glb", {})
+    stage, new = chain.run_stage("hands", models, tmp_path, {}, [])
+    assert (stage.status, new) == ("skipped", None) and "black glove" in stage.why
+    assert stage.measured["right hand in the picture"] == "L*a*b* [15.3, 0.5, -1.3], 0% skin-toned"

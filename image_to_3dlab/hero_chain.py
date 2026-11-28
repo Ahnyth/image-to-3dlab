@@ -83,6 +83,7 @@ class Models:
     finer: dict = field(default_factory=dict)        # game-ready option -> path
     new_feet: bool = False                           # a boots stage replaced the feet: the game step cuts none
     new_hands: bool = False                          # a hands stage gave real fingers: the game step protects them
+    hand_glow: bool = False                          # the caller wants new hands to glow too (the chain's --glow-on-hands)
 
     def all(self) -> list[Path]:
         """The rigged model first, then each finer one once."""
@@ -110,13 +111,15 @@ class Models:
             return index.get(str(Path(path).resolve()).lower(), Path(path))
 
         return Models(swap(self.rig), {flag: swap(path) for flag, path in self.finer.items()},
-                      self.new_feet or new_feet, self.new_hands or new_hands)
+                      self.new_feet or new_feet, self.new_hands or new_hands, self.hand_glow)
 
     def game_args(self, args: list[str]) -> list[str]:
         """A game-ready command line's options with these models as its finer ones. With new feet the game step cuts
         none: the sole it would cut (planned from the figure's Finish run) went with the old feet, and measured from
         the new lowest point its cut took the new boots' feet (skin_sorcerer_c, 2026-11-24). With new hands the thinning
-        spares them (`--hand-protect` HAND_PROTECT), unless the command line names its own."""
+        spares them (`--hand-protect` HAND_PROTECT), unless the command line names its own, and a glow keeps off them
+        (`--glow-not-on-hands`), unless HAND_GLOW: a drawn hand's warm highlights took the Arkan-Duellant's gold glow
+        (`--glow #ffc23a`) and its new fingers came out gold (D300)."""
         out = list(args)
         for flag, path in self.finer.items():
             out = with_option(out, flag, str(path))
@@ -124,6 +127,9 @@ class Models:
             out = with_option(with_option(out, "--feet-from", None), "--feet", "off")
         if self.new_hands and option_value(out, "--hand-protect") is None:
             out = with_option(out, "--hand-protect", str(HAND_PROTECT))
+        if (self.new_hands and not self.hand_glow and option_value(out, "--glow") is not None
+                and "--glow-not-on-hands" not in out):
+            out = [*out, "--glow-not-on-hands"]
         return out
 
     def as_dict(self) -> dict:
