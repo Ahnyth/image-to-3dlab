@@ -804,14 +804,23 @@ def face_continued(positions: np.ndarray, faces: np.ndarray, window: dict, reach
 
 
 def skirt_under(points: np.ndarray, values: np.ndarray, continued: np.ndarray, own: np.ndarray,
-                gap: float) -> np.ndarray:
+                gap: float, front: np.ndarray | None = None) -> np.ndarray:
     """POINTS of the new face with their skirt (VALUES at most 0: past the seam, under the figure's cut edge) laid
     flat in depth at CONTINUED (`face_continued` at each point), never nearer than GAP behind OWN (the figure's
     surface there). Where the figure has none (NaN) a point stays: a skirt laid flat into the air would show. Tucked
     as its own relief ran, the skirt went down a pit's wall at skin_sorcerer_c's jaw, deep under the figure's edge, and
-    one saw past the edge into the head from the side and below (round 28 of the AssetFurnace Support notes)."""
+    one saw past the edge into the head from the side and below (round 28 of the AssetFurnace Support notes).
+
+    With FRONT (the figure's front at each point as it is, strands and all) the skirt hides behind whichever of OWN
+    and FRONT is nearer: where the figure's front stands off the surface OWN follows (a strand, or the lip of an old
+    chin the cut leaves standing below the seam), that front covers the skirt, so the skirt stays there instead of
+    diving to the surface behind it. Dived, the Nachtschwinge's skirt under its chin became a shelf 4.5 cm deep under
+    the lip, and the shelf's tip, which reached a pixel into the window, showed as a dark notch under the chin from the
+    front (round 32 of the AssetFurnace Support notes)."""
     p = np.array(points, dtype=np.float64)
     own = np.asarray(own, dtype=np.float64)
+    if front is not None:
+        own = np.fmax(own, np.asarray(front, dtype=np.float64))     # the nearer of the two covers the skirt
     with np.errstate(invalid="ignore"):
         z = np.where(np.isfinite(own), np.fmin(np.asarray(continued, dtype=np.float64), own - gap), np.nan)
     flat = (np.asarray(values, dtype=np.float64) <= 0) & np.isfinite(z)
@@ -1717,7 +1726,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     seam's line nor the tuck, the Nachtschwinge's old cut edge hung over the face along 17.5 % of the seam at the face
     stage (10.3 % fine) and a wedge of the face's hair paint stood out beside its eye (round 31 of the AssetFurnace
     Support notes). It keeps more triangles than KEEP where its light would show facets (`lighter_without_facets`);
-    the report's face_facets says how much of it still strays."""
+    the report's face_facets says how much of it still strays. The face's skirt hides behind the
+    figure's front as it is (`skirt_under`'s FRONT)."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
@@ -1748,6 +1758,7 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
         is_face = is_face | pit
     counted = np.where(is_face, new_depth, -np.inf)
     body_index, target, most, rims = None, None, 0, []
+    front = None
     for index, part in enumerate(parts):
         p, f = np.asarray(part["positions"], dtype=np.float64), np.asarray(part["faces"], dtype=np.int64)
         values = window_values(window, p)
@@ -1775,6 +1786,7 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
             body_index, most = len(out_parts), int(gone.sum())
             # the surface the face goes on into: the figure's own front, a rise toward it no higher than that front
             # without its strands, nor than a little over it carried in from the seam along its slope
+            front = spread(own, NEAR_PIXELS)      # the figure's front as it is, strands and all: it hides the skirt
             surface = spread(seam_surface(own, STRAND_SHARE * width / pixel, TUCK_SHARE * width), NEAR_PIXELS)
             carried = seam_target(surface, window["field"], int(np.ceil(blend / pixel)) + 1, pixel)
             target = rise_target(spread(own, NEAR_PIXELS), surface, carried, new_depth, OVER_SHARE * width,
@@ -1802,7 +1814,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     continued = face_continued(new["positions"], new["faces"], window, SKIRT_PIXELS + NEAR_PIXELS)
     continued = sample(np.where(np.isfinite(continued), continued, np.nan), box, pixel, new["positions"],
                        outside=np.nan)
-    new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap)}
+    cover = sample(np.where(np.isfinite(front), front, np.nan), box, pixel, new["positions"], outside=np.nan)
+    new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap, front=cover)}
     if keep is not None:      # lighter where the face, as it now lies in the figure, is flat; the seam stays fine,
         # its hidden skirt's edge within a pixel of its line; and no lighter than it shows no facets (drawn at half a
         # pixel: the face then spans about as many pixels as a close view of the figure)

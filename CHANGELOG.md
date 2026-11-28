@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   light, drawn smooth as the game step shades it from the front and both three quarters, strays on no more than
   7.5 % of it (`hero_face.lighter_without_facets`, `facet_share`): 2,500 for the Nachtschwinge (5.9 %), a flat face
   no more than asked. `face.json` reports `face_facets`.
+- **Hero face: no dark notch under the chin where the cut leaves the old chin's lip.** The seam's surface takes
+  strands off the figure's front, and it took the lip the cut leaves of the Nachtschwinge's old chin for one: the
+  face's skirt, laid behind that surface, dived 4.5 cm back under the chin, a shelf whose tip reached a pixel into the
+  window and showed as a dark notch from the front. The skirt now hides behind the nearer of that surface and the
+  figure's front as it is (`hero_face.skirt_under`'s `front`); the notch is gone from the game figure.
 - **Hero face: no ledge where hair beside the face ends at the seam.** The face rises in full to the figure's hair
   beside it, and where that hair ended at the seam (the tip of a side lock) the face dropped back to the cheek at once:
   a ledge along the lock's underside, painted with the picture's dark hair and in shadow, drew a black stroke from the

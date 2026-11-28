@@ -1308,3 +1308,24 @@ def test_a_face_made_lighter_keeps_triangles_until_it_shows_no_facets_and_a_flat
     assert none <= 0.5 * first
     assert len(plain["faces"]) <= 1.05 * asked * len(f)
 
+
+
+def test_the_skirt_hides_behind_the_figures_front_where_that_stands_off_the_surface_it_follows():
+    # the Nachtschwinge's chin: the cut left the old chin's lip standing below the seam, the seam's surface (strands
+    # taken off) ran 4.5 cm behind it, and the skirt laid there became a shelf under the chin whose tip showed as a
+    # dark notch from the front (round 32 of the AssetFurnace Support notes). The lip covers the skirt: it stays there.
+    points = np.c_[np.zeros(5), np.linspace(0.01, -0.01, 5), np.full(5, 0.058)]
+    values = np.array([2.0, 1.0, 0.0, -1.0, -2.0])
+    continued = np.full(5, 0.060)
+    surface = np.full(5, 0.010)                  # the surface the seam follows, the lip taken off as a strand
+    lip = np.full(5, 0.055)                      # the figure's front as it is
+    gap = 0.001
+    dived = hf.skirt_under(points, values, continued, surface, gap)
+    assert np.allclose(dived[values <= 0, 2], 0.009)
+    kept = hf.skirt_under(points, values, continued, surface, gap, front=lip)
+    assert np.allclose(kept[values <= 0, 2], 0.054)
+    assert np.array_equal(kept[values > 0], points[values > 0])
+    deeper = hf.skirt_under(points, values, continued, surface, gap, front=np.full(5, 0.005))
+    assert np.allclose(deeper, dived)            # a front behind the surface changes nothing
+    none = hf.skirt_under(points, values, continued, np.full(5, np.nan), gap, front=np.full(5, np.nan))
+    assert np.array_equal(none, points)          # no figure there: the skirt stays
