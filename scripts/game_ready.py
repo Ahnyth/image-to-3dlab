@@ -101,12 +101,12 @@ FIXED = {
                                # --transfer-cage, the longest that meets a surface facing it; with none it keeps its
                                # own paint (a wizard's neck took his collar's dark inside at 3 cm, AssetFurnace
                                # Support D261)
-    "transfer_layer_delta": 30.0,  # a texel whose full-cage paint lies this far (CIE76 delta E) from the paint at
-                               # its surface (the shortest cage's that met a surface facing it; the model's own
-                               # paint where none did, AssetFurnace Support D302) ...
-    "transfer_layer_agree": 15.0,  # ... while a shorter cage's lies within this of it met another layer first (a
-                               # collar flap standing off the jaw, facing the same way): it takes the shorter cage's
-                               # paint (dark strokes along a wizard's jaw, AssetFurnace Support D266)
+    "transfer_layer_gap_m": 0.005,  # a texel's full-cage ray that met its surface farther out than this (metres)
+                               # beyond the shortest cage's that met one facing it met another layer standing off
+                               # (a collar flap 8 mm and 2.5-2.9 cm off a wizard's jaw, AssetFurnace Support D266,
+                               # D302); nearer, it is the surface's own detail (a strap or a hem lies 1-3 mm on the
+                               # cloth under it). Of the two layers the texel takes the one whose paint lies nearer
+                               # its own (D305)
     "hidden_rays": 16,        # --drop-hidden: a triangle no ray of these reaches the outside from is hidden ...
     "hidden_cells": 400,      # ... and goes if the air beside it is a sealed hollow, on a grid this many cells across
     "hidden_close": 2,        # ... closed this many cells, so a slit in the wall does not open the hollow
@@ -1559,50 +1559,63 @@ def linear_lab(rgb):
     return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
 
 
-def pick_transfer(tries, least: float = FIXED["transfer_facing"], own=None,
-                  delta: float = FIXED["transfer_layer_delta"], agree: float = FIXED["transfer_layer_agree"]):
+def pick_transfer(tries, least: float = FIXED["transfer_facing"], own=None, gap: float = FIXED["transfer_layer_gap_m"]):
     """(colour, hit, step) per texel from colour transfers baked with ever shorter cages (TRIES: (colour, hit 0..1,
-    `met_facing`) per cage, the longest first): each texel takes the first cage whose ray met the finer model on a
-    surface facing it at least LEAST, and says which (`step`, -1 for none). A texel no cage reaches that way gets hit 0,
-    so `blend_transfer` keeps the model's own paint there. A cage long enough for a part the thinning sank (spiky hair)
-    starts the rays of a neck outside the collar round it, and the first surface they met was the collar's inside: a
-    wizard's game figure wore its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261).
+    `met_facing`, met) per cage, the longest first, MET where its ray met the finer model, in one space for all the
+    cages): each texel takes the first cage whose ray met the finer model on a surface facing it at least LEAST, and
+    says which (`step`, -1 for none). A texel no cage reaches that way gets hit 0, so `blend_transfer` keeps the
+    model's own paint there. A cage long enough for a part the thinning sank (spiky hair) starts the rays of a neck
+    outside the collar round it, and the first surface they met was the collar's inside: a wizard's game figure wore
+    its dark as tufts and a zigzag at the jaw (AssetFurnace Support D261).
 
-    With OWN (the model's own paint per texel, linear RGB like the bakes) a texel the full cage painted more than
-    DELTA (delta E) away from the paint at its surface, where a shorter cage's ray met a facing surface within AGREE
-    of it, takes that shorter cage: the long ray met another layer first, standing off the surface with air between
-    and facing the same way (a collar flap 8-11 mm off a wizard's jaw drew dark strokes along it, AssetFurnace
-    Support D266). The paint at the surface is the finer model's, from the shortest cage whose ray met a facing
-    surface, and OWN only where none did: with --mesh-from the own paint is a second model's, tinted to that model's
-    tone on purpose, and 16 delta E off on a new jaw it kept a flap's dark at three texels (D302). A part the thinning
-    sank (a hair spike) keeps the long ray's paint: the shorter cages start inside it and meet no surface facing
-    them, so there is nothing to swap in."""
+    With OWN (the model's own paint per texel, linear RGB like the bakes) and every cage's MET, a texel whose full-cage
+    ray met a surface more than GAP farther out than the shortest cage whose ray met one facing it (the texel's
+    surface, D302) met another layer first, standing off the surface with air between and facing the same way. All
+    the cages' rays of a texel run down one line, so the two hits lie that far apart whatever their paint: a collar
+    flap 8 mm off a wizard's jaw drew dark strokes along it (D266), and one 2.5-2.9 cm off left a dark notch on his
+    neck, where the colour model's own neck paint is dark too and a guard that compared paint let it through (D305).
+    Of the two layers the texel takes the one whose paint lies nearer OWN: the longest shorter cage that met the
+    texel's surface (within GAP of it) on a jaw under a flap, the long ray's on a hair tuft the thinning sank into a
+    head, whose shorter cages meet the scalp under it. A part sunk over nothing facing the texel keeps the long ray's
+    paint: the shorter cages start inside it and meet no surface facing them. Without OWN or a cage's MET the long
+    ray's paint stays."""
     first = tries[0]
     shape = np.asarray(first[1], float).shape
     colour = np.zeros(shape + (np.asarray(first[0]).shape[-1],))
     hit = np.zeros(shape)
     step = np.full(shape, -1, dtype=np.int64)
-    for k, (c, h, facing) in enumerate(tries):
+    met = []
+    for k, (c, h, facing, *_) in enumerate(tries):
         h = np.clip(np.asarray(h, float), 0.0, 1.0)
-        take = (step < 0) & (h > 0.0) & (np.asarray(facing, float) >= least)
+        met.append((h > 0.0) & (np.asarray(facing, float) >= least))
+        take = (step < 0) & met[k]
         colour[take] = np.asarray(c, float)[take]
         hit[take] = h[take]
         step[take] = k
-    if own is not None and len(tries) > 1:
-        surface = np.array(own, float)[..., :3]
-        for c, h, facing in tries[1:]:   # the shortest cage that met a facing surface wins, so later ones overwrite
-            met = (np.clip(np.asarray(h, float), 0.0, 1.0) > 0.0) & (np.asarray(facing, float) >= least)
-            surface[met] = np.asarray(c, float)[..., :3][met]
-        own_lab = linear_lab(surface)
-        far = (step == 0) & (np.linalg.norm(linear_lab(colour) - own_lab, axis=-1) > delta)
-        for k, (c, h, facing) in enumerate(tries[1:], start=1):
-            h = np.clip(np.asarray(h, float), 0.0, 1.0)
-            near = np.linalg.norm(linear_lab(c) - own_lab, axis=-1) < agree
-            take = far & (h > 0.0) & (np.asarray(facing, float) >= least) & near
-            colour[take] = np.asarray(c, float)[take]
-            hit[take] = h[take]
-            step[take] = k
-            far &= ~take
+    if own is None or len(tries) < 2 or any(len(t) < 4 for t in tries):
+        return colour, hit, step
+    surface = np.full(shape, -1, dtype=np.int64)
+    for k in range(1, len(tries)):   # the shortest cage that met a facing surface wins, so later ones overwrite
+        surface[met[k]] = k
+    cand = np.nonzero((step == 0) & (surface > 0))
+    if not cand[0].size:
+        return colour, hit, step
+    where = np.stack([np.asarray(t[3], float)[cand][..., :3] for t in tries])
+    at = where[surface[cand], np.arange(cand[0].size)]
+    layer = np.linalg.norm(where[0] - at, axis=-1) > gap
+    pick = np.full(cand[0].size, -1, dtype=np.int64)
+    for k in range(len(tries) - 1, 0, -1):   # the longest that met the texel's surface wins, so it comes last
+        pick[layer & met[k][cand] & (np.linalg.norm(where[k] - at, axis=-1) <= gap)] = k
+    cand, pick = tuple(ix[pick > 0] for ix in cand), pick[pick > 0]
+    own_lab = linear_lab(np.asarray(own, float)[cand])
+    long_off = np.linalg.norm(linear_lab(colour[cand]) - own_lab, axis=-1)
+    for k in range(1, len(tries)):
+        c = np.asarray(tries[k][0], float)[cand]
+        take = (pick == k) & (np.linalg.norm(linear_lab(c) - own_lab, axis=-1) < long_off)
+        at_k = tuple(ix[take] for ix in cand)
+        colour[at_k] = c[take]
+        hit[at_k] = np.clip(np.asarray(tries[k][1], float)[at_k], 0.0, 1.0)
+        step[at_k] = k
     return colour, hit, step
 
 

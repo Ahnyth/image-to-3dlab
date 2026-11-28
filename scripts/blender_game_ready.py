@@ -1497,7 +1497,10 @@ def bake_atlas(ob, s: dict, work: Path, name: str, head: list[str] | None = None
             colour_k = bake("colour transfer", 4, "EMIT", **kw)[..., :3]
             emit_base_colour(colour_objs, white=True)
             hit_k = bake("transfer hits", 1, "EMIT", **kw)[..., 0]
-            tries.append((colour_k, hit_k, facing_of(colour_objs, kw)))
+            # where the ray met the finer model (world space): every cage's ray of a texel runs down one line, so
+            # how far apart two cages' hits lie tells another layer standing off from the surface (`gr.pick_transfer`)
+            met_k = np.ascontiguousarray(bake("transfer hit points", 1, "POSITION", **kw)[..., :3])
+            tries.append((colour_k, hit_k, facing_of(colour_objs, kw), met_k))
             _, _, step = gr.pick_transfer(tries)
             if len(tries) >= 2 and not (inside_now & (step < 0) & (tries[0][1] > 0)).any():
                 break               # every texel a ray reached has its paint from a surface facing it, and the

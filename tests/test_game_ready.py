@@ -1408,6 +1408,13 @@ def test_a_texel_whose_rays_all_met_surfaces_facing_away_keeps_the_models_own_pa
     assert out[0] == pytest.approx([0.6, 0.6, 0.6]) and out[1] == pytest.approx([0.05, 0.05, 0.05])
 
 
+def _met_at(heights):
+    """Where each texel's ray met the finer model (metres, the bake's world space): texel i's ray runs down the z
+    axis at x = i, so a hit HEIGHTS[i] above the texel's surface sits at z = HEIGHTS[i]."""
+    h = np.asarray(heights, float)
+    return np.stack([np.arange(h.size, dtype=float), np.zeros(h.size), h], -1)
+
+
 def test_a_texel_whose_long_ray_met_another_layer_first_takes_the_shorter_cage():
     """A collar flap stands 8-11 mm off the jaw, facing the same way, inside the full cage: the long ray paints the
     flap's dark onto the jaw, a shorter one meets the jaw. The model's own paint (skin there) tells which is right;
@@ -1416,7 +1423,8 @@ def test_a_texel_whose_long_ray_met_another_layer_first_takes_the_shorter_cage()
     own = np.array([skin, hair, skin])
     long_colour = np.array([flap, hair, skin])
     short_colour = np.array([skin, skin, skin])
-    tries = [(long_colour, np.ones(3), np.ones(3)), (short_colour, np.ones(3), np.ones(3))]
+    tries = [(long_colour, np.ones(3), np.ones(3), _met_at([0.009, 0.02, 0.0])),
+             (short_colour, np.ones(3), np.ones(3), _met_at([0.0, 0.0, 0.0]))]
     colour, _, step = gr.pick_transfer(tries, own=own)
     assert step.tolist() == [1, 0, 0]
     assert colour[0] == pytest.approx(skin) and colour[1] == pytest.approx(hair)
@@ -1433,7 +1441,8 @@ def test_a_layer_in_front_is_judged_against_the_colour_models_paint_at_the_surfa
     own = np.array([[0.50, 0.36, 0.31]])                              # the mesh's own skin, tinted lighter
     assert 15.0 < np.linalg.norm(gr.linear_lab(own[0]) - gr.linear_lab(np.array(skin))) < 18.0
     ones = np.ones(1)
-    tries = [(np.array([flap]), ones, ones), (np.array([skin]), ones, ones), (np.array([skin]), ones, ones)]
+    tries = [(np.array([flap]), ones, ones, _met_at([0.027])), (np.array([skin]), ones, ones, _met_at([0.0])),
+             (np.array([skin]), ones, ones, _met_at([0.0]))]
     colour, hit, step = gr.pick_transfer(tries, own=own)
     assert step.tolist() == [1] and hit[0] == 1.0
     assert colour[0] == pytest.approx(skin)
@@ -1453,6 +1462,53 @@ def test_a_sunk_part_whose_shorter_rays_meet_no_surface_facing_it_keeps_the_long
     colour, hit, step = gr.pick_transfer(tries, own=own)
     assert step.tolist() == [0, 0] and hit.tolist() == [1.0, 1.0]
     assert colour[0] == pytest.approx(hair) and colour[1] == pytest.approx(hair)
+
+
+def test_a_layer_standing_off_is_told_by_how_far_out_the_long_ray_met_it_not_by_its_paint():
+    """Below a wizard's jaw his collar flap stands 2.5-2.9 cm off the neck, facing the same way, and the colour
+    model's own neck paint is dark there too, within 30 delta E of the flap's: a guard that told layers apart by
+    paint kept the flap's dark as a notch on the neck (AssetFurnace Support D305). The long ray met its surface
+    2.7 cm farther out than the shortest cage's ray met one facing the texel, so it met another layer, whatever
+    its paint; the model's own paint (the neck, lighter) says which of the two layers the texel's surface is."""
+    flap, neck = gr.to_linear(np.array([33, 30, 40]) / 255), gr.to_linear(np.array([80, 71, 79]) / 255)
+    own = gr.to_linear(np.array([[117, 106, 104]]) / 255)
+    assert np.linalg.norm(gr.linear_lab(flap) - gr.linear_lab(neck)) < 30.0
+    ones = np.ones(1)
+    tries = [(np.array([flap]), ones, ones, _met_at([0.027])), (np.array([neck]), ones, ones, _met_at([0.0])),
+             (np.array([neck]), ones, ones, _met_at([0.0]))]
+    colour, hit, step = gr.pick_transfer(tries, own=own)
+    assert step.tolist() == [1] and hit[0] == 1.0
+    assert colour[0] == pytest.approx(neck)
+
+
+def test_paint_lying_within_a_few_millimetres_of_the_surface_under_it_belongs_to_that_surface():
+    """A strap lying 2 mm on a robe: the long ray meets the strap, the shortest starts inside it and meets the robe.
+    That is the surface's own detail, not a layer standing off it with air between, so the strap keeps its paint
+    even where the model's own paint is the robe's (the thinning flattened the strap). The gap that tells the two
+    apart lies above such detail and below the nearest collar flap seen, 8 mm off a jaw (AssetFurnace Support
+    D266)."""
+    assert 0.002 < gr.FIXED["transfer_layer_gap_m"] < 0.008
+    strap, robe = [0.60, 0.45, 0.10], [0.05, 0.05, 0.12]
+    ones = np.ones(1)
+    tries = [(np.array([strap]), ones, ones, _met_at([0.002])), (np.array([strap]), ones, ones, _met_at([0.002])),
+             (np.array([robe]), ones, ones, _met_at([0.0]))]
+    colour, _, step = gr.pick_transfer(tries, own=np.array([robe]))
+    assert step.tolist() == [0]
+    assert colour[0] == pytest.approx(strap)
+
+
+def test_a_sunk_part_over_a_surface_facing_the_texel_keeps_its_paint_where_the_models_own_paint_is_its():
+    """A dark hair tuft the thinning sank 2 cm into a head: the long ray meets the tuft, the shorter ones start inside
+    it and meet the pale scalp under it, facing the texel. Two layers, but the model's own paint there is hair,
+    nearer the tuft's paint than the scalp's, so the texel keeps the tuft's: a guard that judged by the scalp's
+    paint alone would set a pale tuft into the hair."""
+    hair, scalp = [0.02, 0.02, 0.04], [0.55, 0.42, 0.38]
+    ones = np.ones(1)
+    tries = [(np.array([hair]), ones, ones, _met_at([0.02])), (np.array([scalp]), ones, ones, _met_at([0.0])),
+             (np.array([scalp]), ones, ones, _met_at([0.0]))]
+    colour, _, step = gr.pick_transfer(tries, own=np.array([[0.04, 0.035, 0.06]]))
+    assert step.tolist() == [0]
+    assert colour[0] == pytest.approx(hair)
 
 
 def test_the_cage_steps_start_at_the_cage_and_shrink():
