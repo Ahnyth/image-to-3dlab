@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A rerun redraws a drawing made with another prompt. The Hero chain passes `--glow-not-on-hands` to the game step once
   its hands stage is kept and the game options make something glow (the new fingers took the figure's gold glow), unless
   `--glow-on-hands` asks for glowing hands.
+- **Hero hands: the stage hands on only hands the chain's finger count keeps.** Pixal3D's build of one drawing and seed
+  differs from run to run: in the Hero chain the Arkan-Duellant's glove build fused two fingers, the chain's own count
+  (`figure_check.fingers`) found 3 and 3 per cut where a five-digit hand shows 4, and it dropped the whole stage, though
+  the stage's all-round count had kept the build. The stage now runs that same per-cut count on its grafted figure and,
+  while a hand counts wrong, drops the build that hand came from and grafts the next kept one (next seed, then next
+  drawing); when every build of the kept drawings is dropped, it makes one more drawing within `--tries` and builds
+  from that (both kept glove drawings of the Arkan-Duellant drew two fingers pressed together, and all four builds
+  counted 3 per cut, even with 64 cuts). It stops with a plain message when none is left. `hands.json` reports
+  `builds_grafted`.
+- **Hero hands: no flap where a hand comes out of a wide cuff.** Where no wrist shows on the figure's arm, the cut runs
+  through the sleeve's mouth: on the Arkan-Duellant 1.55 times as wide as the glove's wrist. The new hand's wrist was
+  stretched to it over a quarter of the hand, and the glove's top lay across the palm as a loose flap, a sheet when seen
+  from the fingertips. A cut more than 1.25 times as wide as the new wrist (`CUFF_RATIO`; the Daemonenhexer's 1.13 to
+  1.16 eases in as before) now leaves the hand as built, and the stitch closes the cuff flat round it; `hands.json`
+  reports `wrist_eased` beside `wrist_ratio`.
 - **Hero face: no ledge where hair beside the face ends at the seam.** The face rises in full to the figure's hair
   beside it, and where that hair ended at the seam (the tip of a side lock) the face dropped back to the cheek at once:
   a ledge along the lock's underside, painted with the picture's dark hair and in shadow, drew a black stroke from the

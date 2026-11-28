@@ -465,6 +465,45 @@ def test_graft_model_leaves_one_closed_surface_with_no_gap_and_no_overlap():
         (hands["positions"][:, 1] < 0.0).sum())
 
 
+def _graft_setup(width=1.0):
+    """The test arm, its wrist's plan, a built hand (its wrist and palm WIDTH as wide round its own axis) and the
+    transform putting it on."""
+    arm = figure_arm()
+    bone = arm["dense"].argmax(1)
+    plan = hh.figure_wrist(arm["positions"], arm["faces"], bone, 1, [2], np.array([-0.2, 0.30, 0]),
+                           np.array([-0.2, 0.12, 0]), "right")
+    hand = built_hand(double=True)
+    own = hh.hand_wrist(hand["positions"], hand["faces"])
+    tf = hh.placement(own["centre"], own["fingers"], own["back"], own["length"],
+                      plan["centre"], plan["fingers"], plan["back"], plan["length"])
+    p = hand["positions"] - own["centre"]
+    along = np.outer(p @ own["axis"], own["axis"])
+    return arm, bone, plan, {**hand, "positions": own["centre"] + along + width * (p - along)}, tf
+
+
+def test_a_hand_much_narrower_than_the_cut_comes_out_of_it_as_from_a_cuff():
+    # the Arkan-Duellant (round 32): no wrist showed on its arm, the cut ran through the sleeve's mouth, about 1.5
+    # times as wide as the glove's wrist; stretched to it over a quarter of the hand, the glove's top lay across the
+    # palm as a loose flap and showed from the fingertips as a sheet. Unstretched, the stitch closes the cuff flat
+    arm, bone, plan, thin, tf = _graft_setup(0.6)
+    placed, _ = hh.hand_onto(thin, tf, plan, hh.GAP_SHARE * plan["length"])
+    body, hands, report = hh.graft_model(arm, bone, {"right": plan}, {"right": {"part": thin, "tf": tf}})
+    side = report["right"]
+    assert side["wrist_ratio"] > hh.CUFF_RATIO and side["wrist_eased"] == 1.0, side
+    mine = len(hands["positions"]) - 3 * side["stitch_faces"]          # the band's corners come after the hand's
+    assert np.allclose(hands["positions"][:mine], placed["positions"])   # the hand stays as it was put
+    v = np.concatenate([body["positions"], hands["positions"]])
+    f = np.concatenate([body["faces"], hands["faces"] + len(body["positions"])])
+    assert closed_edges(v, f) == (0, 0)                     # the flat ring closes the cuff round the wrist
+
+
+def test_a_hand_near_the_cuts_width_is_still_eased_into_it():
+    arm, bone, plan, hand, tf = _graft_setup()
+    _, _, report = hh.graft_model(arm, bone, {"right": plan}, {"right": {"part": hand, "tf": tf}})
+    side = report["right"]
+    assert side["wrist_ratio"] <= hh.CUFF_RATIO and side["wrist_eased"] == side["wrist_ratio"], side
+
+
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
 def test_a_hand_whose_walls_touch_at_the_cut_is_stitched_to_its_outer_wall(seed):
     # the Waechter's gauntlet build (drawing 3, seed 7) has its two walls fused all down the hand: the cut's rim

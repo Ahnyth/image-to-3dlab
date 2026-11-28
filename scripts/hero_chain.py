@@ -11,7 +11,8 @@ after `--`, and every stage changes them too):
 
   1. hands  Hero hands (`hero_hands.py`): the hands built alone from the picture, set in at the wrists the rig shows.
             Kept when the finger count (`figure_check`, the hands found by the skeleton's shape) shows a five-digit
-            hand on both sides. A drawing whose hand misses the picture's colour (a glove drawn bare) is not built
+            hand on both sides; the tool runs that same count on its own graft and builds again while it fails
+            (Pixal3D's build differs from run to run). A drawing whose hand misses the picture's colour (a glove drawn bare) is not built
             from; when every one misses, the tool paints its build from the picture's hand (or, with its --colour-miss
             keep, the figure keeps its own hands and the stage is skipped). Once kept, the game step's glow stays off the new hands
             (`--glow-not-on-hands`; `--glow-on-hands` lets it on).

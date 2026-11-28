@@ -749,6 +749,9 @@ def blend_wrist(points: np.ndarray, cut: np.ndarray, axis: np.ndarray, centre_fr
 
 GAP_SHARE = 0.02     # the stitch is this share of the hand's length long: a short band, not a flat ring
 BLEND_SHARE = 0.25   # the wrist eases into the figure's over this share of the hand's length
+CUFF_RATIO = 1.25    # a cut this many times as wide as the new wrist is a cuff's mouth: the hand is not stretched to
+                     # it (the Arkan-Duellant's sleeve, 1.55, laid the glove's top across the palm as a flap) and the
+                     # stitch closes the cuff flat round the wrist; the Daemonenhexer (1.13-1.16) eases in as before
 
 
 def figure_wrist(positions: np.ndarray, faces: np.ndarray, bone: np.ndarray, forearm: int, hand: list[int],
@@ -882,6 +885,8 @@ def rim_share(hand: dict, tf: np.ndarray, plan: dict, gap: float) -> float:
 def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, plan: dict,
            blend: float = BLEND_SHARE) -> tuple[dict, dict]:
     """The placed HAND eased into the BODY's cut wrist and stitched to it; the stitch belongs to the hand's part.
+    A cut over CUFF_RATIO times as wide as the hand's wrist is a cuff's mouth: the hand is not eased, and the stitch
+    is a flat ring closing the cuff round it (stretched, the hand's top lay across the palm as a flap).
 
     Returns (hand part with the band added, report). Every band triangle has corners of its own, at the rim points
     it joins (an engine or Blender welds them on import), with the body's or the hand's skin weights as the corner
@@ -897,13 +902,17 @@ def stitch(body: dict, body_rim: np.ndarray, hand: dict, hand_rim: np.ndarray, p
     section = hand.get("section") or rim_fill(hand["positions"], hand_rim, axis)[1]
     rim_closed = loop_area(hand_loop, axis) / max(section, 1e-18)
     ratio = float(np.sqrt(loop_area(body_loop, axis) / max(loop_area(hand_loop, axis), 1e-18)))
-    hand = {**hand, "positions": blend_wrist(hand["positions"], hand_loop.mean(axis=0), axis,
-                                             hand_loop.mean(axis=0), body_loop.mean(axis=0), ratio,
-                                             blend * plan["length"])}
+    cuff = ratio > CUFF_RATIO                # a cuff's mouth: the hand comes out of it as it was built
+    eased = 1.0 if cuff else ratio
+    if not cuff:
+        hand = {**hand, "positions": blend_wrist(hand["positions"], hand_loop.mean(axis=0), axis,
+                                                 hand_loop.mean(axis=0), body_loop.mean(axis=0), ratio,
+                                                 blend * plan["length"])}
     hand_loop = hand["positions"][hand_ids]
     out, stitched, alike = join_rims(body, body_ids, hand, hand_ids, axis)
     band = np.linalg.norm(body_loop.mean(axis=0) - hand_loop.mean(axis=0))
-    report = {"wrist_ratio": round(ratio, 3), "rim_points": [len(body_ids), len(hand_ids)],
+    report = {"wrist_ratio": round(ratio, 3), "wrist_eased": round(eased, 3),
+              "rim_points": [len(body_ids), len(hand_ids)],
               "stitch_faces": stitched, "band_length": float(band), "rims_turn_alike": bool(alike),
               "rim_share": round(float(rim_closed), 3)}
     return out, report

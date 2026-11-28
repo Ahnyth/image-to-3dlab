@@ -254,3 +254,96 @@ def test_a_coarse_clean_up_off_its_builds_frame_gives_way_to_a_finer_one(tmp_pat
     other.write_bytes(b"raw")
     with pytest.raises(SystemExit):
         hero_hands.clean_hand(run, other, 3000)
+
+
+def _builds_and_checks(tmp_path, counts_by_try):
+    """A fake build queue per source and a fake chain count per graft: try N's count is COUNTS_BY_TRY[N - 1]."""
+    queue = {side: [tmp_path / f"{side}_draw_s{s}_b{seed}.glb" for s in (2, 3) for seed in (42, 7)]
+             for side in ("right", "left")}
+    grafted = []
+
+    def build(source, rejected):
+        return next((b for b in queue[source] if b not in rejected), None)
+
+    def graft(chosen):
+        grafted.append(dict(chosen))
+        return tmp_path / f"figure_{len(grafted)}.glb"
+
+    def check(figure):
+        counts = counts_by_try[int(figure.stem.rsplit("_", 1)[1]) - 1]
+        text = ", ".join(f"{side} hand {n}" for side, n in counts.items())
+        return all(n == 4 for n in counts.values()) and len(counts) == 2, text, counts
+
+    return queue, grafted, build, graft, check
+
+
+def test_a_build_the_chains_finger_count_would_drop_is_swapped_for_the_next(tmp_path):
+    # round 32: the chain dropped the Arkan-Duellant's hand stage, 3 and 3 per cut where a five-digit hand shows 4;
+    # the same drawing and seed built alone counted 4 and 4, so Pixal3D's build differs from run to run, and the
+    # stage handed on a build with two glove fingers fused
+    queue, grafted, build, graft, check = _builds_and_checks(
+        tmp_path, [{"left": 3, "right": 3}, {"left": 4, "right": 4}])
+    run = hero_hands.Run(tmp_path / "run")
+    chosen, tries = hero_hands.counted_builds(run, ["right"], {"right": "right", "left": "right"}, build, graft,
+                                              check)
+    assert chosen == {"right": queue["right"][1]} and tries == 2
+    assert [g["right"] for g in grafted] == queue["right"][:2]
+    log = (tmp_path / "run" / "run.log").read_text(encoding="utf-8")
+    assert "right_draw_s2_b42.glb" in log and "left hand 3, right hand 3" in log and "2 build(s)" in log
+
+
+def test_with_own_left_hands_only_the_side_that_counts_wrong_takes_its_next_build(tmp_path):
+    queue, grafted, build, graft, check = _builds_and_checks(
+        tmp_path, [{"left": 3, "right": 4}, {"left": 5, "right": 4}, {"left": 4, "right": 4}])
+    run = hero_hands.Run(tmp_path / "run")
+    chosen, tries = hero_hands.counted_builds(run, ["right", "left"], {"right": "right", "left": "left"}, build,
+                                              graft, check)
+    assert tries == 3 and chosen == {"right": queue["right"][0], "left": queue["left"][2]}
+    assert {g["right"] for g in grafted} == {queue["right"][0]}            # the right build was kept throughout
+
+
+def test_the_stage_stops_when_no_build_left_counts_as_the_chain_wants(tmp_path):
+    _, grafted, build, graft, check = _builds_and_checks(tmp_path, [{"left": 3, "right": 3}] * 4)
+    run = hero_hands.Run(tmp_path / "run")
+    with pytest.raises(SystemExit, match="--seeds"):
+        hero_hands.counted_builds(run, ["right"], {"right": "right", "left": "right"}, build, graft, check)
+    assert len(grafted) == 4                                                # every build of both drawings tried
+
+
+def test_the_cut_check_is_the_chains_own_finger_count(monkeypatch, tmp_path):
+    from image_to_3dlab import figure_check as fc
+
+    seen = []
+    monkeypatch.setattr(fc, "read_figure", lambda path: seen.append(path) or "figure")
+    monkeypatch.setattr(fc, "fingers", lambda figure: fc.Result("fingers", "look", "left hand 3, right hand 4",
+                                                                "4 fingers per cut", "a mitten"))
+    kept, why, counts = hero_hands.cut_check(tmp_path / "rigged_hands.glb")
+    assert seen == [tmp_path / "rigged_hands.glb"]
+    assert not kept and counts == {"left": 3, "right": 4} and "left hand 3, right hand 4" in why
+    monkeypatch.setattr(fc, "fingers", lambda figure: fc.Result("fingers", "pass", "left hand 4, right hand 4",
+                                                                "4 fingers per cut", "fine"))
+    kept, _, counts = hero_hands.cut_check(tmp_path / "rigged_hands.glb")
+    assert kept and counts == {"left": 4, "right": 4}
+
+
+def test_when_every_build_of_the_kept_drawings_is_dropped_one_more_drawing_is_built_from(tmp_path):
+    # round 32: both kept glove drawings of the Arkan-Duellant drew the middle and ring fingers pressed together, and
+    # all four builds counted 3 per cut; six of the eight drawings --tries allows were never made
+    drawings = [tmp_path / "right_draw_s2.png", tmp_path / "right_draw_s3.png"]
+    asked = []
+
+    def build_one(kept):
+        return tmp_path / "right_draw_s5_b42.glb" if kept[-1].name == "right_draw_s5.png" else None
+
+    def draw_more(keep):
+        asked.append(keep)
+        return [*drawings, tmp_path / "right_draw_s5.png"][:keep]
+
+    kept = list(drawings)
+    assert hero_hands.build_or_draw(build_one, draw_more, kept) == tmp_path / "right_draw_s5_b42.glb"
+    assert asked == [3] and kept[-1].name == "right_draw_s5.png"
+
+
+def test_no_build_is_left_once_the_tries_have_drawn_no_more(tmp_path):
+    kept = [tmp_path / "right_draw_s2.png"]
+    assert hero_hands.build_or_draw(lambda k: None, lambda keep: list(kept), kept) is None

@@ -30,13 +30,19 @@ hangs beside the thigh, seen from the thumb's side with the fingers stacked, and
   5. clean    Pixal3D's own clean-up of that build at --hand-faces: the hand's wrist and size are measured on it.
   6. graft    each arm cut straight through below the cuff, the hand (the left one mirrored from the right, or
               built on its own with --left own) put on at the old hand's place, length and turn, its outer skin
-              kept, eased into the wrist and stitched to it as one surface. The figure keeps its skeleton and
+              kept, eased into the wrist and stitched to it as one surface (a cut more than 1.25 times as wide as
+              the hand's wrist is a cuff's mouth: the hand comes out of it as built and the stitch closes the cuff
+              flat round it). The figure keeps its skeleton and
               every body weight; the new hand takes the old hand's. Every --also model (the finer models a
               game-ready step bakes paint and bumps from, in the same frame) gets the same hands. Each model's
               hands are as fine as the model round its wrists (--hand-detail; Pixal3D's own clean-up at that
               size), so a game-ready step thins them with the rest of the figure. Their paint is brought to the
               tone of their drawing (--hand-paint match): the clean-up paints a built hand darker and far more
               saturated than its drawing.
+              The grafted figure is counted as the Hero chain counts it (`figure_check.fingers`, 4 pieces per cut
+              across a five-digit hand's fingers); a hand that counts wrong drops its build and the next kept
+              build is grafted (Pixal3D's build of one drawing and seed differs from run to run); when every
+              build of the kept drawings is dropped, one more drawing is made and built from, within --tries.
   7. check    each grafted hand's digits counted again, on the figure.
 
 Writes <out>/<model>_hands.glb (and <out>/<also>_hands.glb), with hands.json (every number) and a licence
@@ -239,15 +245,19 @@ def build_count(raw: Path) -> dict:
     return {**count, "kept": bool(count["ok"]) and count["hollow"] <= hh.HOLLOW_LIMIT}
 
 
-def build_hand(run: Run, side: str, drawings: list[Path], folder: Path, args, fits=None) -> Path | None:
+def build_hand(run: Run, side: str, drawings: list[Path], folder: Path, args, fits=None,
+               skip=frozenset()) -> Path | None:
     """The first Pixal3D build of a kept drawing whose outline counts five digits and one thumb, whose palm is not
     a hole (Pixal3D built the Waechter's first gauntlet as a plate round an empty inside) and, with FITS (a build ->
-    the share of its cross-section the stitch would close at the figure's cut, `rim_share`), whose wrist closes."""
+    the share of its cross-section the stitch would close at the figure's cut, `rim_share`), whose wrist closes.
+    Builds in SKIP (grafted before, and the chain's finger count dropped them: `counted_builds`) are passed over."""
     from image_to_3dlab import hero_hands as hh
 
     for drawing in drawings:
         for seed in args.seeds:
             raw = folder / f"{drawing.stem}_b{seed}.glb"
+            if raw in skip:
+                continue
             if not raw.exists():
                 run.say(f"build: Pixal3D on {drawing.name}, seed {seed}")
                 if not run.run([PYTHON, "-u", GENERATE, drawing, raw, "--seed", str(seed)], required=False):
@@ -266,6 +276,69 @@ def build_hand(run: Run, side: str, drawings: list[Path], folder: Path, args, fi
             if count["kept"]:
                 return raw
     return None
+
+
+def cut_check(figure: Path) -> tuple[bool, str, dict]:
+    """The chain's own finger check on a grafted FIGURE (`figure_check.fingers`, judged by
+    `hero_chain.fingers_verdict`): (kept, why, {side: most separate fingers in a cut across that hand}). The hand
+    stage asks it before handing its hands on: the chain dropped the Arkan-Duellant's hands at 3 and 3 per cut where
+    a five-digit hand shows 4, a build the stage's own all-round count had kept (round 32)."""
+    import re
+
+    from image_to_3dlab import figure_check as fc
+    from image_to_3dlab import hero_chain as hc
+
+    result = fc.fingers(fc.read_figure(figure))
+    kept, why = hc.fingers_verdict(result)
+    return kept, why, {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+) hand (\d+)", str(result.value))}
+
+
+def counted_builds(run: Run, sources: list[str], source_of: dict, build, graft, check) -> tuple[dict, int]:
+    """Builds and grafts the hands until the chain's own finger count keeps the grafted figure: ({source side: its
+    build}, the builds grafted). BUILD(source, dropped) gives that side's next build not in DROPPED (None when none
+    is left), GRAFT(builds) puts them on and gives the figure, CHECK(figure) is `cut_check`. A side that counts
+    wrong drops the build it came from (SOURCE_OF: a mirrored left hand is the right build) and takes the next.
+
+    Pixal3D's build of one drawing and seed differs from run to run: the chain's build of the Arkan-Duellant's glove
+    fused two fingers (3 per cut) where the stage alone had built the same drawing and seed with five (4 per cut)."""
+    from image_to_3dlab import figure_check as fc
+
+    dropped: set = set()
+    tries = 0
+    while True:
+        builds = {}
+        for source in sources:
+            builds[source] = build(source, frozenset(dropped))
+            if builds[source] is None:
+                raise SystemExit(f"[hero] no build of the {source} hand left whose grafted fingers the chain's "
+                                 f"count keeps ({len(dropped)} dropped, {fc.FINGERS} per cut wanted): try more seeds "
+                                 "(--seeds) or drawings (--keep)")
+        tries += 1
+        figure = graft(builds)
+        kept, why, counts = check(figure)
+        if kept:
+            run.say(f"check: the chain's finger count keeps the grafted hands: {why} ({tries} build(s) grafted)")
+            return builds, tries
+        wrong = {source_of[side] for side, n in counts.items() if n != fc.FINGERS} or set(sources)
+        for source in sorted(wrong):
+            run.say(f"check: {builds[source].name} grafted counts {why}: the chain would drop it, the next build "
+                    "is tried")
+            dropped.add(builds[source])
+
+
+def build_or_draw(build_one, draw_more, drawings: list) -> Path | None:
+    """The next build of DRAWINGS (BUILD_ONE(drawings) gives it, or None when every one is built and dropped); when
+    none is left, DRAW_MORE(n) gives the kept drawings again with room for one more (n of them), until --tries draws
+    no more. DRAWINGS grows in place. Both kept glove drawings of the Arkan-Duellant drew the middle and ring fingers
+    pressed together and all four builds counted 3 per cut, with six of the eight allowed drawings never made."""
+    while True:
+        raw = build_one(drawings)
+        if raw is not None:
+            return raw
+        more = draw_more(len(drawings) + 1)
+        if len(more) <= len(drawings):
+            return None
+        drawings[:] = more
 
 
 def clean_hand(run: Run, raw: Path, faces: int) -> Path:
@@ -511,14 +584,14 @@ def main(argv: list[str] | None = None) -> int:
             run.flag(f"the {side} hand's palm faces {plan['turn_check_deg']:.0f} deg away from the thigh: the new "
                      "hand turns its thumb forward as an A-pose hand does; check its turn")
 
-    # 2.-5. crop, draw, build, clean
+    # 2.-3. crop, draw
     sources = ["right"] if args.left == "mirror" else ["right", "left"]
     cutout = out / "picture_cutout.png"
     if run.step("cut-out", cutout):
         matte.cut_out(Image.open(args.picture).convert("RGB"))[0].save(cutout)
     picture = hero.load_picture(cutout)
     full_frame = hero.frame(figure["positions"], hero.picture_box(picture))
-    built, raws, records, colours, painted = {}, {}, [], {}, {}
+    built, raws, colours, painted, drawn, fitted, ups = {}, {}, {}, {}, {}, {}, {}
     for side in sources:
         stage(run, "crop", f"Cropping and upscaling the {side} hand")
         points = hh.hand_points(figure["positions"], figure_bone, plans[side])
@@ -548,7 +621,6 @@ def main(argv: list[str] | None = None) -> int:
         if not drawings:
             raise SystemExit(f"[hero] none of {args.tries} drawings of the {side} hand has five digits and one "
                              "thumb: try more (--tries) or describe the hand (--look)")
-        stage(run, "build", f"Building the {side} hand on its own (the long step)")
         served = [side] if args.left == "own" else list(plans)       # a mirrored left hand is the right build
 
         def fits(raw, side=side, served=served):
@@ -560,37 +632,61 @@ def main(argv: list[str] | None = None) -> int:
                                            hh.GAP_SHARE * plans[target]["length"]))
             return min(shares)
 
-        raw = build_hand(run, side, drawings, folder, args, fits)
-        if raw is None:
+        drawn[side], fitted[side], ups[side] = list(drawings), fits, up
+
+    # 4.-6. build, clean, graft: until the chain's own finger count (`cut_check`) keeps the grafted hands
+    result = out / f"{args.model.stem}_hands.glb"
+    hands, loaded, grafted = {}, {}, {}
+    source_of = {side: side if side in sources else sources[0] for side in plans}
+
+    def build(side, dropped):
+        stage(run, "build", f"Building the {side} hand on its own (the long step)")
+        run.current = "build"
+        def draw_more(keep, side=side):
+            run.say(f"draw: every build of the {len(drawn[side])} kept drawing(s) is dropped: one more drawing")
+            return draw_hands(run, side, ups[side], folder, argparse.Namespace(**{**vars(args), "keep": keep}),
+                              engine, colours[side])[0]
+
+        raw = (build_hand(run, side, drawn[side], folder, args, fitted[side], skip=dropped) if side in painted
+               else build_or_draw(lambda kept: build_hand(run, side, kept, folder, args, fitted[side], skip=dropped),
+                                  draw_more, drawn[side]))
+        if raw is None and not dropped:
             raise SystemExit(f"[hero] no build of the {side} hand counts five digits and one thumb with a solid "
                              "palm and a wrist that closes: try more seeds (--seeds) or drawings (--keep)")
-        stage(run, "clean", f"Cleaning up the {side} hand")
-        built[side], raws[side] = clean_hand(run, raw, args.hand_faces), raw
-        records += [r for r in (read_model_record(raw), _picture_record(raw)) if r]
+        return raw
 
-    # 6. graft
-    stage(run, "graft", "Putting the hands on")
-    fresh(run, "graft")
-    hands, loaded = {}, {}
-    for side, plan in plans.items():
-        source = side if side in built else sources[0]
-        clean = hand_of(built[source], mirrored=source != side)
-        own, tf = place(clean, plan)
-        scale = float(np.cbrt(np.linalg.det(tf[:3, :3])))
-        # each model's clean-up is sized by where this one's faces land: the hand below the cut, put in place
-        below, _ = hh.hand_onto(clean, tf, plan, hh.GAP_SHARE * plan["length"])
-        area = hh.spread_area(len(below["faces"]), hh.surface_area(below["positions"], below["faces"]),
-                              len(clean["faces"]))
-        hands[side] = {"tf": tf, "scale": scale, "down": hh.unit(tf[:3, :3] @ hh.DRAWN_DOWN),
-                       "reference": built[source], "raw": raws[source], "mirrored": source != side, "area": area,
-                       "paint_from": painted.get(source)}
-        if not own["found"]:
-            run.flag(f"the built {source} hand showed no wrist below its cuff; it is cut halfway")
-    result = out / f"{args.model.stem}_hands.glb"
-    report, both, body, sizing = graft_one(run, args.model, result, bone, plans, hands, args.hand_detail, True,
-                                           loaded, args.hand_paint)
+    def graft(builds):
+        stage(run, "clean", "Cleaning up the hands")
+        for side, raw in builds.items():
+            built[side], raws[side] = clean_hand(run, raw, args.hand_faces), raw
+        stage(run, "graft", "Putting the hands on")
+        fresh(run, "graft")                     # a build dropped by the finger count takes its notes along
+        for side, plan in plans.items():
+            source = source_of[side]
+            clean = hand_of(built[source], mirrored=source != side)
+            own, tf = place(clean, plan)
+            scale = float(np.cbrt(np.linalg.det(tf[:3, :3])))
+            # each model's clean-up is sized by where this one's faces land: the hand below the cut, put in place
+            below, _ = hh.hand_onto(clean, tf, plan, hh.GAP_SHARE * plan["length"])
+            area = hh.spread_area(len(below["faces"]), hh.surface_area(below["positions"], below["faces"]),
+                                  len(clean["faces"]))
+            hands[side] = {"tf": tf, "scale": scale, "down": hh.unit(tf[:3, :3] @ hh.DRAWN_DOWN),
+                           "reference": built[source], "raw": raws[source], "mirrored": source != side,
+                           "area": area, "paint_from": painted.get(source)}
+            if not own["found"]:
+                run.flag(f"the built {source} hand showed no wrist below its cuff; it is cut halfway")
+        grafted["model"] = graft_one(run, args.model, result, bone, plans, hands, args.hand_detail, True, loaded,
+                                     args.hand_paint)
+        return result
+
+    _, tries = counted_builds(run, sources, source_of, build, graft, cut_check)
+    report, both, body, sizing = grafted["model"]
+    records = [r for raw in raws.values() for r in (read_model_record(raw), _picture_record(raw)) if r]
     for side, entry in report.items():
-        if not hh.SCALE_LIMITS[0] <= entry["wrist_ratio"] <= hh.SCALE_LIMITS[1]:
+        if entry["wrist_eased"] != entry["wrist_ratio"]:
+            run.flag(f"the {side} cut is {entry['wrist_ratio']}x as wide as the new wrist (a cuff's mouth): the "
+                     "hand comes out of it as built and the cuff is closed flat round it; look at it from below")
+        elif not hh.SCALE_LIMITS[0] <= entry["wrist_ratio"] <= hh.SCALE_LIMITS[1]:
             run.flag(f"the new {side} wrist had to be eased {entry['wrist_ratio']}x to meet the arm: check its size")
         if entry["rim_pieces"] > 1 and entry["rim_rest_share"] > 0.05:
             run.flag(f"the {side} cut left {entry['rim_pieces']} pieces ({entry['rim_rest_share']:.0%} of the rim "
@@ -609,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
     fresh(run, "check")
     summary = {"model": str(args.model), "picture": str(args.picture), "result": str(result), "sides": {},
                "hand_detail": args.hand_detail, "sizing": {args.model.name: sizing, **also}, "picture_hand": colours,
-               "painted_from_picture": sorted(painted)}
+               "painted_from_picture": sorted(painted), "builds_grafted": tries}
     for index, side in enumerate(plans):
         # framed as its drawing was: the hand with the figure's cuff above it
         hand = hh.merge_parts([hh.side_faces(both, both["side_of_face"], index), hh.arm_stub(body, plans[side])])
