@@ -489,7 +489,8 @@ def main(argv: list[str] | None = None) -> int:
             finer = len(face_out["faces"])
             cut_parts, face_out, report, offset = set_in(step, target / finer)
             run.say(f"graft: {model.name}: the new face made lighter to match the head round it: "
-                    f"{len(face_out['faces'])} triangles for {finer} (the head's density allows {target}), its "
+                    f"{len(face_out['faces'])} triangles for {finer} (the head's density allows {target}; more where "
+                    f"fewer showed facets, its light now strays on {report.get('face_facets', 0.0):.1%} of it), its "
                     "outline thinned within a pixel where it runs straight, the edges where hair crosses it as fine as before")
         report["face_faces_target"] = target
         report["paint_offset"] = None if offset is None else [round(v, 1) for v in offset]

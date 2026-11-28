@@ -1578,6 +1578,100 @@ def lighter(part: dict, keep: float, agg: float = LIGHT_AGG, border: float | Non
     return out
 
 
+FACET_STEP = 0.05      # the camera light on a face made lighter differing from the fine face's by more than this (0..1)
+                       # is a facet's edge or a pale polygon ...
+FACET_LIMIT = 0.075    # ... and over this share of the face, in its worst view, the face shows facets: the
+                       # Nachtschwinge's at 1,500 triangles strayed on 19 %, a reviewer saw pale polygons on its cheeks and
+                       # facets round its nose; at 2,000 on 10.5 %, at 2,500 on 5.9 %, at 3,000 on 3.2 %
+FACET_TURNS = (0.0, 45.0, -45.0)   # the views it is looked at in, turned about the vertical: front, both three quarters
+FACET_INSET = 6        # pixels inside the face's outline counted: the outline lies under the figure's cut edge
+FACET_RAISE = 1 / 3    # a face showing facets is made lighter again with this share of its first target more
+
+
+def corner_normals(points: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Smooth normals of POINTS, each triangle counted by its angle at the point, as Blender (the game step) makes them."""
+    p = np.asarray(points, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    t = p[f]
+    n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-30)
+    out = np.zeros_like(p)
+    for k in range(3):
+        u, w = t[:, (k + 1) % 3] - t[:, k], t[:, (k + 2) % 3] - t[:, k]
+        cos = (u * w).sum(1) / np.maximum(np.linalg.norm(u, axis=1) * np.linalg.norm(w, axis=1), 1e-30)
+        np.add.at(out, f[:, k], np.arccos(np.clip(cos, -1.0, 1.0))[:, None] * n)
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-30)
+
+
+def camera_light(points: np.ndarray, faces: np.ndarray, box, pixel: float) -> tuple[np.ndarray, np.ndarray]:
+    """(light, covered): POINTS' surface seen straight from the front over BOX, lit from the camera, its smooth
+    normals (`corner_normals`) blended across each triangle as a game shades it."""
+    p = np.asarray(points, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    _, owner = depth_map(p, f, box, pixel)
+    covered = owner >= 0
+    light = np.zeros(owner.shape)
+    if not covered.any():
+        return light, covered
+    rows, cols = np.nonzero(covered)
+    tri = f[owner[covered]]
+    px, py = to_pixels(p, box, pixel)
+    x, y = px[tri], py[tri]
+    cx, cy = cols + 0.5, rows + 0.5
+    area = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0]) - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
+    w0 = ((x[:, 1] - cx) * (y[:, 2] - cy) - (x[:, 2] - cx) * (y[:, 1] - cy)) / area
+    w1 = ((x[:, 2] - cx) * (y[:, 0] - cy) - (x[:, 0] - cx) * (y[:, 2] - cy)) / area
+    normals = corner_normals(p, f)
+    blend = (np.c_[w0, w1, 1.0 - w0 - w1][:, :, None] * normals[tri]).sum(1)
+    light[covered] = np.clip(blend[:, 2] / np.maximum(np.linalg.norm(blend, axis=1), 1e-30), 0.0, 1.0)
+    return light, covered
+
+
+def facet_share(fine: dict, light: dict, pixel: float) -> float:
+    """How much of LIGHT (FINE made lighter) shows facets: in its worst view (front, both three quarters), the share of
+    the face, FACET_INSET pixels inside its outline, whose camera light differs from FINE's by more than FACET_STEP.
+
+    A game figure carries no normal map, so figure_check's facet measure (a normal map's jump at its edges) does not
+    see a face made lighter; its large flat triangles show in the light the game shades them with (round 31 of the
+    AssetFurnace Support notes)."""
+    p = np.asarray(fine["positions"], dtype=np.float64)
+    centre = (p.min(axis=0) + p.max(axis=0)) / 2
+    worst = 0.0
+    for turn in FACET_TURNS:
+        a = np.radians(turn)
+        spin = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+        seen = [(np.asarray(part["positions"], dtype=np.float64) - centre) @ spin.T for part in (fine, light)]
+        q = seen[0]
+        box = (q[:, 0].min() - 2 * pixel, q[:, 0].max() + 2 * pixel, q[:, 1].min() - 2 * pixel, q[:, 1].max() + 2 * pixel)
+        (a_light, a_on), (b_light, b_on) = (camera_light(s, part["faces"], box, pixel) for s, part in zip(seen, (fine, light)))
+        inner = ndimage.binary_erosion(a_on & b_on, iterations=FACET_INSET)
+        if inner.any():
+            worst = max(worst, float(np.mean(np.abs(a_light - b_light)[inner] > FACET_STEP)))
+    return worst
+
+
+def lighter_without_facets(part: dict, keep: float, pixel: float, border: float | None = None,
+                           limit: float = FACET_LIMIT, more: float = FACET_RAISE) -> tuple[dict, float]:
+    """(PART made lighter to about KEEP of its triangles, or to more until it shows no facets, its facet share): while
+    over LIMIT of it strays in the light (`facet_share`, drawn at PIXEL), it is made lighter again from the fine part
+    with MORE of KEEP added, up to the fine part itself.
+
+    The density rule (`hero_parts.matched_faces`) gave the Nachtschwinge's face 1,500 triangles, and with its hair
+    fringe, eyes and nose it came out faceted whatever spent them: a decimation weighed by the normal's turn (worse,
+    its creases took the cheeks' triangles), the large triangles relaxed and laid back onto the fine face (worse), the
+    quads' diagonals flipped toward it (no better); 2,500 strayed on 5.9 % instead of 19 % (round 32 of the AssetFurnace
+    Support notes). A flat face stays as light as asked."""
+    first = keep
+    while True:
+        light = lighter(part, keep, border=border)
+        if light is part:
+            return part, 0.0
+        share = facet_share(part, light, pixel)
+        if share <= limit or keep >= 1.0:
+            return light, share
+        keep = min(1.0, keep + more * first)
+
+
 def place_face(face: dict, tf: np.ndarray) -> dict:
     """FACE (a part) moved by the 4x4 TF; its normals turned along."""
     out = {**face, "positions": hh.moved(tf, face["positions"])}
@@ -1622,7 +1716,8 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
     fine layout's points: made lighter before (round 30), its large triangles crossed the seam and followed neither the
     seam's line nor the tuck, the Nachtschwinge's old cut edge hung over the face along 17.5 % of the seam at the face
     stage (10.3 % fine) and a wedge of the face's hair paint stood out beside its eye (round 31 of the AssetFurnace
-    Support notes)."""
+    Support notes). It keeps more triangles than KEEP where its light would show facets (`lighter_without_facets`);
+    the report's face_facets says how much of it still strays."""
     width = window["width"]
     behind = BEHIND_SHARE * width if behind is None else behind
     blend = BLEND_SHARE * width if blend is None else blend
@@ -1709,7 +1804,9 @@ def graft_face(parts: list[dict], window: dict, face: dict, behind: float | None
                        outside=np.nan)
     new = {**new, "positions": skirt_under(new["positions"], values, continued, at, gap)}
     if keep is not None:      # lighter where the face, as it now lies in the figure, is flat; the seam stays fine,
-        new = lighter(new, keep, border=pixel)      # its hidden skirt's edge within a pixel of its line
+        # its hidden skirt's edge within a pixel of its line; and no lighter than it shows no facets (drawn at half a
+        # pixel: the face then spans about as many pixels as a close view of the figure)
+        new, report["face_facets"] = lighter_without_facets(new, keep, pixel / 2, border=pixel)
     # the seam closed: where the figure's cut edge still stands in front of the face (a strand's cut end, a rise past
     # the cap), its own surface eases back onto the face
     under, _ = depth_map(new["positions"], new["faces"], box, pixel)

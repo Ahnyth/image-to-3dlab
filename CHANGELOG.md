@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Hero face: made lighter no further than it shows no facets.** The density rule gave the Nachtschwinge's new face
+  1,500 triangles, and with its hair fringe, eyes and nose its light strayed from the fine face's on 19 % of it: pale
+  polygons on the cheeks, facets round the nose. Neither a decimation weighed by the normal's turn nor relaxing the
+  triangles back onto the fine face helped at that count (both worse); the face now keeps more triangles until its
+  light, drawn smooth as the game step shades it from the front and both three quarters, strays on no more than
+  7.5 % of it (`hero_face.lighter_without_facets`, `facet_share`): 2,500 for the Nachtschwinge (5.9 %), a flat face
+  no more than asked. `face.json` reports `face_facets`.
 - **Hero face: no ledge where hair beside the face ends at the seam.** The face rises in full to the figure's hair
   beside it, and where that hair ended at the seam (the tip of a side lock) the face dropped back to the cheek at once:
   a ledge along the lock's underside, painted with the picture's dark hair and in shadow, drew a black stroke from the

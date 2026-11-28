@@ -1029,7 +1029,9 @@ def test_a_face_made_lighter_after_it_is_set_in_still_meets_the_figure_all_along
     built["uvs"] = hf.picture_uvs(built["positions"], CROP, 1024, FRAME)
     fine_parts, fine, _ = hf.graft_face([body], window, built)
     parts, light, report = hf.graft_face([body], window, built, keep=0.1)
-    assert len(light["faces"]) <= 0.12 * len(fine["faces"]) and report["face_faces"] == len(light["faces"])
+    # lighter, and no lighter than its light allows (`lighter_without_facets`)
+    assert len(light["faces"]) < 0.5 * len(fine["faces"]) and report["face_faces"] == len(light["faces"])
+    assert report["face_facets"] <= hf.FACET_LIMIT
     over = rim_over(parts[0], light, window)
     assert np.isfinite(over).mean() > 0.95 and np.nanmax(over) < 2 * gap        # as the fine face: just in front
     assert np.nanmax(rim_over(fine_parts[0], fine, window)) < 2 * gap
@@ -1259,4 +1261,50 @@ def test_the_face_rising_in_full_to_hair_beside_it_tapers_where_that_hair_ends_a
     assert np.array_equal(out[30:], target[30:])                               # off the hair as it was
     assert (out <= target).all()
     assert np.array_equal(hf.taper_rise(target, new, np.zeros_like(beside), field, pixel, 20), target)
+
+
+
+def bumpy_relief(half=0.03, step=0.0005):
+    """A face-like relief, two triangles on every square of its grid: a broad dome (cheeks, forehead) and a narrow
+    ridge down its middle (a nose)."""
+    xs = np.arange(-half, half + step / 2, step)
+    n = len(xs)
+    x, y = np.meshgrid(xs, xs)
+    z = 0.015 * np.exp(-(x ** 2 + y ** 2) / (2 * 0.018 ** 2)) + 0.006 * np.exp(-x ** 2 / (2 * 0.003 ** 2)
+                                                                            - y ** 2 / (2 * 0.012 ** 2))
+    a = (np.arange(n - 1)[:, None] * n + np.arange(n - 1)[None, :]).reshape(-1)
+    faces = np.concatenate([np.c_[a, a + 1, a + n + 1], np.c_[a, a + n + 1, a + n]])
+    return np.c_[x.reshape(-1), y.reshape(-1), z.reshape(-1)], faces
+
+
+def test_the_facet_share_counts_where_a_face_made_lighter_catches_the_light_unlike_the_fine_face():
+    # the Nachtschwinge's face at 1,500 triangles: its light strayed from the fine face's by more than 0.05 on 12 % of
+    # it from the front (round 31 of the AssetFurnace Support notes), and a reviewer saw pale polygons on its cheeks
+    # and facets round its nose; the measure is the same light, drawn smooth as the game step shades it
+    v, f = bumpy_relief()
+    fine = {"positions": v, "faces": f}
+    pixel = 0.0003
+    assert hf.facet_share(fine, fine, pixel) == 0.0
+    coarse = hf.facet_share(fine, hf.lighter(fine, 0.02), pixel)
+    finer = hf.facet_share(fine, hf.lighter(fine, 0.2), pixel)
+    assert coarse > 0.05
+    assert finer < 0.5 * coarse
+
+
+def test_a_face_made_lighter_keeps_triangles_until_it_shows_no_facets_and_a_flat_one_gives_them_up():
+    # Taha's decision (#285 of the AssetFurnace Support notes): neither a decimation weighed by the normal's turn nor
+    # a relaxation laid back onto the fine face took the Nachtschwinge's facets away at 1,500 triangles (round 32);
+    # about 2,500 did. The face keeps what its own shape needs, a flat one no more than asked.
+    v, f = bumpy_relief()
+    fine = {"positions": v, "faces": f}
+    pixel = 0.0003
+    asked = 0.02
+    first = hf.facet_share(fine, hf.lighter(fine, asked), pixel)
+    light, share = hf.lighter_without_facets(fine, asked, pixel, limit=0.5 * first)
+    assert share <= 0.5 * first
+    assert len(light["faces"]) > 1.2 * asked * len(f)
+    flat = {"positions": v * np.array([1.0, 1.0, 0.0]), "faces": f}
+    plain, none = hf.lighter_without_facets(flat, asked, pixel, limit=0.5 * first)
+    assert none <= 0.5 * first
+    assert len(plain["faces"]) <= 1.05 * asked * len(f)
 
